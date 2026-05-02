@@ -47,6 +47,7 @@ export async function POST(request: Request) {
     const body = (await request.json()) as {
       baseBranch?: unknown
       branchName?: unknown
+      codexThreadId?: unknown
       githubToken?: unknown
       model?: unknown
       previousDiff?: unknown
@@ -91,6 +92,10 @@ export async function POST(request: Request) {
               branchName:
                 typeof body.branchName === "string"
                   ? body.branchName
+                  : undefined,
+              codexThreadId:
+                typeof body.codexThreadId === "string"
+                  ? body.codexThreadId
                   : undefined,
               githubToken:
                 typeof body.githubToken === "string"

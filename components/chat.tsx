@@ -62,6 +62,7 @@ type RunLog = {
 
 type CodexRunResult = {
   branchName?: unknown
+  codexThreadId?: unknown
   diff?: unknown
   error?: unknown
   lastMessage?: unknown
@@ -69,6 +70,13 @@ type CodexRunResult = {
   status?: unknown
   stderr?: unknown
   stdout?: unknown
+}
+
+type CachedRunState = {
+  branch?: string
+  codexThreadId?: string
+  diff?: string
+  sandboxId?: string
 }
 
 type CodexRunStreamEvent =
@@ -95,6 +103,7 @@ type AuthStatus = {
 }
 
 type ChatRecord = {
+  codexThreadId?: string
   id: Id<"threads">
   repoUrl: string
   sandboxId?: string
@@ -279,6 +288,7 @@ function ChatInner() {
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null)
   const [authError, setAuthError] = useState("")
   const abortRef = useRef<AbortController | null>(null)
+  const threadRunStateRef = useRef<Record<string, CachedRunState>>({})
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const threadRef = useRef<HTMLDivElement>(null)
 
@@ -467,17 +477,19 @@ function ChatInner() {
       const previousAssistant = active?.messages
         .toReversed()
         .find((m) => m.role === "assistant" && m.meta?.branch)
+      const cachedRunState = threadRunStateRef.current[chatId as string]
 
       const res = await fetch("/api/codex-run", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          branchName: previousAssistant?.meta?.branch,
-          previousDiff: previousAssistant?.meta?.diff,
+          branchName: cachedRunState?.branch ?? previousAssistant?.meta?.branch,
+          codexThreadId: cachedRunState?.codexThreadId ?? active?.codexThreadId,
+          previousDiff: cachedRunState?.diff ?? previousAssistant?.meta?.diff,
           prompt: trimmed,
           reasoningEffort: thinking,
           repoUrl: repoUrl.trim(),
-          sandboxId: active?.sandboxId,
+          sandboxId: cachedRunState?.sandboxId ?? active?.sandboxId,
           speed,
           model,
         }),
@@ -492,17 +504,33 @@ function ChatInner() {
         (typeof data.stdout === "string" && data.stdout.trim()) ||
         (typeof data.stderr === "string" && data.stderr.trim()) ||
         "(no output)"
+      const nextRunState: CachedRunState = {
+        ...(typeof data.branchName === "string"
+          ? { branch: data.branchName }
+          : {}),
+        ...(typeof data.codexThreadId === "string"
+          ? {
+              codexThreadId: data.codexThreadId,
+            }
+          : {}),
+        ...(typeof data.diff === "string" ? { diff: data.diff } : {}),
+        ...(typeof data.sandboxId === "string"
+          ? { sandboxId: data.sandboxId }
+          : {}),
+      }
+      threadRunStateRef.current[chatId as string] = {
+        ...threadRunStateRef.current[chatId as string],
+        ...nextRunState,
+      }
       await completeAssistantMessage({
         content,
         messageId: assistantMessageId,
         meta: {
-          branch:
-            typeof data.branchName === "string" ? data.branchName : undefined,
-          diff: typeof data.diff === "string" ? data.diff : undefined,
+          branch: nextRunState.branch,
+          diff: nextRunState.diff,
           status: typeof data.status === "string" ? data.status : undefined,
         },
-        sandboxId:
-          typeof data.sandboxId === "string" ? data.sandboxId : undefined,
+        sandboxId: nextRunState.sandboxId,
         threadId: chatId,
       })
       clearRunLogs(runMessageId)
