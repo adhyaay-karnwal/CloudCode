@@ -1,0 +1,1077 @@
+"use client"
+
+import {
+  AlertCircle,
+  ArrowUp,
+  Check,
+  CheckCircle2,
+  Folder,
+  GitBranch,
+  LogIn,
+  Loader2,
+  Plus,
+  SquarePen,
+  Square,
+} from "lucide-react"
+import {
+  type ChangeEvent,
+  type FormEvent,
+  type KeyboardEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
+
+import { cn } from "@/lib/utils"
+
+type Role = "user" | "assistant"
+
+type Message = {
+  id: string
+  role: Role
+  content: string
+  pending?: boolean
+  error?: boolean
+  meta?: { branch?: string; status?: string; diff?: string }
+}
+
+type AuthStatus = {
+  accountId?: string | null
+  authMode?: "chatgpt"
+  exists: boolean
+  lastRefresh?: string
+  profile: string
+}
+
+type ChatRecord = {
+  id: string
+  repoUrl: string
+  sandboxId?: string
+  title: string
+  messages: Message[]
+  model: Model
+  speed?: Speed
+  thinking?: Thinking
+  createdAt: number
+  updatedAt: number
+}
+
+const MODELS = ["gpt-5.5", "gpt-5.4"] as const
+type Model = (typeof MODELS)[number]
+
+const SPEEDS = ["standard", "fast"] as const
+type Speed = (typeof SPEEDS)[number]
+
+const THINKINGS = ["none", "minimal", "low", "medium", "high", "xhigh"] as const
+type Thinking = (typeof THINKINGS)[number]
+
+const REPO_KEY = "cloudcode:repoUrl"
+const MODEL_KEY = "cloudcode:model"
+const SPEED_KEY = "cloudcode:speed"
+const THINKING_KEY = "cloudcode:thinking"
+const CHATS_KEY = "cloudcode:chats"
+const ACTIVE_KEY = "cloudcode:activeChatId"
+
+const MODEL_LABEL: Record<Model, string> = {
+  "gpt-5.5": "GPT 5.5",
+  "gpt-5.4": "GPT 5.4",
+}
+
+const SPEED_LABEL: Record<Speed, string> = {
+  standard: "Standard",
+  fast: "Fast",
+}
+
+const THINKING_LABEL: Record<Thinking, string> = {
+  none: "None",
+  minimal: "Minimal",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra High",
+}
+
+function shortModel(m: Model) {
+  return m.replace(/^gpt-/, "")
+}
+
+function repoLabel(url: string) {
+  if (!url) return "Untitled"
+  return url
+    .replace(/^https?:\/\/(www\.)?github\.com\//, "")
+    .replace(/\.git$/, "")
+}
+
+function loadChats(): ChatRecord[] {
+  try {
+    const raw = localStorage.getItem(CHATS_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as Array<
+      Omit<ChatRecord, "speed" | "thinking"> & {
+        speed?: unknown
+        thinking?: unknown
+      }
+    >
+    return Array.isArray(parsed)
+      ? parsed.map((chat) => ({
+          ...chat,
+          speed:
+            typeof chat.speed === "string" &&
+            (SPEEDS as readonly string[]).includes(chat.speed)
+              ? (chat.speed as Speed)
+              : "standard",
+          thinking:
+            typeof chat.thinking === "string" &&
+            (THINKINGS as readonly string[]).includes(chat.thinking)
+              ? (chat.thinking as Thinking)
+              : "medium",
+        }))
+      : []
+  } catch {
+    return []
+  }
+}
+
+export function Chat() {
+  const [chats, setChats] = useState<ChatRecord[]>(() =>
+    typeof window === "undefined" ? [] : loadChats()
+  )
+  const [activeId, setActiveId] = useState<string | null>(() =>
+    typeof window === "undefined" ? null : localStorage.getItem(ACTIVE_KEY)
+  )
+  const [input, setInput] = useState("")
+  const [draftRepo, setDraftRepo] = useState(() =>
+    typeof window === "undefined" ? "" : (localStorage.getItem(REPO_KEY) ?? "")
+  )
+  const [draftModel, setDraftModel] = useState<Model>(() => {
+    if (typeof window === "undefined") return "gpt-5.5"
+    const stored = localStorage.getItem(MODEL_KEY)
+    return stored && (MODELS as readonly string[]).includes(stored)
+      ? (stored as Model)
+      : "gpt-5.5"
+  })
+  const [draftSpeed, setDraftSpeed] = useState<Speed>(() => {
+    if (typeof window === "undefined") return "standard"
+    const stored = localStorage.getItem(SPEED_KEY)
+    return stored && (SPEEDS as readonly string[]).includes(stored)
+      ? (stored as Speed)
+      : "standard"
+  })
+  const [draftThinking, setDraftThinking] = useState<Thinking>(() => {
+    if (typeof window === "undefined") return "medium"
+    const stored = localStorage.getItem(THINKING_KEY)
+    return stored && (THINKINGS as readonly string[]).includes(stored)
+      ? (stored as Thinking)
+      : "medium"
+  })
+  const [editingRepo, setEditingRepo] = useState(false)
+  const [modelOpen, setModelOpen] = useState(false)
+  const [speedOpen, setSpeedOpen] = useState(false)
+  const [thinkingOpen, setThinkingOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null)
+  const [authError, setAuthError] = useState("")
+  const abortRef = useRef<AbortController | null>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const threadRef = useRef<HTMLDivElement>(null)
+
+  const active = useMemo(
+    () => chats.find((c) => c.id === activeId) ?? null,
+    [chats, activeId]
+  )
+
+  const repoUrl = active ? active.repoUrl : draftRepo
+  const model = active ? active.model : draftModel
+  const speed = active ? (active.speed ?? "standard") : draftSpeed
+  const thinking = active ? (active.thinking ?? "medium") : draftThinking
+  const messages = active?.messages ?? []
+  const empty = messages.length === 0
+
+  useEffect(() => {
+    async function refreshAuth() {
+      try {
+        const res = await fetch("/api/codex-auth", { cache: "no-store" })
+        const data = await res.json()
+
+        if (!res.ok) {
+          throw new Error(data?.error ?? "Unable to read auth status.")
+        }
+
+        setAuthStatus(data)
+        setAuthError("")
+      } catch (err) {
+        setAuthStatus(null)
+        setAuthError(
+          err instanceof Error ? err.message : "Unable to read auth status."
+        )
+      }
+    }
+
+    void refreshAuth()
+    window.addEventListener("focus", refreshAuth)
+    return () => window.removeEventListener("focus", refreshAuth)
+  }, [])
+
+  useEffect(() => {
+    localStorage.setItem(CHATS_KEY, JSON.stringify(chats))
+  }, [chats])
+
+  useEffect(() => {
+    if (activeId) localStorage.setItem(ACTIVE_KEY, activeId)
+    else localStorage.removeItem(ACTIVE_KEY)
+  }, [activeId])
+
+  useEffect(() => {
+    const el = textareaRef.current
+    if (!el) return
+    el.style.height = "0px"
+    el.style.height = Math.min(el.scrollHeight, 200) + "px"
+  }, [input])
+
+  useEffect(() => {
+    const el = threadRef.current
+    if (!el) return
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" })
+  }, [messages.length, activeId])
+
+  function persistRepo(value: string) {
+    if (active) {
+      updateActive((c) => ({ ...c, repoUrl: value }))
+    } else {
+      setDraftRepo(value)
+    }
+    if (value) localStorage.setItem(REPO_KEY, value)
+    else localStorage.removeItem(REPO_KEY)
+  }
+
+  function persistModel(next: Model) {
+    if (active) {
+      updateActive((c) => ({ ...c, model: next }))
+    } else {
+      setDraftModel(next)
+    }
+    localStorage.setItem(MODEL_KEY, next)
+  }
+
+  function persistSpeed(next: Speed) {
+    if (active) {
+      updateActive((c) => ({ ...c, speed: next }))
+    } else {
+      setDraftSpeed(next)
+    }
+    localStorage.setItem(SPEED_KEY, next)
+  }
+
+  function persistThinking(next: Thinking) {
+    if (active) {
+      updateActive((c) => ({ ...c, thinking: next }))
+    } else {
+      setDraftThinking(next)
+    }
+    localStorage.setItem(THINKING_KEY, next)
+  }
+
+  function updateActive(fn: (c: ChatRecord) => ChatRecord) {
+    setChats((prev) => prev.map((c) => (c.id === activeId ? fn(c) : c)))
+  }
+
+  function startNewChat() {
+    setActiveId(null)
+    setInput("")
+    setEditingRepo(false)
+  }
+
+  function selectChat(id: string) {
+    setActiveId(id)
+    setInput("")
+    setEditingRepo(false)
+  }
+
+  function deleteChat(id: string) {
+    setChats((prev) => prev.filter((c) => c.id !== id))
+    if (activeId === id) setActiveId(null)
+  }
+
+  async function send(prompt: string) {
+    if (!prompt.trim() || busy) return
+    if (!repoUrl.trim()) {
+      setEditingRepo(true)
+      return
+    }
+    if (!authStatus?.exists) {
+      window.location.href = "/api/codex-auth/login"
+      return
+    }
+
+    const userMsg: Message = {
+      id: crypto.randomUUID(),
+      role: "user",
+      content: prompt.trim(),
+    }
+    const assistantId = crypto.randomUUID()
+    const pending: Message = {
+      id: assistantId,
+      role: "assistant",
+      content: "",
+      pending: true,
+    }
+
+    let chatId = activeId
+    if (!chatId) {
+      const id = crypto.randomUUID()
+      const now = Date.now()
+      const newChat: ChatRecord = {
+        id,
+        repoUrl: repoUrl.trim(),
+        sandboxId: undefined,
+        title: prompt.trim().split("\n")[0].slice(0, 60),
+        messages: [userMsg, pending],
+        model: draftModel,
+        speed: draftSpeed,
+        thinking: draftThinking,
+        createdAt: now,
+        updatedAt: now,
+      }
+      setChats((prev) => [newChat, ...prev])
+      setActiveId(id)
+      chatId = id
+    } else {
+      setChats((prev) =>
+        prev.map((c) =>
+          c.id === chatId
+            ? {
+                ...c,
+                messages: [...c.messages, userMsg, pending],
+                updatedAt: Date.now(),
+              }
+            : c
+        )
+      )
+    }
+
+    setInput("")
+    setBusy(true)
+
+    const controller = new AbortController()
+    abortRef.current = controller
+
+    try {
+      const res = await fetch("/api/codex-run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          branchName: active?.messages
+            .toReversed()
+            .find((m) => m.role === "assistant" && m.meta?.branch)?.meta
+            ?.branch,
+          prompt: prompt.trim(),
+          reasoningEffort: thinking,
+          repoUrl: repoUrl.trim(),
+          sandboxId: active?.sandboxId,
+          speed,
+          model,
+        }),
+        signal: controller.signal,
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        throw new Error(data?.error ?? `Request failed (${res.status})`)
+      }
+      const content =
+        (typeof data.lastMessage === "string" && data.lastMessage.trim()) ||
+        (typeof data.stdout === "string" && data.stdout.trim()) ||
+        "(no output)"
+      setChats((prev) =>
+        prev.map((c) =>
+          c.id === chatId
+            ? {
+                ...c,
+                sandboxId:
+                  typeof data.sandboxId === "string"
+                    ? data.sandboxId
+                    : c.sandboxId,
+                updatedAt: Date.now(),
+                messages: c.messages.map((m) =>
+                  m.id === assistantId
+                    ? {
+                        ...m,
+                        pending: false,
+                        content,
+                        meta: {
+                          branch: data.branchName,
+                          status: data.status,
+                          diff: data.diff,
+                        },
+                      }
+                    : m
+                ),
+              }
+            : c
+        )
+      )
+    } catch (err) {
+      const aborted = err instanceof DOMException && err.name === "AbortError"
+      const msg = aborted
+        ? "_Stopped._"
+        : err instanceof Error
+          ? err.message
+          : "Request failed."
+      setChats((prev) =>
+        prev.map((c) =>
+          c.id === chatId
+            ? {
+                ...c,
+                messages: c.messages.map((m) =>
+                  m.id === assistantId
+                    ? { ...m, pending: false, error: !aborted, content: msg }
+                    : m
+                ),
+              }
+            : c
+        )
+      )
+    } finally {
+      setBusy(false)
+      abortRef.current = null
+    }
+  }
+
+  function onSubmit(e: FormEvent) {
+    e.preventDefault()
+    send(input)
+  }
+
+  function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault()
+      send(input)
+    }
+  }
+
+  return (
+    <div className="flex h-svh bg-background text-foreground">
+      <Sidebar
+        authError={authError}
+        authStatus={authStatus}
+        chats={chats}
+        activeId={activeId}
+        onNewChat={startNewChat}
+        onSelect={selectChat}
+        onDelete={deleteChat}
+      />
+
+      <div className="relative flex flex-1 flex-col">
+        <div ref={threadRef} className="flex-1 overflow-y-auto">
+          <div className="mx-auto flex min-h-full max-w-2xl flex-col px-6 pt-16 pb-40">
+            {empty ? (
+              <div className="flex flex-1 flex-col items-center justify-center text-center">
+                <h1 className="text-3xl font-medium tracking-tight text-foreground/90">
+                  What should we build?
+                </h1>
+                <p className="mt-3 text-sm text-muted-foreground">
+                  Describe a change. It runs in a sandbox against your repo.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-8">
+                {messages.map((m) => (
+                  <MessageBlock key={m.id} message={m} />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center px-4 pb-6">
+          <form
+            onSubmit={onSubmit}
+            className="pointer-events-auto w-full max-w-2xl rounded-3xl border border-border/70 bg-background/80 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_-12px_rgba(0,0,0,0.12)] backdrop-blur-xl transition-colors focus-within:border-border"
+          >
+            <textarea
+              ref={textareaRef}
+              value={input}
+              onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
+                setInput(e.target.value)
+              }
+              onKeyDown={onKeyDown}
+              rows={1}
+              placeholder={
+                empty ? "Ask anything…" : "Ask for follow-up changes"
+              }
+              className="block w-full resize-none bg-transparent px-5 pt-4 pb-1 text-[15px] leading-6 outline-none placeholder:text-muted-foreground/70"
+            />
+
+            <div className="flex items-center gap-1.5 px-2.5 pt-1 pb-2.5">
+              <IconButton aria-label="Attach" disabled>
+                <Plus className="size-[18px]" />
+              </IconButton>
+
+              <RepoChip
+                value={repoUrl}
+                editing={editingRepo}
+                setEditing={setEditingRepo}
+                onChange={persistRepo}
+                locked={Boolean(active)}
+              />
+
+              <div className="ml-auto flex items-center gap-1.5">
+                <Pill
+                  header="Model"
+                  value={model}
+                  options={MODELS}
+                  formatTrigger={shortModel}
+                  formatOption={(m) => MODEL_LABEL[m]}
+                  open={modelOpen}
+                  setOpen={setModelOpen}
+                  onSelect={persistModel}
+                />
+                <Pill
+                  header="Thinking"
+                  value={thinking}
+                  options={THINKINGS}
+                  formatTrigger={(t) => THINKING_LABEL[t]}
+                  formatOption={(t) => THINKING_LABEL[t]}
+                  open={thinkingOpen}
+                  setOpen={setThinkingOpen}
+                  onSelect={persistThinking}
+                  triggerClassName="text-muted-foreground"
+                />
+                <Pill
+                  header="Speed"
+                  value={speed}
+                  options={SPEEDS}
+                  formatTrigger={(s) => SPEED_LABEL[s]}
+                  formatOption={(s) => SPEED_LABEL[s]}
+                  open={speedOpen}
+                  setOpen={setSpeedOpen}
+                  onSelect={persistSpeed}
+                  triggerClassName="text-muted-foreground"
+                />
+
+                {busy ? (
+                  <button
+                    type="button"
+                    onClick={() => abortRef.current?.abort()}
+                    className="grid size-8 place-items-center rounded-full bg-foreground text-background transition-opacity hover:opacity-80"
+                    aria-label="Stop"
+                  >
+                    <Square className="size-3.5 fill-current" />
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    disabled={!input.trim()}
+                    className="grid size-8 place-items-center rounded-full bg-foreground text-background transition-opacity hover:opacity-80 disabled:opacity-30"
+                    aria-label="Send"
+                  >
+                    <ArrowUp className="size-4" strokeWidth={2.4} />
+                  </button>
+                )}
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function Sidebar({
+  authError,
+  authStatus,
+  chats,
+  activeId,
+  onNewChat,
+  onSelect,
+  onDelete,
+}: {
+  authError: string
+  authStatus: AuthStatus | null
+  chats: ChatRecord[]
+  activeId: string | null
+  onNewChat: () => void
+  onSelect: (id: string) => void
+  onDelete: (id: string) => void
+}) {
+  const groups = useMemo(() => {
+    const map = new Map<string, ChatRecord[]>()
+    for (const c of chats) {
+      const key = c.repoUrl || ""
+      const arr = map.get(key) ?? []
+      arr.push(c)
+      map.set(key, arr)
+    }
+    return Array.from(map.entries())
+      .map(([repo, items]) => ({
+        repo,
+        items: items.sort((a, b) => b.updatedAt - a.updatedAt),
+        latest: Math.max(...items.map((i) => i.updatedAt)),
+      }))
+      .sort((a, b) => b.latest - a.latest)
+  }, [chats])
+
+  return (
+    <aside className="flex h-full w-64 shrink-0 flex-col border-r border-border/60 bg-sidebar text-sidebar-foreground">
+      <div className="px-3 pt-4">
+        <button
+          type="button"
+          onClick={onNewChat}
+          className="flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-sm text-foreground/80 transition-colors hover:bg-muted"
+        >
+          <SquarePen className="size-4" />
+          <span>New chat</span>
+        </button>
+      </div>
+
+      <div className="mt-2 flex-1 overflow-y-auto px-2 pb-4">
+        {groups.length === 0 ? (
+          <div className="px-3 pt-4 text-xs text-muted-foreground/80">
+            No chats yet
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {groups.map((g) => (
+              <div key={g.repo || "untitled"}>
+                <div className="flex items-center gap-2 px-2.5 py-1.5 text-xs text-muted-foreground">
+                  <Folder className="size-3.5 shrink-0" />
+                  <span className="truncate">{repoLabel(g.repo)}</span>
+                </div>
+                <div>
+                  {g.items.map((c) => (
+                    <SidebarItem
+                      key={c.id}
+                      chat={c}
+                      active={c.id === activeId}
+                      onSelect={() => onSelect(c.id)}
+                      onDelete={() => onDelete(c.id)}
+                    />
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="border-t border-border/60 p-3">
+        <a
+          href="/api/codex-auth/login"
+          className="flex items-center gap-2 rounded-xl px-2.5 py-2 text-sm text-foreground/80 transition-colors hover:bg-muted"
+        >
+          {authStatus?.exists ? (
+            <CheckCircle2 className="size-4 text-emerald-600" />
+          ) : authError ? (
+            <AlertCircle className="size-4 text-destructive" />
+          ) : (
+            <LogIn className="size-4" />
+          )}
+          <span className="truncate">
+            {authStatus?.exists ? "ChatGPT connected" : "Sign in with ChatGPT"}
+          </span>
+        </a>
+        {authError ? (
+          <div className="mt-1 px-2.5 text-[11px] leading-4 text-destructive">
+            {authError}
+          </div>
+        ) : null}
+      </div>
+    </aside>
+  )
+}
+
+function SidebarItem({
+  chat,
+  active,
+  onSelect,
+  onDelete,
+}: {
+  chat: ChatRecord
+  active: boolean
+  onSelect: () => void
+  onDelete: () => void
+}) {
+  return (
+    <div
+      className={cn(
+        "group/item flex items-center rounded-lg pr-1 transition-colors",
+        active ? "bg-muted" : "hover:bg-muted/60"
+      )}
+    >
+      <button
+        type="button"
+        onClick={onSelect}
+        className="min-w-0 flex-1 truncate px-2.5 py-1.5 text-left text-sm text-foreground/85"
+      >
+        {chat.title || "Untitled"}
+      </button>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation()
+          onDelete()
+        }}
+        className="hidden size-6 shrink-0 place-items-center rounded-md text-muted-foreground group-hover/item:grid hover:bg-background hover:text-foreground"
+        aria-label="Delete chat"
+      >
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+          <path
+            d="M3 3L9 9M9 3L3 9"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
+        </svg>
+      </button>
+    </div>
+  )
+}
+
+function IconButton({
+  className,
+  children,
+  ...props
+}: React.ButtonHTMLAttributes<HTMLButtonElement>) {
+  return (
+    <button
+      type="button"
+      className={cn(
+        "grid size-8 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40 disabled:hover:bg-transparent",
+        className
+      )}
+      {...props}
+    >
+      {children}
+    </button>
+  )
+}
+
+function RepoChip({
+  value,
+  editing,
+  setEditing,
+  onChange,
+  locked,
+}: {
+  value: string
+  editing: boolean
+  setEditing: (v: boolean) => void
+  onChange: (v: string) => void
+  locked?: boolean
+}) {
+  const [draft, setDraft] = useState(value)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (editing) inputRef.current?.focus()
+  }, [editing])
+
+  function commit() {
+    onChange(draft.trim())
+    setEditing(false)
+  }
+
+  if (editing) {
+    return (
+      <div className="flex h-8 items-center gap-1.5 rounded-full border border-border/80 bg-background pr-1 pl-2.5 text-xs">
+        <GitBranch className="size-3.5 shrink-0 text-muted-foreground" />
+        <input
+          ref={inputRef}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault()
+              commit()
+            }
+            if (e.key === "Escape") {
+              setDraft(value)
+              setEditing(false)
+            }
+          }}
+          placeholder="https://github.com/owner/repo.git"
+          className="w-64 bg-transparent text-xs outline-none placeholder:text-muted-foreground/60"
+          spellCheck={false}
+        />
+      </div>
+    )
+  }
+
+  const label = value ? repoLabel(value) : "Connect repo"
+
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        if (!locked) {
+          setDraft(value)
+          setEditing(true)
+        }
+      }}
+      disabled={locked}
+      className={cn(
+        "flex h-8 max-w-[14rem] items-center gap-1.5 rounded-full px-2.5 text-xs transition-colors",
+        value
+          ? "text-foreground/80 hover:bg-muted disabled:hover:bg-transparent"
+          : "text-muted-foreground hover:bg-muted hover:text-foreground"
+      )}
+    >
+      <GitBranch className="size-3.5 shrink-0" />
+      <span className="truncate">{label}</span>
+    </button>
+  )
+}
+
+function Pill<T extends string>({
+  header,
+  value,
+  options,
+  formatTrigger,
+  formatOption,
+  open,
+  setOpen,
+  onSelect,
+  triggerClassName,
+}: {
+  header: string
+  value: T
+  options: readonly T[]
+  formatTrigger: (v: T) => string
+  formatOption: (v: T) => string
+  open: boolean
+  setOpen: (v: boolean) => void
+  onSelect: (v: T) => void
+  triggerClassName?: string
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    function onClick(e: MouseEvent) {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener("mousedown", onClick)
+    return () => document.removeEventListener("mousedown", onClick)
+  }, [open, setOpen])
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className={cn(
+          "flex h-8 items-center gap-1 rounded-full px-2.5 text-xs text-foreground transition-colors hover:bg-muted",
+          triggerClassName
+        )}
+      >
+        {formatTrigger(value)}
+        <svg
+          width="10"
+          height="10"
+          viewBox="0 0 12 12"
+          fill="none"
+          className="opacity-60"
+        >
+          <path
+            d="M3 4.5L6 7.5L9 4.5"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </button>
+      {open ? (
+        <div className="absolute right-0 bottom-10 min-w-44 overflow-hidden rounded-2xl border border-black/[0.06] bg-popover p-1.5 shadow-[0_10px_30px_-12px_rgba(0,0,0,0.18)] dark:border-white/10">
+          <div className="px-3 pt-1.5 pb-1 text-xs text-muted-foreground">
+            {header}
+          </div>
+          {options.map((opt) => {
+            const selected = opt === value
+            return (
+              <button
+                key={opt}
+                type="button"
+                onClick={() => {
+                  onSelect(opt)
+                  setOpen(false)
+                }}
+                className="flex w-full items-center justify-between gap-6 rounded-xl px-3 py-1.5 text-left text-sm text-foreground transition-colors hover:bg-muted"
+              >
+                <span>{formatOption(opt)}</span>
+                {selected ? (
+                  <Check className="size-4 shrink-0" strokeWidth={2.25} />
+                ) : null}
+              </button>
+            )
+          })}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function MessageBlock({ message }: { message: Message }) {
+  if (message.role === "user") {
+    return (
+      <div className="flex justify-end">
+        <div className="max-w-[85%] rounded-3xl bg-muted px-4 py-2.5 text-[15px] leading-6 break-words whitespace-pre-wrap">
+          {message.content}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-3">
+      {message.pending ? (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Loader2 className="size-3.5 animate-spin" />
+          <span className="animate-pulse">working in sandbox…</span>
+        </div>
+      ) : (
+        <Markdown
+          text={message.content}
+          className={cn(
+            "text-[15px] leading-7",
+            message.error && "text-destructive"
+          )}
+        />
+      )}
+      {message.meta?.branch ? (
+        <div className="font-mono text-[11px] text-muted-foreground">
+          ↳ {message.meta.branch}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function Markdown({ text, className }: { text: string; className?: string }) {
+  const blocks: Array<{ kind: "code" | "text"; lang?: string; body: string }> =
+    []
+  const fence = /```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g
+  let last = 0
+  let m: RegExpExecArray | null
+  while ((m = fence.exec(text)) !== null) {
+    if (m.index > last)
+      blocks.push({ kind: "text", body: text.slice(last, m.index) })
+    blocks.push({ kind: "code", lang: m[1] || undefined, body: m[2] })
+    last = m.index + m[0].length
+  }
+  if (last < text.length) blocks.push({ kind: "text", body: text.slice(last) })
+
+  return (
+    <div className={cn("space-y-4", className)}>
+      {blocks.map((b, i) =>
+        b.kind === "code" ? (
+          <pre
+            key={i}
+            className="overflow-x-auto rounded-xl bg-muted px-4 py-3 font-mono text-[13px] leading-6"
+          >
+            <code>{b.body.replace(/\n$/, "")}</code>
+          </pre>
+        ) : (
+          <InlineProse key={i} text={b.body} />
+        )
+      )}
+    </div>
+  )
+}
+
+function InlineProse({ text }: { text: string }) {
+  const lines = text.split("\n")
+  const out: React.ReactNode[] = []
+  let buf: string[] = []
+  let listBuf: string[] = []
+
+  function flushPara() {
+    if (!buf.length) return
+    const body = buf.join("\n").trim()
+    buf = []
+    if (!body) return
+    out.push(
+      <p key={out.length} className="whitespace-pre-wrap">
+        {renderInline(body)}
+      </p>
+    )
+  }
+  function flushList() {
+    if (!listBuf.length) return
+    const items = listBuf
+    listBuf = []
+    out.push(
+      <ul key={out.length} className="list-disc space-y-1.5 pl-5">
+        {items.map((it, i) => (
+          <li key={i}>{renderInline(it)}</li>
+        ))}
+      </ul>
+    )
+  }
+
+  for (const line of lines) {
+    const heading = /^(#{1,3})\s+(.*)$/.exec(line)
+    const bullet = /^[-*]\s+(.*)$/.exec(line)
+    if (heading) {
+      flushPara()
+      flushList()
+      const level = heading[1].length
+      const content = heading[2]
+      const cls =
+        level === 1
+          ? "text-xl font-semibold"
+          : level === 2
+            ? "text-lg font-semibold"
+            : "text-base font-semibold"
+      out.push(
+        <div key={out.length} className={cls}>
+          {renderInline(content)}
+        </div>
+      )
+    } else if (bullet) {
+      flushPara()
+      listBuf.push(bullet[1])
+    } else if (line.trim() === "") {
+      flushPara()
+      flushList()
+    } else {
+      flushList()
+      buf.push(line)
+    }
+  }
+  flushPara()
+  flushList()
+
+  return <>{out}</>
+}
+
+function renderInline(text: string): React.ReactNode {
+  const parts: React.ReactNode[] = []
+  const re = /(\*\*([^*]+)\*\*|`([^`]+)`)/g
+  let last = 0
+  let m: RegExpExecArray | null
+  let key = 0
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) parts.push(text.slice(last, m.index))
+    if (m[2] !== undefined) {
+      parts.push(
+        <strong key={key++} className="font-semibold">
+          {m[2]}
+        </strong>
+      )
+    } else if (m[3] !== undefined) {
+      parts.push(
+        <code
+          key={key++}
+          className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em]"
+        >
+          {m[3]}
+        </code>
+      )
+    }
+    last = m.index + m[0].length
+  }
+  if (last < text.length) parts.push(text.slice(last))
+  return <>{parts}</>
+}

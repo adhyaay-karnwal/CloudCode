@@ -12,6 +12,16 @@ type CommandResult = {
   stdout: string
 }
 
+export type ReasoningEffort =
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+
+export type CodexSpeed = "standard" | "fast"
+
 export type RunCodexInSandboxInput = {
   authJson: string
   baseBranch?: string
@@ -19,7 +29,10 @@ export type RunCodexInSandboxInput = {
   githubToken?: string
   model?: string
   prompt: string
+  reasoningEffort?: ReasoningEffort
   repoUrl: string
+  sandboxId?: string
+  speed?: CodexSpeed
   timeoutMs?: number
 }
 
@@ -52,6 +65,39 @@ function parseModel(model?: string) {
   }
 
   return normalized
+}
+
+function parseReasoningEffort(effort?: string): ReasoningEffort | undefined {
+  if (
+    effort === "none" ||
+    effort === "minimal" ||
+    effort === "low" ||
+    effort === "medium" ||
+    effort === "high" ||
+    effort === "xhigh"
+  ) {
+    return effort
+  }
+
+  if (effort) {
+    throw new Error(
+      "reasoningEffort must be none, minimal, low, medium, high, or xhigh."
+    )
+  }
+
+  return undefined
+}
+
+function parseSpeed(speed?: string): CodexSpeed {
+  if (!speed || speed === "standard") {
+    return "standard"
+  }
+
+  if (speed === "fast") {
+    return speed
+  }
+
+  throw new Error("speed must be standard or fast.")
 }
 
 function parseRepoUrl(repoUrl: string) {
@@ -125,15 +171,20 @@ function redactAuthPathOutput(result: CommandResult) {
 
 export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
   const model = parseModel(input.model)
+  const reasoningEffort = parseReasoningEffort(input.reasoningEffort)
   const repoUrl = parseRepoUrl(input.repoUrl)
   const baseBranch = parseGitRef(input.baseBranch, "baseBranch")
   const branchName =
     parseGitRef(input.branchName, "branchName") ?? defaultBranchName()
   const githubToken = input.githubToken?.trim() || process.env.GITHUB_TOKEN
+  const speed = parseSpeed(input.speed)
   const timeoutMs = input.timeoutMs ?? 10 * 60 * 1000
-  const sandbox = await Sandbox.create("codex", {
-    timeoutMs: Math.max(timeoutMs + 60_000, 120_000),
-  })
+  const sandbox = input.sandboxId
+    ? await Sandbox.connect(input.sandboxId)
+    : await Sandbox.create("codex", {
+        timeoutMs: Math.max(timeoutMs + 60_000, 120_000),
+      })
+  await sandbox.setTimeout(Math.max(timeoutMs + 60_000, 120_000))
 
   try {
     await sandbox.commands.run(
@@ -145,16 +196,30 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
       `chmod 600 ${CODEX_HOME}/auth.json ${PROMPT_PATH}`
     )
 
-    await sandbox.git.clone(repoUrl, {
-      branch: baseBranch,
-      depth: 1,
-      password: githubToken,
-      path: REPO_PATH,
-      username: githubToken ? "x-access-token" : undefined,
-    })
-    await sandbox.git.createBranch(REPO_PATH, branchName)
+    if (!input.sandboxId) {
+      await sandbox.git.clone(repoUrl, {
+        branch: baseBranch,
+        depth: 1,
+        password: githubToken,
+        path: REPO_PATH,
+        username: githubToken ? "x-access-token" : undefined,
+      })
+      await sandbox.git.createBranch(REPO_PATH, branchName)
+    } else {
+      await sandbox.commands.run(`test -d ${REPO_PATH}/.git`, {
+        timeoutMs: 10_000,
+      })
+    }
 
     const modelFlag = model ? ` --model ${shellQuote(model)}` : ""
+    const configFlags = [
+      reasoningEffort
+        ? `-c ${shellQuote(`model_reasoning_effort="${reasoningEffort}"`)}`
+        : "",
+      speed === "fast" ? `-c ${shellQuote('service_tier="fast"')}` : "",
+    ]
+      .filter(Boolean)
+      .join(" ")
     const codexCommand = [
       `CODEX_HOME=${CODEX_HOME}`,
       "codex exec",
@@ -164,6 +229,7 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
       "--ignore-rules",
       "--ephemeral",
       "--json",
+      configFlags,
       modelFlag,
       `--output-last-message ${LAST_MESSAGE_PATH}`,
       `-C ${REPO_PATH}`,
@@ -192,9 +258,12 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
     return {
       branchName,
       diff: (
-        await sandbox.commands.run(`git -C ${REPO_PATH} diff --binary`, {
-          timeoutMs: 60_000,
-        })
+        await sandbox.commands.run(
+          `git -C ${REPO_PATH} add -N . >/dev/null 2>&1 || true; git -C ${REPO_PATH} diff --binary HEAD`,
+          {
+            timeoutMs: 60_000,
+          }
+        )
       ).stdout,
       exitCode: result.exitCode,
       lastMessage: await readLastMessage(sandbox),
@@ -221,6 +290,5 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
         }
       )
       .catch(() => undefined)
-    await sandbox.kill().catch(() => undefined)
   }
 }
