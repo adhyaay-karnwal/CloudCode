@@ -1,10 +1,37 @@
 import { NextResponse } from "next/server"
 
 import { getCodexAuthJson, saveCodexAuthJson } from "@/lib/codex-auth"
-import { runCodexInSandbox } from "@/lib/e2b-codex-agent"
+import {
+  type CodexSpeed,
+  type ReasoningEffort,
+  runCodexInSandbox,
+} from "@/lib/e2b-codex-agent"
 
 export const runtime = "nodejs"
 export const maxDuration = 300
+
+function parseReasoningEffort(value: unknown): ReasoningEffort | undefined {
+  if (
+    value === "none" ||
+    value === "minimal" ||
+    value === "low" ||
+    value === "medium" ||
+    value === "high" ||
+    value === "xhigh"
+  ) {
+    return value
+  }
+
+  return undefined
+}
+
+function parseSpeed(value: unknown): CodexSpeed | undefined {
+  if (value === "standard" || value === "fast") {
+    return value
+  }
+
+  return undefined
+}
 
 export async function POST(request: Request) {
   try {
@@ -15,7 +42,10 @@ export async function POST(request: Request) {
       model?: unknown
       profile?: unknown
       prompt?: unknown
+      reasoningEffort?: unknown
       repoUrl?: unknown
+      sandboxId?: unknown
+      speed?: unknown
       timeoutMs?: unknown
     }
 
@@ -46,7 +76,11 @@ export async function POST(request: Request) {
         typeof body.githubToken === "string" ? body.githubToken : undefined,
       model: typeof body.model === "string" ? body.model : undefined,
       prompt: body.prompt,
+      reasoningEffort: parseReasoningEffort(body.reasoningEffort),
       repoUrl: body.repoUrl,
+      sandboxId:
+        typeof body.sandboxId === "string" ? body.sandboxId : undefined,
+      speed: parseSpeed(body.speed),
       timeoutMs:
         typeof body.timeoutMs === "number" ? body.timeoutMs : undefined,
     })

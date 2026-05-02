@@ -56,6 +56,9 @@ curl -X POST http://localhost:3000/api/codex-run \
     "repoUrl": "https://github.com/your-org/your-repo.git",
     "baseBranch": "main",
     "branchName": "cloudcode/my-change",
+    "model": "gpt-5.5",
+    "reasoningEffort": "high",
+    "speed": "fast",
     "prompt": "Add error handling to all API endpoints"
   }'
 ```
@@ -64,6 +67,10 @@ The runner creates an E2B sandbox from the `codex` template, clones the repo to
 `/home/user/repo`, creates the requested branch, runs `codex exec -C
 /home/user/repo`, and returns the branch name, status, diff, stdout, stderr, and
 final Codex message.
+
+`reasoningEffort` maps to Codex `model_reasoning_effort` and accepts `none`,
+`minimal`, `low`, `medium`, `high`, or `xhigh`. `speed` accepts `standard` or
+`fast`; `fast` maps to Codex `service_tier = "fast"`.
 
 ## Run
 
