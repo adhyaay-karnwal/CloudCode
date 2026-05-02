@@ -1147,13 +1147,13 @@ function RunLogRow({ log }: { log: RunLog }) {
 function Markdown({ text, className }: { text: string; className?: string }) {
   const blocks: Array<{ kind: "code" | "text"; lang?: string; body: string }> =
     []
-  const fence = /```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g
+  const fence = /```([^\n`]*)\n([\s\S]*?)```/g
   let last = 0
   let m: RegExpExecArray | null
   while ((m = fence.exec(text)) !== null) {
     if (m.index > last)
       blocks.push({ kind: "text", body: text.slice(last, m.index) })
-    blocks.push({ kind: "code", lang: m[1] || undefined, body: m[2] })
+    blocks.push({ kind: "code", lang: parseCodeLanguage(m[1]), body: m[2] })
     last = m.index + m[0].length
   }
   if (last < text.length) blocks.push({ kind: "text", body: text.slice(last) })
@@ -1162,18 +1162,191 @@ function Markdown({ text, className }: { text: string; className?: string }) {
     <div className={cn("space-y-4", className)}>
       {blocks.map((b, i) =>
         b.kind === "code" ? (
-          <pre
-            key={i}
-            className="overflow-x-auto rounded-xl bg-muted px-4 py-3 font-mono text-[13px] leading-6"
-          >
-            <code>{b.body.replace(/\n$/, "")}</code>
-          </pre>
+          <CodeBlock key={i} body={b.body} lang={b.lang} />
         ) : (
           <InlineProse key={i} text={b.body} />
         )
       )}
     </div>
   )
+}
+
+const CODE_LANGUAGE_LABELS: Record<string, string> = {
+  bash: "Bash",
+  css: "CSS",
+  diff: "Diff",
+  html: "HTML",
+  javascript: "JavaScript",
+  js: "JavaScript",
+  json: "JSON",
+  jsx: "JSX",
+  markdown: "Markdown",
+  md: "Markdown",
+  plaintext: "Plain text",
+  python: "Python",
+  py: "Python",
+  sh: "Shell",
+  shell: "Shell",
+  ts: "TypeScript",
+  tsx: "TSX",
+  typescript: "TypeScript",
+  yaml: "YAML",
+  yml: "YAML",
+}
+
+const CODE_KEYWORDS = new Set([
+  "and",
+  "as",
+  "async",
+  "await",
+  "break",
+  "case",
+  "catch",
+  "class",
+  "const",
+  "continue",
+  "def",
+  "default",
+  "delete",
+  "do",
+  "elif",
+  "else",
+  "enum",
+  "export",
+  "extends",
+  "false",
+  "finally",
+  "for",
+  "from",
+  "function",
+  "if",
+  "import",
+  "in",
+  "interface",
+  "is",
+  "let",
+  "new",
+  "none",
+  "not",
+  "null",
+  "or",
+  "private",
+  "protected",
+  "public",
+  "return",
+  "switch",
+  "this",
+  "throw",
+  "true",
+  "try",
+  "type",
+  "undefined",
+  "var",
+  "while",
+  "with",
+])
+
+function CodeBlock({ body, lang }: { body: string; lang?: string }) {
+  const code = body.replace(/\n$/, "")
+  const language = lang ?? "plaintext"
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-border bg-muted/60">
+      <div className="flex h-8 items-center border-b border-border/70 bg-background/70 px-3 font-mono text-[11px] font-medium text-muted-foreground uppercase">
+        {formatCodeLanguage(language)}
+      </div>
+      <pre className="overflow-x-auto px-4 py-3 font-mono text-[13px] leading-6">
+        <code className={`language-${language}`}>
+          {highlightCode(code, language)}
+        </code>
+      </pre>
+    </div>
+  )
+}
+
+function parseCodeLanguage(info: string) {
+  const lang = info.trim().split(/\s+/)[0]?.replace(/^\./, "").toLowerCase()
+  return lang || undefined
+}
+
+function formatCodeLanguage(lang: string) {
+  return CODE_LANGUAGE_LABELS[lang] ?? lang
+}
+
+function highlightCode(code: string, lang: string): React.ReactNode {
+  if (!code) return null
+
+  const parts: React.ReactNode[] = []
+  const backtick = "`"
+  const tokenPatterns = [
+    String.raw`<!--[\s\S]*?-->`,
+    String.raw`\/\*[\s\S]*?\*\/`,
+    String.raw`\/\/[^\n]*`,
+    ...(hasHashComments(lang) ? [String.raw`#[^\n]*`] : []),
+    String.raw`"(?:\\.|[^"\\])*"`,
+    String.raw`'(?:\\.|[^'\\])*'`,
+    `${backtick}(?:\\\\.|[^${backtick}\\\\])*${backtick}`,
+    String.raw`\b[A-Za-z_$][\w$]*\b`,
+    String.raw`\b\d+(?:\.\d+)?\b`,
+    String.raw`[{}()[\].,;:<>/=+\-*%!?&|]+`,
+  ]
+  const tokenRe = new RegExp(tokenPatterns.join("|"), "g")
+  let last = 0
+  let key = 0
+  let match: RegExpExecArray | null
+
+  while ((match = tokenRe.exec(code)) !== null) {
+    const token = match[0]
+    if (match.index > last) parts.push(code.slice(last, match.index))
+
+    const className = getCodeTokenClass(
+      token,
+      lang,
+      code.slice(match.index + token.length)
+    )
+
+    parts.push(
+      className ? (
+        <span key={key++} className={className}>
+          {token}
+        </span>
+      ) : (
+        token
+      )
+    )
+    last = match.index + token.length
+  }
+
+  if (last < code.length) parts.push(code.slice(last))
+  return <>{parts}</>
+}
+
+function getCodeTokenClass(token: string, lang: string, rest: string) {
+  if (isCommentToken(token, lang))
+    return "text-muted-foreground/80 italic"
+  if (/^["'`]/.test(token)) return "text-emerald-700 dark:text-emerald-300"
+  if (/^\d/.test(token)) return "text-amber-700 dark:text-amber-300"
+  if (CODE_KEYWORDS.has(token.toLowerCase()))
+    return "font-medium text-rose-700 dark:text-rose-300"
+  if (/^[A-Za-z_$]/.test(token) && /^\s*\(/.test(rest))
+    return "text-sky-700 dark:text-sky-300"
+  if (/^[{}()[\].,;:<>/=+\-*%!?&|]+$/.test(token))
+    return "text-muted-foreground"
+  return undefined
+}
+
+function isCommentToken(token: string, lang: string) {
+  if (
+    token.startsWith("<!--") ||
+    token.startsWith("/*") ||
+    token.startsWith("//")
+  )
+    return true
+  return token.startsWith("#") && hasHashComments(lang)
+}
+
+function hasHashComments(lang: string) {
+  return ["bash", "py", "python", "sh", "shell", "yaml", "yml"].includes(lang)
 }
 
 function InlineProse({ text }: { text: string }) {
@@ -1244,25 +1417,48 @@ function InlineProse({ text }: { text: string }) {
 
 function renderInline(text: string): React.ReactNode {
   const parts: React.ReactNode[] = []
-  const re = /(\*\*([^*]+)\*\*|`([^`]+)`)/g
+  const re =
+    /(\[([^\]]+)\]\(([^)\s]+)\)|\bhttps?:\/\/[^\s<>()]+[^\s<>().,!?;:]|\*\*([^*]+)\*\*|`([^`]+)`)/g
   let last = 0
   let m: RegExpExecArray | null
   let key = 0
   while ((m = re.exec(text)) !== null) {
     if (m.index > last) parts.push(text.slice(last, m.index))
-    if (m[2] !== undefined) {
+    if (m[2] !== undefined && m[3] !== undefined) {
+      const href = normalizeLinkHref(m[3])
+      parts.push(
+        href ? (
+          <MarkdownLink key={key++} href={href}>
+            {renderInline(m[2])}
+          </MarkdownLink>
+        ) : (
+          m[0]
+        )
+      )
+    } else if (m[0].startsWith("http")) {
+      const href = normalizeLinkHref(m[0])
+      parts.push(
+        href ? (
+          <MarkdownLink key={key++} href={href}>
+            {m[0]}
+          </MarkdownLink>
+        ) : (
+          m[0]
+        )
+      )
+    } else if (m[4] !== undefined) {
       parts.push(
         <strong key={key++} className="font-semibold">
-          {m[2]}
+          {m[4]}
         </strong>
       )
-    } else if (m[3] !== undefined) {
+    } else if (m[5] !== undefined) {
       parts.push(
         <code
           key={key++}
           className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em]"
         >
-          {m[3]}
+          {m[5]}
         </code>
       )
     }
@@ -1270,4 +1466,31 @@ function renderInline(text: string): React.ReactNode {
   }
   if (last < text.length) parts.push(text.slice(last))
   return <>{parts}</>
+}
+
+function MarkdownLink({
+  children,
+  href,
+}: {
+  children: React.ReactNode
+  href: string
+}) {
+  const external = /^https?:\/\//i.test(href)
+
+  return (
+    <a
+      href={href}
+      target={external ? "_blank" : undefined}
+      rel={external ? "noreferrer" : undefined}
+      className="font-medium text-primary underline underline-offset-4 hover:text-primary/80"
+    >
+      {children}
+    </a>
+  )
+}
+
+function normalizeLinkHref(href: string) {
+  const trimmed = href.trim()
+  if (/^(https?:\/\/|mailto:|\/|#)/i.test(trimmed)) return trimmed
+  return undefined
 }
