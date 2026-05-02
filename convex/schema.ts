@@ -46,6 +46,7 @@ export default defineSchema({
   }).index("by_thread", ["threadId"]),
 
   threads: defineTable({
+    codexThreadId: v.optional(v.string()),
     createdAt: v.number(),
     model,
     repoUrl: v.string(),

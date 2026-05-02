@@ -56,6 +56,7 @@ export const list = query({
           .collect()
 
         return {
+          codexThreadId: thread.codexThreadId,
           createdAt: thread.createdAt,
           id: thread._id,
           messages: messages.map((message) => ({
@@ -155,6 +156,7 @@ export const appendRunMessages = mutation({
 export const completeAssistantMessage = mutation({
   args: {
     content: v.string(),
+    codexThreadId: v.optional(v.string()),
     error: v.optional(v.boolean()),
     messageId: v.id("messages"),
     meta: v.optional(messageMeta),
@@ -181,6 +183,7 @@ export const completeAssistantMessage = mutation({
       pending: false,
     })
     await ctx.db.patch(args.threadId, {
+      ...(args.codexThreadId ? { codexThreadId: args.codexThreadId } : {}),
       ...(args.sandboxId ? { sandboxId: args.sandboxId } : {}),
       updatedAt: Date.now(),
     })

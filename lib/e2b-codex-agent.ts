@@ -45,6 +45,7 @@ export type RunCodexInSandboxInput = {
   authJson: string
   baseBranch?: string
   branchName?: string
+  codexThreadId?: string
   githubToken?: string
   onLog?: (log: RunCodexLog) => void | Promise<void>
   model?: string
@@ -59,6 +60,7 @@ export type RunCodexInSandboxInput = {
 
 export type RunCodexInSandboxResult = {
   branchName: string
+  codexThreadId?: string
   diff: string
   exitCode: number
   lastMessage: string
@@ -212,6 +214,18 @@ async function getCodexExecHelp(sandbox: Sandbox) {
   }
 }
 
+async function getCodexResumeHelp(sandbox: Sandbox) {
+  try {
+    return (
+      await sandbox.commands.run(`${CODEX_LAUNCHER_PATH} exec resume --help`, {
+        timeoutMs: 10_000,
+      })
+    ).stdout
+  } catch {
+    return ""
+  }
+}
+
 async function updateCodexCli(sandbox: Sandbox, input: RunCodexInSandboxInput) {
   await emitLog(input, {
     kind: "setup",
@@ -220,17 +234,18 @@ async function updateCodexCli(sandbox: Sandbox, input: RunCodexInSandboxInput) {
 
   const updateCommand = [
     "set -e",
+    "if command -v npm >/dev/null 2>&1; then",
+    "  npm install -g @openai/codex@latest",
+    "elif command -v bun >/dev/null 2>&1; then",
+    "  bun install -g @openai/codex@latest",
+    "else",
+    "  echo 'Neither npm nor bun is available to install the latest Codex CLI.' >&2",
+    "  exit 1",
+    "fi",
     `cat > ${CODEX_LAUNCHER_PATH} <<'EOF'`,
     "#!/usr/bin/env bash",
     "set -e",
-    "if command -v npm >/dev/null 2>&1; then",
-    '  exec npx -y @openai/codex@latest "$@"',
-    "elif command -v bunx >/dev/null 2>&1; then",
-    '  exec bunx @openai/codex@latest "$@"',
-    "else",
-    "  echo 'Neither npm nor bunx is available to run the latest Codex CLI.' >&2",
-    "  exit 1",
-    "fi",
+    'exec codex "$@"',
     "EOF",
     `chmod +x ${CODEX_LAUNCHER_PATH}`,
     `${CODEX_LAUNCHER_PATH} --version`,
@@ -238,8 +253,8 @@ async function updateCodexCli(sandbox: Sandbox, input: RunCodexInSandboxInput) {
 
   await emitLog(input, {
     kind: "command",
-    message: "npx -y @openai/codex@latest --version",
-    detail: "Codex exec uses the same @latest launcher",
+    message: "npm install -g @openai/codex@latest",
+    detail: "runs once when this app thread initializes its sandbox",
   })
 
   const result = await sandbox.commands.run(
@@ -272,6 +287,20 @@ async function updateCodexCli(sandbox: Sandbox, input: RunCodexInSandboxInput) {
     kind: "setup",
     message: version,
   })
+}
+
+async function isCodexLauncherReady(sandbox: Sandbox) {
+  try {
+    const result = await sandbox.commands.run(
+      `test -x ${CODEX_LAUNCHER_PATH}`,
+      {
+        timeoutMs: 10_000,
+      }
+    )
+    return result.exitCode === 0
+  } catch {
+    return false
+  }
 }
 
 function helpIncludes(help: string, flag: string) {
@@ -307,6 +336,15 @@ function readableCodexText(value: string): string {
   } catch {
     return value
   }
+}
+
+function codexThreadIdFromEvent(event: unknown) {
+  const record = objectRecord(event)
+  if (!record) return undefined
+
+  const type = stringValue(record.type)
+  const threadId = stringValue(record.thread_id)
+  return type === "thread.started" ? threadId : undefined
 }
 
 function findString(
@@ -385,7 +423,10 @@ function summarizeCodexEvent(event: unknown): RunCodexLog | undefined {
   return undefined
 }
 
-function createStdoutLogger(onLog: RunCodexInSandboxInput["onLog"]) {
+function createStdoutLogger(
+  onLog: RunCodexInSandboxInput["onLog"],
+  onCodexThreadId: (threadId: string) => void
+) {
   let buffer = ""
 
   function emitPlainLine(line: string) {
@@ -400,6 +441,8 @@ function createStdoutLogger(onLog: RunCodexInSandboxInput["onLog"]) {
 
     try {
       const event = JSON.parse(trimmed) as unknown
+      const threadId = codexThreadIdFromEvent(event)
+      if (threadId) onCodexThreadId(threadId)
       const summary = summarizeCodexEvent(event)
       if (summary) void onLog?.(summary)
     } catch {
@@ -446,6 +489,10 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
   const githubToken = input.githubToken?.trim() || process.env.GITHUB_TOKEN
   const speed = parseSpeed(input.speed)
   const timeoutMs = input.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS
+  const existingCodexThreadId = parseGitRef(
+    input.codexThreadId,
+    "codexThreadId"
+  )
   await emitLog(input, {
     kind: "setup",
     message: input.sandboxId ? "Connecting to sandbox" : "Creating sandbox",
@@ -466,7 +513,14 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
   )
 
   try {
-    await updateCodexCli(sandbox, input)
+    const needsCodexSetup =
+      !input.sandboxId ||
+      recoveredSandbox ||
+      !(await isCodexLauncherReady(sandbox))
+
+    if (needsCodexSetup) {
+      await updateCodexCli(sandbox, input)
+    }
     await emitLog(input, { kind: "setup", message: "Preparing Codex auth" })
     await sandbox.commands.run(
       `mkdir -p ${CODEX_HOME} && chmod 700 ${CODEX_HOME}`
@@ -523,8 +577,17 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
       message: "Reading Codex CLI capabilities",
     })
     const help = await getCodexExecHelp(sandbox)
+    const resumeHelp = existingCodexThreadId
+      ? await getCodexResumeHelp(sandbox)
+      : ""
     const modelFlag =
       model && (helpIncludes(help, "--model") || helpIncludes(help, "-m,"))
+        ? `--model ${shellQuote(model)}`
+        : ""
+    const resumeModelFlag =
+      model &&
+      resumeHelp &&
+      (helpIncludes(resumeHelp, "--model") || helpIncludes(resumeHelp, "-m,"))
         ? `--model ${shellQuote(model)}`
         : ""
     const configFlags = [
@@ -537,6 +600,16 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
     ]
       .filter(Boolean)
       .join(" ")
+    const resumeConfigFlags = [
+      reasoningEffort && helpIncludes(resumeHelp, "--config")
+        ? `-c ${shellQuote(`model_reasoning_effort="${reasoningEffort}"`)}`
+        : "",
+      speed === "fast" && helpIncludes(resumeHelp, "--config")
+        ? `-c ${shellQuote('service_tier="fast"')}`
+        : "",
+    ]
+      .filter(Boolean)
+      .join(" ")
     const optionalFlags = [
       helpIncludes(help, "--full-auto") ? "--full-auto" : "",
       helpIncludes(help, "--skip-git-repo-check")
@@ -544,12 +617,26 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
         : "",
       helpIncludes(help, "--ignore-user-config") ? "--ignore-user-config" : "",
       helpIncludes(help, "--ignore-rules") ? "--ignore-rules" : "",
-      helpIncludes(help, "--ephemeral") ? "--ephemeral" : "",
       helpIncludes(help, "--json") ? "--json" : "",
     ]
       .filter(Boolean)
       .join(" ")
+    const resumeOptionalFlags = [
+      helpIncludes(resumeHelp, "--skip-git-repo-check")
+        ? "--skip-git-repo-check"
+        : "",
+      helpIncludes(resumeHelp, "--ignore-user-config")
+        ? "--ignore-user-config"
+        : "",
+      helpIncludes(resumeHelp, "--ignore-rules") ? "--ignore-rules" : "",
+      helpIncludes(resumeHelp, "--json") ? "--json" : "",
+    ]
+      .filter(Boolean)
+      .join(" ")
     const outputFlag = helpIncludes(help, "--output-last-message")
+      ? `--output-last-message ${LAST_MESSAGE_PATH}`
+      : ""
+    const resumeOutputFlag = helpIncludes(resumeHelp, "--output-last-message")
       ? `--output-last-message ${LAST_MESSAGE_PATH}`
       : ""
     const cdFlag =
@@ -557,19 +644,34 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
         ? `-C ${REPO_PATH}`
         : ""
     const cdCommand = cdFlag ? "" : `cd ${REPO_PATH} &&`
-    const codexCommand = [
-      cdCommand,
-      `CODEX_HOME=${CODEX_HOME}`,
-      `${CODEX_LAUNCHER_PATH} exec`,
-      optionalFlags,
-      configFlags,
-      modelFlag,
-      outputFlag,
-      cdFlag,
-      `< ${PROMPT_PATH}`,
-    ]
-      .filter(Boolean)
-      .join(" ")
+    const codexCommand = existingCodexThreadId
+      ? [
+          `cd ${REPO_PATH} &&`,
+          `CODEX_HOME=${CODEX_HOME}`,
+          `${CODEX_LAUNCHER_PATH} exec resume`,
+          resumeOptionalFlags,
+          resumeConfigFlags,
+          resumeModelFlag,
+          resumeOutputFlag,
+          shellQuote(existingCodexThreadId),
+          "-",
+          `< ${PROMPT_PATH}`,
+        ]
+          .filter(Boolean)
+          .join(" ")
+      : [
+          cdCommand,
+          `CODEX_HOME=${CODEX_HOME}`,
+          `${CODEX_LAUNCHER_PATH} exec`,
+          optionalFlags,
+          configFlags,
+          modelFlag,
+          outputFlag,
+          cdFlag,
+          `< ${PROMPT_PATH}`,
+        ]
+          .filter(Boolean)
+          .join(" ")
     const command = shellQuote(
       [
         "set +e",
@@ -584,7 +686,10 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
       kind: "command",
       message: compactLine(codexCommand),
     })
-    const stdoutLogger = createStdoutLogger(input.onLog)
+    let codexThreadId = existingCodexThreadId
+    const stdoutLogger = createStdoutLogger(input.onLog, (threadId) => {
+      codexThreadId = threadId
+    })
     const result = redactAuthPathOutput(
       await sandbox.commands.run(`bash -lc ${command}`, {
         envs: {
@@ -634,6 +739,7 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
 
     return {
       branchName,
+      codexThreadId,
       diff,
       exitCode: result.exitCode,
       lastMessage: await readLastMessage(sandbox),
@@ -648,7 +754,7 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
   } finally {
     await sandbox.commands
       .run(
-        `rm -f ${CODEX_HOME}/auth.json ${PROMPT_PATH} ${PREVIOUS_DIFF_PATH} ${LAST_MESSAGE_PATH} ${CODEX_LAUNCHER_PATH}`,
+        `rm -f ${CODEX_HOME}/auth.json ${PROMPT_PATH} ${PREVIOUS_DIFF_PATH} ${LAST_MESSAGE_PATH}`,
         {
           timeoutMs: 10_000,
         }
