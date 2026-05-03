@@ -10,6 +10,158 @@ const EXIT_MARKER = "__CLOUDCODE_CODEX_EXIT__"
 const DEFAULT_COMMAND_TIMEOUT_MS = 10 * 60 * 1000
 const DEFAULT_SANDBOX_LIFETIME_MS = 60 * 60 * 1000
 const CODEX_UPDATE_TIMEOUT_MS = 3 * 60 * 1000
+const BRANCH_CITIES = [
+  "abu-dhabi",
+  "accra",
+  "adelaide",
+  "alexandria",
+  "algiers",
+  "amsterdam",
+  "ankara",
+  "antwerp",
+  "athens",
+  "atlanta",
+  "auckland",
+  "austin",
+  "baltimore",
+  "barcelona",
+  "bangkok",
+  "beijing",
+  "beirut",
+  "belfast",
+  "belgrade",
+  "bergen",
+  "berlin",
+  "bilbao",
+  "birmingham",
+  "boston",
+  "bogota",
+  "bologna",
+  "bratislava",
+  "brighton",
+  "brisbane",
+  "bristol",
+  "brussels",
+  "bucharest",
+  "budapest",
+  "buenos-aires",
+  "cairo",
+  "calgary",
+  "cape-town",
+  "cardiff",
+  "casablanca",
+  "charlotte",
+  "chengdu",
+  "chicago",
+  "cologne",
+  "copenhagen",
+  "dallas",
+  "delhi",
+  "denver",
+  "detroit",
+  "doha",
+  "dublin",
+  "dubai",
+  "edinburgh",
+  "florence",
+  "frankfurt",
+  "geneva",
+  "glasgow",
+  "gothenburg",
+  "granada",
+  "guadalajara",
+  "guangzhou",
+  "hamburg",
+  "helsinki",
+  "hong-kong",
+  "honolulu",
+  "houston",
+  "istanbul",
+  "jakarta",
+  "jerusalem",
+  "johannesburg",
+  "kansas-city",
+  "karachi",
+  "krakow",
+  "kyoto",
+  "lagos",
+  "las-vegas",
+  "lausanne",
+  "leipzig",
+  "lima",
+  "lisbon",
+  "london",
+  "los-angeles",
+  "lyon",
+  "madrid",
+  "manchester",
+  "manila",
+  "marseille",
+  "melbourne",
+  "mexico-city",
+  "miami",
+  "milan",
+  "minneapolis",
+  "monaco",
+  "montreal",
+  "mumbai",
+  "munich",
+  "nairobi",
+  "naples",
+  "nashville",
+  "new-orleans",
+  "new-york",
+  "nice",
+  "oakland",
+  "osaka",
+  "oslo",
+  "ottawa",
+  "paris",
+  "philadelphia",
+  "phoenix",
+  "portland",
+  "porto",
+  "prague",
+  "quito",
+  "rio-de-janeiro",
+  "rome",
+  "rotterdam",
+  "san-antonio",
+  "san-diego",
+  "san-francisco",
+  "san-jose",
+  "san-juan",
+  "santiago",
+  "sao-paulo",
+  "seattle",
+  "seoul",
+  "seville",
+  "shanghai",
+  "shenzhen",
+  "singapore",
+  "sofia",
+  "stockholm",
+  "sydney",
+  "taipei",
+  "tallinn",
+  "tbilisi",
+  "tel-aviv",
+  "thessaloniki",
+  "tokyo",
+  "toronto",
+  "toulouse",
+  "tunis",
+  "turin",
+  "valencia",
+  "vancouver",
+  "venice",
+  "vienna",
+  "vilnius",
+  "warsaw",
+  "wellington",
+  "zagreb",
+  "zurich",
+] as const
 
 type CommandResult = {
   exitCode: number
@@ -165,16 +317,83 @@ function parseGitRef(value: string | undefined, label: string) {
 }
 
 function defaultBranchName() {
-  return `cloudcode/${new Date()
-    .toISOString()
-    .replace(/[-:.TZ]/g, "")
-    .slice(0, 14)}`
+  const city = BRANCH_CITIES[Math.floor(Math.random() * BRANCH_CITIES.length)]
+
+  return `cloudcode/${city}`
+}
+
+function shuffledCityBranchNames(preferred: string) {
+  const branchNames = BRANCH_CITIES.map((city) => `cloudcode/${city}`)
+
+  for (let index = branchNames.length - 1; index > 0; index -= 1) {
+    const randomIndex = Math.floor(Math.random() * (index + 1))
+    ;[branchNames[index], branchNames[randomIndex]] = [
+      branchNames[randomIndex],
+      branchNames[index],
+    ]
+  }
+
+  return [
+    preferred,
+    ...branchNames.filter((branchName) => branchName !== preferred),
+  ]
+}
+
+function defaultBranchNameWithSuffix() {
+  const city = BRANCH_CITIES[Math.floor(Math.random() * BRANCH_CITIES.length)]
+  const suffix = Math.random().toString(36).slice(2, 8)
+
+  return `cloudcode/${city}-${suffix}`
 }
 
 async function createSandbox(timeoutMs: number) {
   return await Sandbox.create("codex", {
     timeoutMs: Math.max(timeoutMs, DEFAULT_SANDBOX_LIFETIME_MS),
   })
+}
+
+async function createBranch(
+  sandbox: Awaited<ReturnType<typeof createSandbox>>,
+  input: RunCodexInSandboxInput,
+  branchName: string
+) {
+  await emitLog(input, {
+    kind: "command",
+    message: `git checkout -b ${branchName}`,
+  })
+  await sandbox.git.createBranch(REPO_PATH, branchName)
+}
+
+async function createDefaultBranch(
+  sandbox: Awaited<ReturnType<typeof createSandbox>>,
+  input: RunCodexInSandboxInput,
+  branchName: string
+) {
+  let lastError: unknown
+
+  for (const candidate of shuffledCityBranchNames(branchName)) {
+    try {
+      await createBranch(sandbox, input, candidate)
+      return candidate
+    } catch (error) {
+      lastError = error
+    }
+  }
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const candidate = defaultBranchNameWithSuffix()
+
+    try {
+      await createBranch(sandbox, input, candidate)
+      return candidate
+    } catch (error) {
+      lastError = error
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("Unable to create a default branch.")
 }
 
 async function connectOrCreateSandbox(
@@ -494,8 +713,8 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
   const reasoningEffort = parseReasoningEffort(input.reasoningEffort)
   const repoUrl = parseRepoUrl(input.repoUrl)
   const baseBranch = parseGitRef(input.baseBranch, "baseBranch")
-  const branchName =
-    parseGitRef(input.branchName, "branchName") ?? defaultBranchName()
+  const requestedBranchName = parseGitRef(input.branchName, "branchName")
+  let branchName = requestedBranchName ?? defaultBranchName()
   const githubToken = input.githubToken?.trim() || process.env.GITHUB_TOKEN
   const speed = parseSpeed(input.speed)
   const timeoutMs = input.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS
@@ -563,11 +782,11 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
         path: REPO_PATH,
         username: githubToken ? "x-access-token" : undefined,
       })
-      await emitLog(input, {
-        kind: "command",
-        message: `git checkout -b ${branchName}`,
-      })
-      await sandbox.git.createBranch(REPO_PATH, branchName)
+      if (requestedBranchName) {
+        await createBranch(sandbox, input, requestedBranchName)
+      } else {
+        branchName = await createDefaultBranch(sandbox, input, branchName)
+      }
       if (input.previousDiff?.trim()) {
         await emitLog(input, {
           kind: "command",
@@ -630,6 +849,13 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
       .filter(Boolean)
       .join(" ")
     const optionalFlags = [
+      helpIncludes(help, "--dangerously-bypass-approvals-and-sandbox")
+        ? "--dangerously-bypass-approvals-and-sandbox"
+        : "",
+      !helpIncludes(help, "--dangerously-bypass-approvals-and-sandbox") &&
+      helpIncludes(help, "--sandbox")
+        ? "--sandbox danger-full-access"
+        : "",
       helpIncludes(help, "--full-auto") ? "--full-auto" : "",
       helpIncludes(help, "--skip-git-repo-check")
         ? "--skip-git-repo-check"
@@ -641,6 +867,9 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
       .filter(Boolean)
       .join(" ")
     const resumeOptionalFlags = [
+      helpIncludes(resumeHelp, "--dangerously-bypass-approvals-and-sandbox")
+        ? "--dangerously-bypass-approvals-and-sandbox"
+        : "",
       helpIncludes(resumeHelp, "--full-auto") ? "--full-auto" : "",
       helpIncludes(resumeHelp, "--skip-git-repo-check")
         ? "--skip-git-repo-check"
