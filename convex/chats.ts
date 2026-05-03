@@ -156,7 +156,6 @@ export const appendRunMessages = mutation({
 export const completeAssistantMessage = mutation({
   args: {
     content: v.string(),
-    codexThreadId: v.optional(v.string()),
     error: v.optional(v.boolean()),
     messageId: v.id("messages"),
     meta: v.optional(messageMeta),
@@ -182,6 +181,23 @@ export const completeAssistantMessage = mutation({
       meta: args.meta,
       pending: false,
     })
+    await ctx.db.patch(args.threadId, {
+      ...(args.sandboxId ? { sandboxId: args.sandboxId } : {}),
+      updatedAt: Date.now(),
+    })
+  },
+})
+
+export const saveRunState = mutation({
+  args: {
+    codexThreadId: v.optional(v.string()),
+    sandboxId: v.optional(v.string()),
+    threadId: v.id("threads"),
+  },
+  handler: async (ctx, args) => {
+    const userId = await ensureCurrentUser(ctx)
+    await requireOwnedThread(ctx, args.threadId, userId)
+
     await ctx.db.patch(args.threadId, {
       ...(args.codexThreadId ? { codexThreadId: args.codexThreadId } : {}),
       ...(args.sandboxId ? { sandboxId: args.sandboxId } : {}),

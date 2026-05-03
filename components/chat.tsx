@@ -287,6 +287,7 @@ function ChatInner() {
   const completeAssistantMessage = useMutation(
     api.chats.completeAssistantMessage
   )
+  const saveRunState = useMutation(api.chats.saveRunState)
   const deleteThreadMutation = useMutation(api.chats.deleteThread)
   const updateThread = useMutation(api.chats.updateThread)
   const [activeId, setActiveId] = useState<Id<"threads"> | null>(() =>
@@ -401,16 +402,8 @@ function ChatInner() {
         id: `${time ?? Date.now()}-${Math.random().toString(36).slice(2)}`,
         time: time ?? Date.now(),
       }
-      const logs = [...(current[key] ?? []), nextLog].slice(-80)
+      const logs = [...(current[key] ?? []), nextLog].slice(-500)
       return { ...current, [key]: logs }
-    })
-  }
-
-  function clearRunLogs(messageId: Id<"messages">) {
-    setRunLogs((current) => {
-      const next = { ...current }
-      delete next[messageId as string]
-      return next
     })
   }
 
@@ -564,7 +557,6 @@ function ChatInner() {
         ...nextRunState,
       }
       await completeAssistantMessage({
-        codexThreadId: nextRunState.codexThreadId,
         content,
         messageId: assistantMessageId,
         meta: {
@@ -575,7 +567,17 @@ function ChatInner() {
         sandboxId: nextRunState.sandboxId,
         threadId: chatId,
       })
-      clearRunLogs(runMessageId)
+      if (nextRunState.codexThreadId || nextRunState.sandboxId) {
+        try {
+          await saveRunState({
+            codexThreadId: nextRunState.codexThreadId,
+            sandboxId: nextRunState.sandboxId,
+            threadId: chatId,
+          })
+        } catch (error) {
+          console.warn("Unable to save Codex run state.", error)
+        }
+      }
     } catch (err) {
       const aborted = err instanceof DOMException && err.name === "AbortError"
       const msg = aborted
@@ -590,9 +592,6 @@ function ChatInner() {
           messageId: assistantMessageId,
           threadId: chatId,
         })
-      }
-      if (assistantMessageId) {
-        clearRunLogs(assistantMessageId)
       }
     } finally {
       setBusy(false)
@@ -838,7 +837,12 @@ function Sidebar({
   return (
     <aside className="flex h-full w-64 shrink-0 flex-col border-r border-border/60 bg-sidebar text-sidebar-foreground">
       <div className="px-[1.125rem] pt-6 pb-5">
-        <span className={cn(GeistPixelSquare.className, "text-4xl tracking-tight text-foreground")}>
+        <span
+          className={cn(
+            GeistPixelSquare.className,
+            "text-4xl tracking-tight text-foreground"
+          )}
+        >
           CloudCode
         </span>
       </div>
@@ -927,7 +931,7 @@ function FolderGroup({
         className="flex w-full items-center gap-2 px-2.5 py-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
       >
         <Folder className="size-3.5 shrink-0" />
-        <span className="truncate flex-1 text-left">{label}</span>
+        <span className="flex-1 truncate text-left">{label}</span>
         <ChevronRight
           className={cn(
             "size-3.5 shrink-0 transition-transform",
@@ -1197,9 +1201,10 @@ function MessageBlock({ logs, message }: { logs: RunLog[]; message: Message }) {
 
   return (
     <div className="space-y-3">
-      {message.pending ? (
-        <PendingRunLogs logs={logs} />
-      ) : (
+      {message.pending || logs.length > 0 ? (
+        <RunLogs logs={logs} pending={Boolean(message.pending)} />
+      ) : null}
+      {!message.pending ? (
         <Markdown
           text={message.content}
           className={cn(
@@ -1207,7 +1212,7 @@ function MessageBlock({ logs, message }: { logs: RunLog[]; message: Message }) {
             message.error && "text-destructive"
           )}
         />
-      )}
+      ) : null}
       {message.meta?.branch ? (
         <div className="font-mono text-[11px] text-muted-foreground">
           ↳ {message.meta.branch}
@@ -1217,20 +1222,40 @@ function MessageBlock({ logs, message }: { logs: RunLog[]; message: Message }) {
   )
 }
 
-function PendingRunLogs({ logs }: { logs: RunLog[] }) {
-  const visible = logs.slice(-8)
+function RunLogs({ logs, pending }: { logs: RunLog[]; pending: boolean }) {
+  const [open, setOpen] = useState(false)
+  const visible = logs
   const current = logs.at(-1)
+  const expanded = pending || open
 
   return (
     <div className="space-y-2 text-sm text-muted-foreground">
-      <div className="flex items-center gap-2">
-        <Loader2 className="size-3.5 animate-spin" />
+      <button
+        type="button"
+        onClick={() => {
+          if (!pending) setOpen((currentOpen) => !currentOpen)
+        }}
+        className={cn(
+          "flex w-full min-w-0 items-center gap-2 text-left",
+          !pending && "cursor-pointer hover:text-foreground"
+        )}
+        aria-expanded={expanded}
+      >
+        <ChevronRight
+          className={cn(
+            "size-3.5 shrink-0 transition-transform",
+            expanded && "rotate-90"
+          )}
+        />
+        {pending ? <Loader2 className="size-3.5 animate-spin" /> : null}
         <span className="truncate">
-          {current?.message ?? "Starting Codex run"}
+          {pending
+            ? (current?.message ?? "Starting Codex run")
+            : (current?.message ?? "Codex run completed")}
         </span>
-      </div>
+      </button>
 
-      {visible.length > 0 ? (
+      {expanded && visible.length > 0 ? (
         <div className="space-y-1 border-l border-border/70 pl-3">
           {visible.map((log) => (
             <RunLogRow key={log.id} log={log} />
