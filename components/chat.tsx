@@ -26,6 +26,7 @@ import {
   SquarePen,
   Square,
   Terminal,
+  Trash2,
 } from "lucide-react"
 import { useTheme } from "next-themes"
 import {
@@ -372,6 +373,7 @@ function ChatInner() {
     api.chats.completeAssistantMessage
   )
   const saveRunState = useMutation(api.chats.saveRunState)
+  const clearSandbox = useMutation(api.chats.clearSandbox)
   const deleteThreadMutation = useMutation(api.chats.deleteThread)
   const updateThread = useMutation(api.chats.updateThread)
   const [activeId, setActiveId] = useState<Id<"threads"> | null>(() =>
@@ -693,6 +695,35 @@ function ChatInner() {
     }
   }
 
+  async function killActiveSandbox() {
+    if (!active) return
+    const sandboxId =
+      threadRunStateRef.current[active.id as string]?.sandboxId ??
+      active.sandboxId
+    if (!sandboxId) return
+
+    try {
+      await fetch("/api/sandbox/kill", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sandboxId }),
+      })
+    } catch (error) {
+      console.warn("Failed to kill sandbox.", error)
+    }
+
+    threadRunStateRef.current[active.id as string] = {
+      ...threadRunStateRef.current[active.id as string],
+      sandboxId: undefined,
+    }
+
+    try {
+      await clearSandbox({ threadId: active.id })
+    } catch (error) {
+      console.warn("Failed to clear sandbox state.", error)
+    }
+  }
+
   function onSubmit(e: FormEvent) {
     e.preventDefault()
     send(input)
@@ -722,6 +753,8 @@ function ChatInner() {
           title={active?.title ?? null}
           repoUrl={repoUrl}
           isNew={!active}
+          sandboxId={active?.sandboxId ?? null}
+          onKillSandbox={killActiveSandbox}
         />
         <div ref={threadRef} className="flex-1 overflow-y-auto">
           <div className="mx-auto flex min-h-full max-w-2xl flex-col px-6 pt-16 pb-40">
@@ -866,16 +899,20 @@ function TopBar({
   title,
   repoUrl,
   isNew,
+  sandboxId,
+  onKillSandbox,
 }: {
   title: string | null
   repoUrl: string
   isNew: boolean
+  sandboxId: string | null
+  onKillSandbox: () => void | Promise<void>
 }) {
   const displayTitle = title?.trim() || (isNew ? "New chat" : "Untitled")
   const repo = repoUrl ? repoLabel(repoUrl) : ""
 
   return (
-    <header className="flex h-12 shrink-0 items-center gap-2.5 border-b border-border/60 bg-background/80 px-4 backdrop-blur-xl">
+    <header className="flex h-[3.25rem] shrink-0 items-center gap-2.5 border-b border-border/60 bg-background/80 px-4 backdrop-blur-xl">
       <span className="min-w-0 truncate text-sm font-medium text-foreground/85">
         {displayTitle}
       </span>
@@ -890,7 +927,167 @@ function TopBar({
           </div>
         </>
       ) : null}
+      <div className="ml-auto flex items-center gap-2">
+        {sandboxId ? (
+          <SandboxStatus sandboxId={sandboxId} onKill={onKillSandbox} />
+        ) : null}
+      </div>
     </header>
+  )
+}
+
+type SandboxInfo = {
+  startedAt: number
+  endAt: number
+}
+
+function formatCountdown(ms: number) {
+  if (ms <= 0) return "0s"
+  const totalSeconds = Math.floor(ms / 1000)
+  const h = Math.floor(totalSeconds / 3600)
+  const m = Math.floor((totalSeconds % 3600) / 60)
+  const s = totalSeconds % 60
+  if (h > 0) return `${h}h ${m}m`
+  if (m > 0) return `${m}m ${s.toString().padStart(2, "0")}s`
+  return `${s}s`
+}
+
+function formatElapsed(ms: number) {
+  if (ms < 60_000) {
+    const s = Math.floor(ms / 1000)
+    return `${s} ${s === 1 ? "second" : "seconds"}`
+  }
+  if (ms < 3600_000) {
+    const m = Math.floor(ms / 60_000)
+    return `${m} ${m === 1 ? "minute" : "minutes"}`
+  }
+  const totalMinutes = Math.floor(ms / 60_000)
+  const h = Math.floor(totalMinutes / 60)
+  const m = totalMinutes % 60
+  if (m === 0) return `${h} ${h === 1 ? "hour" : "hours"}`
+  return `${h}h ${m}m`
+}
+
+function SandboxStatus({
+  sandboxId,
+  onKill,
+}: {
+  sandboxId: string
+  onKill: () => void | Promise<void>
+}) {
+  const [info, setInfo] = useState<SandboxInfo | null>(null)
+  const [missing, setMissing] = useState(false)
+  const [killing, setKilling] = useState(false)
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    setInfo(null)
+    setMissing(false)
+    let cancelled = false
+
+    async function load() {
+      try {
+        const res = await fetch(
+          `/api/sandbox/info?sandboxId=${encodeURIComponent(sandboxId)}`,
+          { cache: "no-store" }
+        )
+        const data = await res.json()
+        if (cancelled) return
+        if (!res.ok) {
+          setMissing(true)
+          setInfo(null)
+          return
+        }
+        setMissing(false)
+        setInfo({ startedAt: data.startedAt, endAt: data.endAt })
+      } catch {
+        if (!cancelled) setMissing(true)
+      }
+    }
+
+    void load()
+    const id = window.setInterval(load, 15_000)
+    return () => {
+      cancelled = true
+      window.clearInterval(id)
+    }
+  }, [sandboxId])
+
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(id)
+  }, [])
+
+  async function handleKill() {
+    if (killing) return
+    setKilling(true)
+    try {
+      await onKill()
+    } finally {
+      setKilling(false)
+    }
+  }
+
+  if (missing) {
+    return (
+      <span className="text-xs text-muted-foreground">Sandbox not running</span>
+    )
+  }
+
+  const elapsed = info ? Math.max(0, now - info.startedAt) : 0
+  const remaining = info ? Math.max(0, info.endAt - now) : 0
+
+  const tooltip = info
+    ? `Sandbox ${sandboxId}\nStarted ${new Date(info.startedAt).toLocaleString()}\nExpires ${new Date(info.endAt).toLocaleString()}`
+    : `Sandbox ${sandboxId}`
+
+  return (
+    <div className="flex items-center gap-6">
+      <Stat
+        label="Timeout in"
+        value={info ? formatCountdown(remaining) : "—"}
+        title={tooltip}
+      />
+      <Stat
+        label="Running for"
+        value={info ? formatElapsed(elapsed) : "—"}
+        title={tooltip}
+      />
+      <button
+        type="button"
+        onClick={handleKill}
+        disabled={killing}
+        aria-label="Kill sandbox"
+        title="Kill sandbox"
+        className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-destructive disabled:opacity-50"
+      >
+        {killing ? (
+          <Loader2 className="size-3.5 animate-spin" />
+        ) : (
+          <Trash2 className="size-3.5" />
+        )}
+        <span>{killing ? "Killing" : "Kill sandbox"}</span>
+      </button>
+    </div>
+  )
+}
+
+function Stat({
+  label,
+  value,
+  title,
+}: {
+  label: string
+  value: string
+  title?: string
+}) {
+  return (
+    <div className="flex flex-col gap-0.5 leading-none" title={title}>
+      <span className="text-[9px] font-medium tracking-wider text-muted-foreground uppercase">
+        {label}
+      </span>
+      <span className="text-[13px] text-foreground tabular-nums">{value}</span>
+    </div>
   )
 }
 
@@ -1398,7 +1595,10 @@ function buildFileTree(files: DiffFileStat[]): TreeNode[] {
   return roots
 }
 
-function aggregateNode(node: TreeNode): { additions: number; deletions: number } {
+function aggregateNode(node: TreeNode): {
+  additions: number
+  deletions: number
+} {
   if (node.kind === "file") {
     return { additions: node.stat.additions, deletions: node.stat.deletions }
   }
@@ -1424,33 +1624,34 @@ function collectDirPaths(nodes: TreeNode[], acc: string[] = []): string[] {
   return acc
 }
 
-const FILE_BADGE_STYLES: Record<
-  string,
-  { label: string; className: string }
-> = {
-  ts: { label: "TS", className: "text-sky-600 dark:text-sky-400" },
-  tsx: { label: "TSX", className: "text-sky-600 dark:text-sky-400" },
-  js: { label: "JS", className: "text-amber-600 dark:text-amber-400" },
-  jsx: { label: "JSX", className: "text-amber-600 dark:text-amber-400" },
-  json: { label: "JSON", className: "text-amber-600 dark:text-amber-400" },
-  md: { label: "MD", className: "text-muted-foreground" },
-  css: { label: "CSS", className: "text-violet-600 dark:text-violet-400" },
-  html: { label: "HTML", className: "text-orange-600 dark:text-orange-400" },
-  py: { label: "PY", className: "text-emerald-600 dark:text-emerald-400" },
-  go: { label: "GO", className: "text-cyan-600 dark:text-cyan-400" },
-  rs: { label: "RS", className: "text-orange-700 dark:text-orange-400" },
-  sh: { label: "SH", className: "text-muted-foreground" },
-  yml: { label: "YML", className: "text-rose-600 dark:text-rose-400" },
-  yaml: { label: "YML", className: "text-rose-600 dark:text-rose-400" },
-  sql: { label: "SQL", className: "text-pink-600 dark:text-pink-400" },
-}
+const FILE_BADGE_STYLES: Record<string, { label: string; className: string }> =
+  {
+    ts: { label: "TS", className: "text-sky-600 dark:text-sky-400" },
+    tsx: { label: "TSX", className: "text-sky-600 dark:text-sky-400" },
+    js: { label: "JS", className: "text-amber-600 dark:text-amber-400" },
+    jsx: { label: "JSX", className: "text-amber-600 dark:text-amber-400" },
+    json: { label: "JSON", className: "text-amber-600 dark:text-amber-400" },
+    md: { label: "MD", className: "text-muted-foreground" },
+    css: { label: "CSS", className: "text-violet-600 dark:text-violet-400" },
+    html: { label: "HTML", className: "text-orange-600 dark:text-orange-400" },
+    py: { label: "PY", className: "text-emerald-600 dark:text-emerald-400" },
+    go: { label: "GO", className: "text-cyan-600 dark:text-cyan-400" },
+    rs: { label: "RS", className: "text-orange-700 dark:text-orange-400" },
+    sh: { label: "SH", className: "text-muted-foreground" },
+    yml: { label: "YML", className: "text-rose-600 dark:text-rose-400" },
+    yaml: { label: "YML", className: "text-rose-600 dark:text-rose-400" },
+    sql: { label: "SQL", className: "text-pink-600 dark:text-pink-400" },
+  }
 
 function FileBadge({ name }: { name: string }) {
   const ext = name.includes(".") ? name.split(".").pop()!.toLowerCase() : ""
   const style = FILE_BADGE_STYLES[ext]
   if (!style) {
     return (
-      <FileIcon className="size-3.5 shrink-0 text-muted-foreground" strokeWidth={2} />
+      <FileIcon
+        className="size-3.5 shrink-0 text-muted-foreground"
+        strokeWidth={2}
+      />
     )
   }
   return (
@@ -1477,10 +1678,7 @@ function DiffStatBadge({
 }) {
   return (
     <span
-      className={cn(
-        "shrink-0 font-mono text-[11px] tabular-nums",
-        className
-      )}
+      className={cn("shrink-0 font-mono text-[11px] tabular-nums", className)}
     >
       <span className="text-emerald-600 dark:text-emerald-400">
         +{additions}

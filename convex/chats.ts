@@ -206,6 +206,21 @@ export const saveRunState = mutation({
   },
 })
 
+export const clearSandbox = mutation({
+  args: {
+    threadId: v.id("threads"),
+  },
+  handler: async (ctx, args) => {
+    const userId = await ensureCurrentUser(ctx)
+    await requireOwnedThread(ctx, args.threadId, userId)
+
+    await ctx.db.patch(args.threadId, {
+      sandboxId: undefined,
+      updatedAt: Date.now(),
+    })
+  },
+})
+
 export const updateThread = mutation({
   args: {
     model: v.optional(model),
