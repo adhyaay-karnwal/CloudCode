@@ -701,7 +701,7 @@ function redactAuthPathOutput(result: CommandResult) {
 
 function restoredConversationPrompt(context: string, prompt: string) {
   return [
-    "The previous sandbox state was restored into this fresh sandbox by applying the saved git diff. Continue the same task using this prior Cloudcode conversation context.",
+    "The previous sandbox expired, so this is a fresh sandbox. The saved git diff has already been applied. Use this handoff as the current task state and continue from it.",
     context.trim(),
     "Current user request:",
     prompt,
