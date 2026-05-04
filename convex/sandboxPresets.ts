@@ -6,16 +6,33 @@ import type { MutationCtx, QueryCtx } from "./_generated/server"
 import { ensureCurrentUser, getCurrentUser } from "./lib/users"
 
 const TOOL_IDS = new Set([
+  "auto-detect",
   "bun",
   "flutter",
   "node-pnpm",
   "python",
   "go",
   "rust",
+  "uv",
+  "conda",
+  "ruby",
+  "java",
+  "kotlin",
+  "dotnet",
+  "elixir",
+  "zig",
+  "swift",
 ])
 
 const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 const ENCRYPTED_SECRET_PREFIX = "cloudcode:v1:"
+const DEFAULT_PRESETS = [
+  {
+    installScript: undefined,
+    name: "Auto-detect",
+    tools: ["auto-detect"],
+  },
+] as const
 
 function cleanName(name: string) {
   const trimmed = name.trim()
@@ -152,6 +169,41 @@ export const create = mutation({
       updatedAt: now,
       userId,
     })
+  },
+})
+
+export const ensureDefaultPresets = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await ensureCurrentUser(ctx)
+    const now = Date.now()
+    const ensuredIds: Id<"sandboxPresets">[] = []
+
+    for (const preset of DEFAULT_PRESETS) {
+      const existing = await ctx.db
+        .query("sandboxPresets")
+        .withIndex("by_user_updated", (q) => q.eq("userId", userId))
+        .filter((q) => q.eq(q.field("name"), preset.name))
+        .first()
+
+      if (existing) {
+        ensuredIds.push(existing._id)
+        continue
+      }
+
+      ensuredIds.push(
+        await ctx.db.insert("sandboxPresets", {
+          createdAt: now,
+          installScript: preset.installScript,
+          name: preset.name,
+          tools: [...preset.tools],
+          updatedAt: now,
+          userId,
+        })
+      )
+    }
+
+    return ensuredIds
   },
 })
 

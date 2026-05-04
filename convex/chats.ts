@@ -90,6 +90,7 @@ export const list = query({
           .collect()
 
         return {
+          baseBranch: thread.baseBranch,
           codexThreadId: thread.codexThreadId,
           createdAt: thread.createdAt,
           id: thread._id,
@@ -122,6 +123,7 @@ export const list = query({
 
 export const createThread = mutation({
   args: {
+    baseBranch: v.optional(v.string()),
     model,
     prompt: v.string(),
     repoUrl: v.string(),
@@ -138,7 +140,9 @@ export const createThread = mutation({
       userId
     )
     const now = Date.now()
+    const trimmedBaseBranch = args.baseBranch?.trim()
     const threadId = await ctx.db.insert("threads", {
+      ...(trimmedBaseBranch ? { baseBranch: trimmedBaseBranch } : {}),
       createdAt: now,
       model: args.model,
       repoUrl: args.repoUrl,

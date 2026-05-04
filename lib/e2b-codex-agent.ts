@@ -12,6 +12,7 @@ import {
   writeCloudcodeEnvLocal,
   type SandboxPresetEnvVar,
 } from "./sandbox-env"
+import { smartToolingInstallScript } from "./smart-tooling"
 
 const CODEX_HOME = "/home/user/.codex"
 const REPO_PATH = "/home/user/repo"
@@ -599,23 +600,25 @@ async function updateCodexCli(sandbox: Sandbox, input: RunCodexInSandboxInput) {
 function presetPathExports(preset?: SandboxPresetInput) {
   const paths = [
     "/home/user/.bun/bin",
+    "/home/user/.cloudcode/bin",
+    "/home/user/.local/share/mise/shims",
     "/home/user/.cloudcode/flutter/bin",
     "/home/user/.cargo/bin",
     "/usr/local/go/bin",
+    "/home/user/.cloudcode/go/bin",
     "/home/user/go/bin",
     "/home/user/.local/bin",
     "/home/user/.cloudcode/miniconda3/bin",
     "/home/user/.dotnet",
     "/home/user/.cloudcode/zig",
     "/home/user/.cloudcode/swift/usr/bin",
+    "/home/user/.cloudcode/kotlinc/bin",
   ]
 
   return [
     "#!/usr/bin/env bash",
     `export PATH="${paths.join(":")}:$PATH"`,
     'export DOTNET_ROOT="/home/user/.dotnet"',
-    'export SDKMAN_DIR="/home/user/.sdkman"',
-    '[ -s "$SDKMAN_DIR/bin/sdkman-init.sh" ] && { set +u; . "$SDKMAN_DIR/bin/sdkman-init.sh"; set -u; }',
     ...(preset?.secrets ?? []).map(
       (secret) => `export ${secret.name}=${shellQuote(secret.value)}`
     ),
@@ -636,6 +639,10 @@ function presetProfileSnippet(preset?: SandboxPresetInput) {
 }
 
 function presetToolInstallScript(tool: string) {
+  if (tool === "auto-detect") {
+    return smartToolingInstallScript()
+  }
+
   if (tool === "bun") {
     return [
       "if ! command -v bun >/dev/null 2>&1; then",
@@ -683,10 +690,20 @@ function presetToolInstallScript(tool: string) {
 
   if (tool === "go") {
     return [
-      "if ! command -v go >/dev/null 2>&1; then",
-      "  echo 'Go is not installed in the base image. Add a custom install script for a pinned Go version.' >&2",
-      "  exit 1",
+      "if ! command -v go >/dev/null 2>&1 && [ ! -x /home/user/.cloudcode/go/bin/go ]; then",
+      "  mkdir -p /home/user/.cloudcode",
+      '  GO_ARCH="$(uname -m)"',
+      '  case "$GO_ARCH" in',
+      '    x86_64) GO_ARCH="amd64" ;;',
+      '    aarch64|arm64) GO_ARCH="arm64" ;;',
+      "  esac",
+      '  GO_VERSION="$(curl -fsSL https://go.dev/VERSION?m=text | head -n1)"',
+      '  curl -fsSL "https://go.dev/dl/${GO_VERSION}.linux-${GO_ARCH}.tar.gz" -o /tmp/go.tar.gz',
+      "  rm -rf /home/user/.cloudcode/go",
+      "  tar -xzf /tmp/go.tar.gz -C /home/user/.cloudcode",
+      "  rm -f /tmp/go.tar.gz",
       "fi",
+      'export PATH="/home/user/.cloudcode/go/bin:$PATH"',
       "go version",
     ].join("\n")
   }
@@ -753,14 +770,16 @@ function presetToolInstallScript(tool: string) {
       "  echo 'Kotlin requires Java. Enable the Java preset tool as well.' >&2",
       "  exit 1",
       "fi",
-      "if [ ! -s /home/user/.sdkman/bin/sdkman-init.sh ]; then",
-      "  curl -s https://get.sdkman.io | bash",
+      "if [ ! -x /home/user/.cloudcode/kotlinc/bin/kotlin ]; then",
+      "  mkdir -p /home/user/.cloudcode",
+      '  KOTLIN_VERSION="$(curl -fsSL https://api.github.com/repos/JetBrains/kotlin/releases/latest | python3 -c "import json,sys; print(json.load(sys.stdin)[\\"tag_name\\"].lstrip(\\"v\\"))")"',
+      '  curl -fsSL "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip" -o /tmp/kotlin.zip',
+      "  command -v unzip >/dev/null 2>&1 || sudo apt-get install -y unzip",
+      "  rm -rf /home/user/.cloudcode/kotlinc",
+      "  unzip -q /tmp/kotlin.zip -d /home/user/.cloudcode",
+      "  rm -f /tmp/kotlin.zip",
       "fi",
-      'export SDKMAN_DIR="/home/user/.sdkman"',
-      'set +u; . "$SDKMAN_DIR/bin/sdkman-init.sh"; set -u',
-      "if ! command -v kotlin >/dev/null 2>&1; then",
-      "  sdk install kotlin",
-      "fi",
+      'export PATH="/home/user/.cloudcode/kotlinc/bin:$PATH"',
       "kotlin -version",
     ].join("\n")
   }
@@ -807,14 +826,15 @@ function presetToolInstallScript(tool: string) {
 
   if (tool === "swift") {
     return [
-      "if ! command -v swift >/dev/null 2>&1; then",
+      "if [ ! -x /home/user/.cloudcode/swift/usr/bin/swift ]; then",
       "  sudo apt-get update -y",
-      "  sudo apt-get install -y binutils git gnupg2 libc6-dev libcurl4-openssl-dev libedit2 libgcc-11-dev libpython3-dev libsqlite3-0 libstdc++-11-dev libxml2-dev libz3-dev pkg-config tzdata unzip zlib1g-dev",
+      "  sudo apt-get install -y binutils git gnupg2 libc6-dev libcurl4-openssl-dev libedit2 libpython3-dev libsqlite3-0 libxml2-dev libz3-dev pkg-config tzdata unzip zlib1g-dev",
       "  mkdir -p /home/user/.cloudcode",
-      '  UBUNTU_VERSION="$(. /etc/os-release && echo "$VERSION_ID" | tr -d .)"',
-      '  SWIFT_PLATFORM="ubuntu${UBUNTU_VERSION}"',
-      '  SWIFT_URL="https://download.swift.org/swift-6.0.3-release/${SWIFT_PLATFORM}/swift-6.0.3-RELEASE/swift-6.0.3-RELEASE-${SWIFT_PLATFORM}.tar.gz"',
-      '  curl -fsSL "$SWIFT_URL" -o /tmp/swift.tar.gz',
+      '  SWIFT_VERSION="6.0.3"',
+      '  SWIFT_DIR="ubuntu2204"',
+      '  SWIFT_FILE="ubuntu22.04"',
+      '  SWIFT_URL="https://download.swift.org/swift-${SWIFT_VERSION}-release/${SWIFT_DIR}/swift-${SWIFT_VERSION}-RELEASE/swift-${SWIFT_VERSION}-RELEASE-${SWIFT_FILE}.tar.gz"',
+      '  curl -fL "$SWIFT_URL" -o /tmp/swift.tar.gz',
       "  rm -rf /home/user/.cloudcode/swift",
       "  mkdir -p /home/user/.cloudcode/swift",
       "  tar -xzf /tmp/swift.tar.gz -C /home/user/.cloudcode/swift --strip-components=1",
@@ -883,7 +903,13 @@ async function installSandboxPreset(
     "set -e",
     "export HOME=/home/user",
     `. ${PRESET_ENV_PATH}`,
-    ...preset.tools.map(presetToolInstallScript).filter(Boolean),
+    ...preset.tools
+      .map((tool) => {
+        const script = presetToolInstallScript(tool)
+        if (!script) return ""
+        return [`echo "::cloudcode-preset-tool::${tool}"`, script].join("\n")
+      })
+      .filter(Boolean),
     preset.installScript
       ? [
           "# Custom preset install script",
@@ -911,23 +937,34 @@ async function installSandboxPreset(
   )
 
   if (exitCode !== 0) {
+    const rawStdout = result.stdout.replace(
+      new RegExp(`\\n?${PRESET_EXIT_MARKER}\\d+\\s*$`),
+      ""
+    )
     const output = [
       ...tailCompactLines(result.stderr),
-      ...tailCompactLines(
-        result.stdout.replace(
-          new RegExp(`\\n?${PRESET_EXIT_MARKER}\\d+\\s*$`),
-          ""
-        )
-      ),
-    ].slice(-8)
+      ...tailCompactLines(rawStdout),
+    ].slice(-30)
+
+    const lastToolMarker = rawStdout.match(
+      /::cloudcode-preset-tool::([^\n]+)/g
+    )
+    const failingTool = lastToolMarker?.at(-1)?.split("::").at(-1)?.trim()
+
+    console.error(
+      `[preset-install] "${preset.name}" failed (exit ${exitCode})\n--- stderr ---\n${result.stderr}\n--- stdout ---\n${rawStdout}\n--- script ---\n${installCommand}`
+    )
 
     throw new Error(
       [
         `Preset "${preset.name}" failed during install with exit code ${exitCode}.`,
+        failingTool ? `Failing tool: ${failingTool}` : "",
         exitCode === 137
           ? "The install process was killed by the sandbox. This usually means the custom install script used too much memory or CPU. Remove heavy dependency installs like `bun install` from the preset script; let Codex run them later when needed."
           : "",
-        output.length ? output.join("\n") : "",
+        output.length
+          ? output.join("\n")
+          : "(No output captured. See server log for full stderr/stdout/script.)",
       ]
         .filter(Boolean)
         .join("\n")
@@ -955,27 +992,36 @@ async function runPresetInstallCommand(
     "exit 0",
   ].join("\n")
 
-  const result = await sandbox.commands.run(
-    `bash -lc ${shellQuote(wrappedInstallCommand)}`,
-    {
-      envs: {
-        HOME: "/home/user",
-      },
-      onStderr: (data) => {
-        const trimmed = compactLine(data)
-        if (trimmed) {
-          void input.onLog?.({ kind: "stderr", message: trimmed })
-        }
-      },
-      onStdout: (data) => {
-        const trimmed = compactLine(data)
-        if (trimmed) {
-          void input.onLog?.({ kind: "stdout", message: trimmed })
-        }
-      },
-      timeoutMs: PRESET_INSTALL_TIMEOUT_MS,
-    }
-  )
+  let result: CommandResult
+
+  try {
+    result = await sandbox.commands.run(
+      `bash -lc ${shellQuote(wrappedInstallCommand)}`,
+      {
+        envs: {
+          HOME: "/home/user",
+        },
+        onStderr: (data) => {
+          const trimmed = compactLine(data)
+          if (trimmed) {
+            void input.onLog?.({ kind: "stderr", message: trimmed })
+          }
+        },
+        onStdout: (data) => {
+          const trimmed = compactLine(data)
+          if (trimmed) {
+            void input.onLog?.({ kind: "stdout", message: trimmed })
+          }
+        },
+        timeoutMs: PRESET_INSTALL_TIMEOUT_MS,
+      }
+    )
+  } catch (error) {
+    const failedResult = commandErrorResult(error)
+    if (!failedResult) throw error
+    result = failedResult
+  }
+
   const markerMatch = result.stdout.match(
     new RegExp(`\\n?${PRESET_EXIT_MARKER}(\\d+)`)
   )
@@ -983,6 +1029,18 @@ async function runPresetInstallCommand(
   return {
     exitCode: markerMatch ? Number(markerMatch[1]) : result.exitCode,
     result,
+  }
+}
+
+function commandErrorResult(error: unknown): CommandResult | undefined {
+  const result = (error as { result?: Partial<CommandResult> })?.result
+
+  if (!result || typeof result.exitCode !== "number") return undefined
+
+  return {
+    exitCode: result.exitCode,
+    stderr: typeof result.stderr === "string" ? result.stderr : "",
+    stdout: typeof result.stdout === "string" ? result.stdout : "",
   }
 }
 

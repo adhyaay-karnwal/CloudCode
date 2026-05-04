@@ -87,6 +87,7 @@ export default defineSchema({
   }).index("by_user_updated", ["userId", "updatedAt"]),
 
   threads: defineTable({
+    baseBranch: v.optional(v.string()),
     codexThreadId: v.optional(v.string()),
     createdAt: v.number(),
     model,

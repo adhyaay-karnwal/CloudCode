@@ -1,12 +1,6 @@
 "use client"
 
 import { Show, SignInButton, useClerk } from "@clerk/nextjs"
-import {
-  File as PierreFile,
-  type FileContents,
-  type FileOptions,
-  type ThemeTypes,
-} from "@pierre/diffs/react"
 import { useMutation, useQuery } from "convex/react"
 import {
   ArrowUp,
@@ -36,12 +30,15 @@ import {
   X,
 } from "lucide-react"
 import { useTheme } from "next-themes"
+import dynamic from "next/dynamic"
 import {
-  type CSSProperties,
   type ChangeEvent,
   type FormEvent,
   type KeyboardEvent,
   type PointerEvent as ReactPointerEvent,
+  type UIEvent as ReactUIEvent,
+  memo,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -54,11 +51,7 @@ import type { Terminal as XTermTerminal } from "@xterm/xterm"
 import { GeistPixelSquare } from "geist/font/pixel"
 
 import { Button } from "@/components/ui/button"
-import {
-  FileBrowser,
-  type FileBrowserOpenMode,
-} from "@/components/file-browser"
-import { FileEditorPanel } from "@/components/file-editor"
+import type { FileBrowserOpenMode } from "@/components/file-browser"
 import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
 import { useStoreUserEffect } from "@/hooks/use-store-user-effect"
@@ -68,6 +61,21 @@ import {
   type DiffStats,
 } from "@/lib/diff-metadata"
 import { cn } from "@/lib/utils"
+
+const FileBrowser = dynamic(
+  () => import("@/components/file-browser").then((mod) => mod.FileBrowser),
+  { ssr: false }
+)
+
+const FileEditorPanel = dynamic(
+  () => import("@/components/file-editor").then((mod) => mod.FileEditorPanel),
+  { ssr: false }
+)
+
+const CodeBlock = dynamic(
+  () => import("@/components/code-block").then((mod) => mod.CodeBlock),
+  { ssr: false }
+)
 
 type Role = "user" | "assistant"
 
@@ -151,6 +159,7 @@ type AuthStatus = {
 }
 
 type ChatRecord = {
+  baseBranch?: string
   codexThreadId?: string
   id: Id<"threads">
   repoUrl: string
@@ -193,6 +202,7 @@ const THINKINGS = ["none", "low", "medium", "high", "xhigh"] as const
 type Thinking = (typeof THINKINGS)[number]
 
 const REPO_KEY = "cloudcode:repoUrl"
+const BASE_BRANCH_KEY = "cloudcode:baseBranch"
 const MODEL_KEY = "cloudcode:model"
 const PRESET_KEY = "cloudcode:sandboxPresetId"
 const HANDOFF_CONTENT_LIMIT = 1_200
@@ -323,6 +333,8 @@ const SPEED_KEY = "cloudcode:speed"
 const THINKING_KEY = "cloudcode:thinking"
 const ACTIVE_KEY = "cloudcode:activeChatId"
 const TERMINAL_BUFFER_LIMIT = 2_000
+
+const EMPTY_LOGS: RunLog[] = []
 
 type TerminalAssetModules = {
   FitAddon: typeof import("@xterm/addon-fit").FitAddon
@@ -562,6 +574,12 @@ const THINKING_LABEL: Record<Thinking, string> = {
 
 const PRESET_TOOLS = [
   {
+    description:
+      "Uses mise to install versions detected from repo config files.",
+    id: "auto-detect",
+    label: "Auto-detect",
+  },
+  {
     description: "Installs Bun into the sandbox user profile.",
     id: "bun",
     label: "Bun",
@@ -740,6 +758,9 @@ function ChatInner() {
   const completeAssistantMessage = useMutation(
     api.chats.completeAssistantMessage
   )
+  const ensureDefaultPresets = useMutation(
+    api.sandboxPresets.ensureDefaultPresets
+  )
   const saveRunState = useMutation(api.chats.saveRunState)
   const clearSandbox = useMutation(api.chats.clearSandbox)
   const clearSandboxSnapshot = useMutation(api.chats.clearSandboxSnapshot)
@@ -756,6 +777,11 @@ function ChatInner() {
   const [input, setInput] = useState("")
   const [draftRepo, setDraftRepo] = useState(() =>
     typeof window === "undefined" ? "" : (localStorage.getItem(REPO_KEY) ?? "")
+  )
+  const [draftBaseBranch, setDraftBaseBranch] = useState(() =>
+    typeof window === "undefined"
+      ? ""
+      : (localStorage.getItem(BASE_BRANCH_KEY) ?? "")
   )
   const [draftModel, setDraftModel] = useState<Model>(() => {
     if (typeof window === "undefined") return "gpt-5.5"
@@ -787,6 +813,7 @@ function ChatInner() {
         "")
   )
   const [editingRepo, setEditingRepo] = useState(false)
+  const [newChatOpen, setNewChatOpen] = useState(false)
   const [modelOpen, setModelOpen] = useState(false)
   const [presetOpen, setPresetOpen] = useState(false)
   const [speedOpen, setSpeedOpen] = useState(false)
@@ -814,17 +841,28 @@ function ChatInner() {
   const threadRunStateRef = useRef<Record<string, CachedRunState>>({})
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const threadRef = useRef<HTMLDivElement | null>(null)
+  const isAtBottomRef = useRef(true)
 
   function scrollThreadToBottom() {
     const el = threadRef.current
     if (!el) return
     el.style.scrollBehavior = "auto"
     el.scrollTop = el.scrollHeight
+    isAtBottomRef.current = true
+  }
+
+  function onThreadScroll(event: ReactUIEvent<HTMLDivElement>) {
+    const el = event.currentTarget
+    isAtBottomRef.current =
+      el.scrollHeight - el.scrollTop - el.clientHeight < 80
   }
 
   function setThreadElement(el: HTMLDivElement | null) {
     threadRef.current = el
-    if (el) scrollThreadToBottom()
+    if (el) {
+      isAtBottomRef.current = true
+      scrollThreadToBottom()
+    }
   }
 
   const active = useMemo(
@@ -842,6 +880,7 @@ function ChatInner() {
   const terminalVisible = terminalOpen && Boolean(activeSandboxId)
 
   const repoUrl = active ? active.repoUrl : draftRepo
+  const baseBranch = active ? (active.baseBranch ?? "") : draftBaseBranch
   const model = active ? active.model : draftModel
   const sandboxPresetId = active ? active.sandboxPresetId : draftSandboxPresetId
   const speed = draftSpeed
@@ -860,6 +899,19 @@ function ChatInner() {
     const label = repoLabel(repoUrl)
     return label.split("/").pop() || null
   }, [repoUrl])
+
+  const openFile = useCallback((path: string) => {
+    setActiveFilePath(path)
+    setActiveFileMode("file")
+  }, [])
+
+  useEffect(() => {
+    if (userLoading) return
+
+    void ensureDefaultPresets().catch((error) => {
+      console.error("Unable to ensure default sandbox presets", error)
+    })
+  }, [ensureDefaultPresets, userLoading])
 
   useEffect(() => {
     if (userLoading) return
@@ -897,34 +949,28 @@ function ChatInner() {
     const el = textareaRef.current
     if (!el) return
     el.style.height = "0px"
-    el.style.height = Math.min(el.scrollHeight, 200) + "px"
+    el.style.height = Math.min(Math.max(el.scrollHeight, 80), 200) + "px"
   }, [input])
 
   useLayoutEffect(() => {
+    isAtBottomRef.current = true
     scrollThreadToBottom()
-
-    const firstFrame = requestAnimationFrame(() => {
-      scrollThreadToBottom()
-      requestAnimationFrame(scrollThreadToBottom)
-    })
-
-    return () => cancelAnimationFrame(firstFrame)
-  }, [messages.length, activeId, runLogs, activeFilePath])
+  }, [activeId])
 
   useEffect(() => {
     const el = threadRef.current
     if (!el) return
 
-    const observer = new ResizeObserver(scrollThreadToBottom)
+    const observer = new ResizeObserver(() => {
+      if (!isAtBottomRef.current) return
+      el.style.scrollBehavior = "auto"
+      el.scrollTop = el.scrollHeight
+    })
     observer.observe(el)
     if (el.firstElementChild) observer.observe(el.firstElementChild)
 
     return () => observer.disconnect()
-  }, [activeId, messages.length, activeFilePath])
-
-  useEffect(() => {
-    warmBrowserTerminal(activeSandboxId)
-  }, [activeSandboxId])
+  }, [activeId, activeFilePath])
 
   function appendRunLog(
     messageId: Id<"messages">,
@@ -970,14 +1016,35 @@ function ChatInner() {
     })
   }
 
+  function persistDraftRepo(value: string) {
+    setDraftRepo(value)
+    if (value) localStorage.setItem(REPO_KEY, value)
+    else localStorage.removeItem(REPO_KEY)
+  }
+
+  function persistDraftBaseBranch(value: string) {
+    setDraftBaseBranch(value)
+    if (value) localStorage.setItem(BASE_BRANCH_KEY, value)
+    else localStorage.removeItem(BASE_BRANCH_KEY)
+  }
+
+  function persistDraftSandboxPreset(next: Id<"sandboxPresets"> | "") {
+    setDraftSandboxPresetId(next)
+    if (next) localStorage.setItem(PRESET_KEY, next)
+    else localStorage.removeItem(PRESET_KEY)
+  }
+
   function persistRepo(value: string) {
     if (active) {
       void updateThread({ repoUrl: value, threadId: active.id })
     } else {
-      setDraftRepo(value)
+      persistDraftRepo(value)
     }
-    if (value) localStorage.setItem(REPO_KEY, value)
-    else localStorage.removeItem(REPO_KEY)
+  }
+
+  function persistBaseBranch(value: string) {
+    if (active) return
+    persistDraftBaseBranch(value)
   }
 
   function persistModel(next: Model) {
@@ -1001,18 +1068,33 @@ function ChatInner() {
 
   function persistSandboxPreset(next: Id<"sandboxPresets"> | "") {
     if (active) return
-    setDraftSandboxPresetId(next)
-    if (next) localStorage.setItem(PRESET_KEY, next)
-    else localStorage.removeItem(PRESET_KEY)
+    persistDraftSandboxPreset(next)
   }
 
   function startNewChat() {
+    setNewChatOpen(true)
+  }
+
+  function confirmNewChat({
+    repoUrl: nextRepo,
+    baseBranch: nextBaseBranch,
+    sandboxPresetId: nextPresetId,
+  }: {
+    repoUrl: string
+    baseBranch: string
+    sandboxPresetId: Id<"sandboxPresets"> | ""
+  }) {
+    persistDraftRepo(nextRepo)
+    persistDraftBaseBranch(nextBaseBranch)
+    persistDraftSandboxPreset(nextPresetId)
     setActiveId(null)
     setInput("")
     setEditingRepo(false)
     setActiveFilePath(null)
     setTerminalOpen(false)
     setView("chat")
+    setNewChatOpen(false)
+    requestAnimationFrame(() => textareaRef.current?.focus())
   }
 
   function selectChat(id: Id<"threads">) {
@@ -1142,7 +1224,9 @@ function ChatInner() {
     try {
       const runSandboxPresetId = active?.sandboxPresetId ?? draftSandboxPresetId
       if (!chatId) {
+        const trimmedBaseBranch = draftBaseBranch.trim()
         const created = await createThread({
+          baseBranch: trimmedBaseBranch || undefined,
           model: draftModel,
           prompt: trimmed,
           repoUrl: repoUrl.trim(),
@@ -1202,6 +1286,8 @@ function ChatInner() {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
+          baseBranch:
+            (active?.baseBranch ?? draftBaseBranch).trim() || undefined,
           branchName,
           codexThreadId: cachedRunState?.codexThreadId ?? active?.codexThreadId,
           previousDiff,
@@ -1538,6 +1624,17 @@ function ChatInner() {
         />
       ) : null}
 
+      {newChatOpen ? (
+        <NewChatDialog
+          initialRepo={draftRepo}
+          initialBaseBranch={draftBaseBranch}
+          initialPresetId={draftSandboxPresetId}
+          presets={sandboxPresets}
+          onCancel={() => setNewChatOpen(false)}
+          onConfirm={confirmNewChat}
+        />
+      ) : null}
+
       {pendingDeleteId ? (
         <ConfirmDialog
           title="Delete chat?"
@@ -1595,7 +1692,8 @@ function ChatInner() {
             ) : (
               <div
                 ref={setThreadElement}
-                className="min-h-0 flex-1 overflow-y-auto"
+                onScroll={onThreadScroll}
+                className="min-h-0 flex-1 overflow-y-auto [contain:paint]"
               >
                 <div className="mx-auto flex min-h-full w-full max-w-2xl flex-col px-6 pt-16 pb-40">
                   {empty ? (
@@ -1614,12 +1712,9 @@ function ChatInner() {
                         <MessageBlock
                           key={m.id}
                           message={m}
-                          logs={runLogs[m.id as string] ?? []}
+                          logs={runLogs[m.id as string] ?? EMPTY_LOGS}
                           repoName={activeRepoName}
-                          onOpenFile={(path) => {
-                            setActiveFilePath(path)
-                            setActiveFileMode("file")
-                          }}
+                          onOpenFile={openFile}
                         />
                       ))}
                     </div>
@@ -1645,7 +1740,7 @@ function ChatInner() {
             >
               <form
                 onSubmit={onSubmit}
-                className="pointer-events-auto w-full max-w-2xl rounded-3xl border border-border/70 bg-background/80 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_-12px_rgba(0,0,0,0.12)] backdrop-blur-xl transition-colors focus-within:border-border"
+                className="pointer-events-auto w-full max-w-3xl rounded-3xl border border-border/70 bg-background/80 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_-12px_rgba(0,0,0,0.12)] backdrop-blur-xl transition-colors focus-within:border-border"
               >
                 <textarea
                   ref={textareaRef}
@@ -1658,7 +1753,7 @@ function ChatInner() {
                   placeholder={
                     empty ? "Ask anything…" : "Ask for follow-up changes"
                   }
-                  className="block w-full resize-none bg-transparent px-5 pt-4 pb-1 text-[15px] leading-6 outline-none placeholder:text-muted-foreground/70"
+                  className="block min-h-20 w-full resize-none bg-transparent px-5 pt-4 pb-1 text-[15px] leading-6 outline-none placeholder:text-muted-foreground/70"
                 />
 
                 <div className="flex items-center gap-1.5 px-2.5 pt-1 pb-2.5">
@@ -1671,6 +1766,11 @@ function ChatInner() {
                     editing={editingRepo}
                     setEditing={setEditingRepo}
                     onChange={persistRepo}
+                    locked={Boolean(active)}
+                  />
+                  <BranchChip
+                    value={baseBranch}
+                    onChange={persistBaseBranch}
                     locked={Boolean(active)}
                   />
                   <PresetPill
@@ -3494,6 +3594,404 @@ function ConfirmDialog({
   )
 }
 
+function NewChatDialog({
+  initialRepo,
+  initialBaseBranch,
+  initialPresetId,
+  presets,
+  onCancel,
+  onConfirm,
+}: {
+  initialRepo: string
+  initialBaseBranch: string
+  initialPresetId: Id<"sandboxPresets"> | ""
+  presets: SandboxPresetRecord[]
+  onCancel: () => void
+  onConfirm: (input: {
+    repoUrl: string
+    baseBranch: string
+    sandboxPresetId: Id<"sandboxPresets"> | ""
+  }) => void
+}) {
+  const [repo, setRepo] = useState(initialRepo)
+  const [branch, setBranch] = useState(initialBaseBranch)
+  const [presetId, setPresetId] = useState<Id<"sandboxPresets"> | "">(
+    initialPresetId
+  )
+  const [presetOpen, setPresetOpen] = useState(false)
+  const presetRef = useRef<HTMLDivElement>(null)
+  const repoRef = useRef<HTMLInputElement>(null)
+  const [branches, setBranches] = useState<string[] | null>(null)
+  const [defaultBranch, setDefaultBranch] = useState<string | null>(null)
+  const [branchesLoading, setBranchesLoading] = useState(false)
+  const [branchesError, setBranchesError] = useState<string | null>(null)
+  const [branchOpen, setBranchOpen] = useState(false)
+  const branchRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const trimmed = repo.trim()
+    const controller = new AbortController()
+    const handle = window.setTimeout(async () => {
+      if (!trimmed) {
+        setBranches(null)
+        setDefaultBranch(null)
+        setBranchesError(null)
+        setBranchesLoading(false)
+        return
+      }
+      setBranchesLoading(true)
+      setBranchesError(null)
+      try {
+        const res = await fetch(
+          `/api/github/branches?repoUrl=${encodeURIComponent(trimmed)}`,
+          { cache: "no-store", signal: controller.signal }
+        )
+        const data = (await res.json()) as {
+          branches?: string[]
+          defaultBranch?: string
+          error?: string
+        }
+        if (!res.ok) {
+          throw new Error(data.error ?? `Request failed: ${res.status}`)
+        }
+        setBranches(data.branches ?? [])
+        setDefaultBranch(data.defaultBranch ?? null)
+      } catch (error) {
+        if ((error as Error).name === "AbortError") return
+        setBranches([])
+        setDefaultBranch(null)
+        setBranchesError(
+          error instanceof Error ? error.message : "Failed to load branches."
+        )
+      } finally {
+        setBranchesLoading(false)
+      }
+    }, 350)
+    return () => {
+      controller.abort()
+      window.clearTimeout(handle)
+    }
+  }, [repo])
+
+  useEffect(() => {
+    if (!branchOpen) return
+    function onClick(event: MouseEvent) {
+      if (!branchRef.current?.contains(event.target as Node)) {
+        setBranchOpen(false)
+      }
+    }
+    document.addEventListener("mousedown", onClick)
+    return () => document.removeEventListener("mousedown", onClick)
+  }, [branchOpen])
+
+  const filteredBranches = useMemo(() => {
+    if (!branches) return []
+    const query = branch.trim().toLowerCase()
+    if (!query) return branches
+    return branches.filter((name) => name.toLowerCase().includes(query))
+  }, [branches, branch])
+
+  useEffect(() => {
+    repoRef.current?.focus()
+    repoRef.current?.select()
+  }, [])
+
+  useEffect(() => {
+    if (!presetOpen) return
+    function onClick(event: MouseEvent) {
+      if (!presetRef.current?.contains(event.target as Node)) {
+        setPresetOpen(false)
+      }
+    }
+    document.addEventListener("mousedown", onClick)
+    return () => document.removeEventListener("mousedown", onClick)
+  }, [presetOpen])
+
+  const selectedPreset = presets.find((p) => p.id === presetId)
+  const presetLabel = selectedPreset?.name ?? "Default"
+  const canSubmit = repo.trim().length > 0
+
+  function submit() {
+    if (!canSubmit) return
+    onConfirm({
+      repoUrl: repo.trim(),
+      baseBranch: branch.trim(),
+      sandboxPresetId: presetId,
+    })
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
+      onClick={onCancel}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") onCancel()
+      }}
+      role="dialog"
+      aria-modal="true"
+      tabIndex={-1}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-lg overflow-visible rounded-2xl border border-black/[0.06] bg-popover p-7 text-popover-foreground shadow-[0_10px_30px_-12px_rgba(0,0,0,0.18)] dark:border-white/10"
+      >
+        <div className="text-base font-medium text-foreground">New chat</div>
+        <p className="mt-1.5 text-sm text-muted-foreground">
+          Pick a repo, base branch, and sandbox preset to start from.
+        </p>
+
+        <div className="mt-5 space-y-4">
+          <Field label="GitHub repo">
+            <div className="flex h-10 items-center gap-2 rounded-xl border border-border/70 bg-background px-3.5 text-sm transition-colors focus-within:border-foreground/40">
+              <GitBranch className="size-3.5 shrink-0 text-muted-foreground" />
+              <input
+                ref={repoRef}
+                value={repo}
+                onChange={(e) => setRepo(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault()
+                    submit()
+                  }
+                }}
+                placeholder="https://github.com/owner/repo.git"
+                className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
+                spellCheck={false}
+              />
+            </div>
+          </Field>
+
+          <Field
+            label="Base branch"
+            hint={
+              branchesError
+                ? branchesError
+                : defaultBranch && !branch.trim()
+                  ? `Default: ${defaultBranch}`
+                  : "Search and pick a branch from the repo."
+            }
+          >
+            <div ref={branchRef} className="relative">
+              <div
+                className={cn(
+                  "flex h-10 items-center gap-2 rounded-xl border border-border/70 bg-background px-3.5 text-sm transition-colors",
+                  branchOpen
+                    ? "border-foreground/40"
+                    : "focus-within:border-foreground/40"
+                )}
+              >
+                <GitBranch className="size-3.5 shrink-0 text-muted-foreground" />
+                <input
+                  value={branch}
+                  onChange={(e) => {
+                    setBranch(e.target.value)
+                    setBranchOpen(true)
+                  }}
+                  onFocus={() => setBranchOpen(true)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault()
+                      if (branchOpen && filteredBranches[0]) {
+                        setBranch(filteredBranches[0])
+                        setBranchOpen(false)
+                      } else {
+                        submit()
+                      }
+                    } else if (e.key === "Escape" && branchOpen) {
+                      e.preventDefault()
+                      setBranchOpen(false)
+                    } else if (e.key === "ArrowDown") {
+                      setBranchOpen(true)
+                    }
+                  }}
+                  placeholder={defaultBranch ?? "main"}
+                  className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+                {branch ? (
+                  <button
+                    type="button"
+                    aria-label="Clear branch"
+                    onClick={() => {
+                      setBranch("")
+                      setBranchOpen(true)
+                      requestAnimationFrame(() =>
+                        branchRef.current
+                          ?.querySelector("input")
+                          ?.focus()
+                      )
+                    }}
+                    className="grid size-4 shrink-0 place-items-center rounded-full text-muted-foreground hover:text-foreground"
+                  >
+                    <X className="size-3" />
+                  </button>
+                ) : null}
+                {branchesLoading ? (
+                  <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
+                ) : (
+                  <ChevronDown
+                    className={cn(
+                      "size-3.5 shrink-0 cursor-pointer opacity-60 transition-transform",
+                      branchOpen && "rotate-180"
+                    )}
+                    onClick={() => setBranchOpen((v) => !v)}
+                  />
+                )}
+              </div>
+              {branchOpen ? (
+                <div className="absolute top-full left-0 z-10 mt-1.5 max-h-64 w-full overflow-y-auto rounded-2xl border border-black/[0.06] bg-popover p-1.5 shadow-[0_10px_30px_-12px_rgba(0,0,0,0.18)] dark:border-white/10">
+                  {!branch.trim() ? null : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setBranch("")
+                        setBranchOpen(false)
+                      }}
+                      className="flex w-full items-center justify-between gap-6 rounded-xl px-3 py-1.5 text-left text-sm text-foreground transition-colors hover:bg-muted"
+                    >
+                      <span className="text-muted-foreground">
+                        Use default branch
+                        {defaultBranch ? ` (${defaultBranch})` : ""}
+                      </span>
+                    </button>
+                  )}
+                  {branches === null ? (
+                    <div className="px-3 py-2 text-xs text-muted-foreground">
+                      {repo.trim()
+                        ? "Loading branches…"
+                        : "Enter a repo URL first."}
+                    </div>
+                  ) : filteredBranches.length === 0 ? (
+                    <div className="px-3 py-2 text-xs text-muted-foreground">
+                      {branchesError
+                        ? branchesError
+                        : branch.trim()
+                          ? "No matching branches."
+                          : "No branches found."}
+                    </div>
+                  ) : (
+                    filteredBranches.map((name) => (
+                      <button
+                        key={name}
+                        type="button"
+                        onClick={() => {
+                          setBranch(name)
+                          setBranchOpen(false)
+                        }}
+                        className="flex w-full items-center justify-between gap-6 rounded-xl px-3 py-1.5 text-left text-sm text-foreground transition-colors hover:bg-muted"
+                      >
+                        <span className="min-w-0 truncate">{name}</span>
+                        <span className="flex shrink-0 items-center gap-1.5">
+                          {name === defaultBranch ? (
+                            <span className="text-xs text-muted-foreground">
+                              default
+                            </span>
+                          ) : null}
+                          {name === branch ? (
+                            <Check className="size-4 shrink-0" />
+                          ) : null}
+                        </span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              ) : null}
+            </div>
+          </Field>
+
+          <Field label="Sandbox preset">
+            <div ref={presetRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setPresetOpen((v) => !v)}
+                className="flex h-10 w-full items-center gap-2 rounded-xl border border-border/70 bg-background px-3.5 text-sm text-foreground transition-colors hover:border-foreground/40"
+              >
+                <Package className="size-3.5 shrink-0 text-muted-foreground" />
+                <span className="min-w-0 flex-1 truncate text-left">
+                  {presetLabel}
+                </span>
+                <ChevronDown className="size-3.5 shrink-0 opacity-60" />
+              </button>
+              {presetOpen ? (
+                <div className="absolute top-full left-0 z-10 mt-1.5 max-h-64 w-full overflow-y-auto rounded-2xl border border-black/[0.06] bg-popover p-1.5 shadow-[0_10px_30px_-12px_rgba(0,0,0,0.18)] dark:border-white/10">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPresetId("")
+                      setPresetOpen(false)
+                    }}
+                    className="flex w-full items-center justify-between gap-6 rounded-xl px-3 py-1.5 text-left text-sm text-foreground transition-colors hover:bg-muted"
+                  >
+                    <span>Default</span>
+                    {!presetId ? <Check className="size-4 shrink-0" /> : null}
+                  </button>
+                  {presets.map((preset) => (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      onClick={() => {
+                        setPresetId(preset.id)
+                        setPresetOpen(false)
+                      }}
+                      className="flex w-full items-center justify-between gap-6 rounded-xl px-3 py-1.5 text-left text-sm text-foreground transition-colors hover:bg-muted"
+                    >
+                      <span className="min-w-0 truncate">{preset.name}</span>
+                      {preset.id === presetId ? (
+                        <Check className="size-4 shrink-0" strokeWidth={2.25} />
+                      ) : null}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          </Field>
+        </div>
+
+        <div className="mt-6 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-xl border border-border/70 px-3 py-1.5 text-sm text-foreground/80 transition-colors hover:bg-muted"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={!canSubmit}
+            className="rounded-xl bg-foreground px-3 py-1.5 text-sm text-background transition-colors hover:bg-foreground/90 disabled:opacity-40 disabled:hover:bg-foreground"
+          >
+            Start chat
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function Field({
+  label,
+  hint,
+  children,
+}: {
+  label: string
+  hint?: string
+  children: React.ReactNode
+}) {
+  return (
+    <div className="block">
+      <div className="mb-1.5 text-xs font-medium text-muted-foreground">
+        {label}
+      </div>
+      {children}
+      {hint ? (
+        <div className="mt-1 text-xs text-muted-foreground/80">{hint}</div>
+      ) : null}
+    </div>
+  )
+}
+
 function IconButton({
   className,
   children,
@@ -3558,7 +4056,7 @@ function RepoChip({
             }
           }}
           placeholder="https://github.com/owner/repo.git"
-          className="w-64 bg-transparent text-xs outline-none placeholder:text-muted-foreground/60"
+          className="w-52 bg-transparent text-xs outline-none placeholder:text-muted-foreground/60"
           spellCheck={false}
         />
       </div>
@@ -3581,6 +4079,81 @@ function RepoChip({
         "flex h-8 max-w-[14rem] items-center gap-1.5 rounded-full px-2.5 text-xs transition-colors",
         value
           ? "text-foreground/80 hover:bg-muted disabled:hover:bg-transparent"
+          : "text-muted-foreground hover:bg-muted hover:text-foreground"
+      )}
+    >
+      <GitBranch className="size-3.5 shrink-0" />
+      <span className="truncate">{label}</span>
+    </button>
+  )
+}
+
+function BranchChip({
+  value,
+  onChange,
+  locked,
+}: {
+  value: string
+  onChange: (v: string) => void
+  locked?: boolean
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(value)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (editing) inputRef.current?.focus()
+  }, [editing])
+
+  function commit() {
+    onChange(draft.trim())
+    setEditing(false)
+  }
+
+  if (editing) {
+    return (
+      <div className="flex h-8 items-center gap-1.5 rounded-full border border-border/80 bg-background pr-1 pl-2.5 text-xs">
+        <GitBranch className="size-3.5 shrink-0 text-muted-foreground" />
+        <input
+          ref={inputRef}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault()
+              commit()
+            }
+            if (e.key === "Escape") {
+              setDraft(value)
+              setEditing(false)
+            }
+          }}
+          placeholder="default branch"
+          className="w-24 bg-transparent text-xs outline-none placeholder:text-muted-foreground/60"
+          spellCheck={false}
+        />
+      </div>
+    )
+  }
+
+  const label = value || "default branch"
+
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        if (!locked) {
+          setDraft(value)
+          setEditing(true)
+        }
+      }}
+      disabled={locked}
+      title={locked ? "Base branch is locked once a chat starts" : "Base branch"}
+      className={cn(
+        "flex h-8 max-w-[10rem] items-center gap-1.5 rounded-full px-2.5 text-xs transition-colors disabled:hover:bg-transparent",
+        value
+          ? "text-foreground/80 hover:bg-muted"
           : "text-muted-foreground hover:bg-muted hover:text-foreground"
       )}
     >
@@ -4053,7 +4626,7 @@ function ChangedFiles({ diff }: { diff: string }) {
   )
 }
 
-function MessageBlock({
+const MessageBlock = memo(function MessageBlock({
   logs,
   message,
   onOpenFile,
@@ -4100,9 +4673,15 @@ function MessageBlock({
       ) : null}
     </div>
   )
-}
+})
 
-function RunLogs({ logs, pending }: { logs: RunLog[]; pending: boolean }) {
+const RunLogs = memo(function RunLogs({
+  logs,
+  pending,
+}: {
+  logs: RunLog[]
+  pending: boolean
+}) {
   const [open, setOpen] = useState(false)
   const visible = logs
   const current = logs.at(-1)
@@ -4144,9 +4723,9 @@ function RunLogs({ logs, pending }: { logs: RunLog[]; pending: boolean }) {
       ) : null}
     </div>
   )
-}
+})
 
-function RunLogRow({ log }: { log: RunLog }) {
+const RunLogRow = memo(function RunLogRow({ log }: { log: RunLog }) {
   const Icon =
     log.kind === "reasoning"
       ? Brain
@@ -4170,9 +4749,9 @@ function RunLogRow({ log }: { log: RunLog }) {
       </div>
     </div>
   )
-}
+})
 
-function Markdown({
+const Markdown = memo(function Markdown({
   text,
   className,
   onOpenFile,
@@ -4183,18 +4762,21 @@ function Markdown({
   onOpenFile: (path: string) => void
   repoName: string | null
 }) {
-  const blocks: Array<{ kind: "code" | "text"; lang?: string; body: string }> =
-    []
-  const fence = /```([^\n`]*)\n([\s\S]*?)```/g
-  let last = 0
-  let m: RegExpExecArray | null
-  while ((m = fence.exec(text)) !== null) {
-    if (m.index > last)
-      blocks.push({ kind: "text", body: text.slice(last, m.index) })
-    blocks.push({ kind: "code", lang: parseCodeLanguage(m[1]), body: m[2] })
-    last = m.index + m[0].length
-  }
-  if (last < text.length) blocks.push({ kind: "text", body: text.slice(last) })
+  const blocks = useMemo(() => {
+    const out: Array<{ kind: "code" | "text"; lang?: string; body: string }> =
+      []
+    const fence = /```([^\n`]*)\n([\s\S]*?)```/g
+    let last = 0
+    let m: RegExpExecArray | null
+    while ((m = fence.exec(text)) !== null) {
+      if (m.index > last)
+        out.push({ kind: "text", body: text.slice(last, m.index) })
+      out.push({ kind: "code", lang: parseCodeLanguage(m[1]), body: m[2] })
+      last = m.index + m[0].length
+    }
+    if (last < text.length) out.push({ kind: "text", body: text.slice(last) })
+    return out
+  }, [text])
 
   return (
     <div className={cn("space-y-4", className)}>
@@ -4212,109 +4794,14 @@ function Markdown({
       )}
     </div>
   )
-}
-
-const CODE_LANGUAGE_LABELS: Record<string, string> = {
-  bash: "Bash",
-  css: "CSS",
-  diff: "Diff",
-  html: "HTML",
-  javascript: "JavaScript",
-  js: "JavaScript",
-  json: "JSON",
-  jsx: "JSX",
-  markdown: "Markdown",
-  md: "Markdown",
-  plaintext: "Plain text",
-  python: "Python",
-  py: "Python",
-  sh: "Shell",
-  shell: "Shell",
-  ts: "TypeScript",
-  tsx: "TSX",
-  typescript: "TypeScript",
-  yaml: "YAML",
-  yml: "YAML",
-}
-
-const PIERRE_CODE_THEMES = {
-  dark: "pierre-dark",
-  light: "pierre-light",
-} as const
-
-const PIERRE_FILE_STYLE = {
-  "--diffs-font-family": "var(--font-mono)",
-  "--diffs-font-size": "13px",
-  "--diffs-gap-block": "12px",
-  "--diffs-line-height": "24px",
-} as CSSProperties
-
-const PIERRE_LANGUAGE_ALIASES: Record<string, string> = {
-  js: "javascript",
-  md: "markdown",
-  plaintext: "text",
-  py: "python",
-  sh: "bash",
-  shell: "bash",
-  text: "text",
-  ts: "typescript",
-  yml: "yaml",
-}
-
-function CodeBlock({ body, lang }: { body: string; lang?: string }) {
-  const code = body.replace(/\n$/, "")
-  const language = lang ?? "plaintext"
-  const { resolvedTheme } = useTheme()
-  const themeType: ThemeTypes = resolvedTheme === "dark" ? "dark" : "light"
-  const file = useMemo<FileContents>(
-    () => ({
-      cacheKey: `${language}:${code}`,
-      contents: code,
-      lang: getPierreLanguage(language),
-      name: `snippet.${language}`,
-    }),
-    [code, language]
-  )
-  const options = useMemo<FileOptions<undefined>>(
-    () => ({
-      disableFileHeader: true,
-      disableLineNumbers: true,
-      overflow: "wrap",
-      theme: PIERRE_CODE_THEMES,
-      themeType,
-    }),
-    [themeType]
-  )
-
-  return (
-    <div className="overflow-hidden rounded-xl border border-border bg-background">
-      <div className="flex h-8 items-center border-b border-border bg-muted/70 px-3 font-mono text-[11px] font-medium text-muted-foreground uppercase">
-        {formatCodeLanguage(language)}
-      </div>
-      <PierreFile
-        file={file}
-        options={options}
-        disableWorkerPool
-        style={PIERRE_FILE_STYLE}
-      />
-    </div>
-  )
-}
+})
 
 function parseCodeLanguage(info: string) {
   const lang = info.trim().split(/\s+/)[0]?.replace(/^\./, "").toLowerCase()
   return lang || undefined
 }
 
-function formatCodeLanguage(lang: string) {
-  return CODE_LANGUAGE_LABELS[lang] ?? lang
-}
-
-function getPierreLanguage(lang: string) {
-  return PIERRE_LANGUAGE_ALIASES[lang] ?? lang
-}
-
-function InlineProse({
+const InlineProse = memo(function InlineProse({
   text,
   onOpenFile,
   repoName,
@@ -4386,7 +4873,7 @@ function InlineProse({
   flushList()
 
   return <>{out}</>
-}
+})
 
 type FileLinkContext = {
   onOpenFile: (path: string) => void
