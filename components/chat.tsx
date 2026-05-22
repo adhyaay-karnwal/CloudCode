@@ -77,7 +77,6 @@ import {
   SPEEDS,
   THINKING_LABEL,
   THINKINGS,
-  shortModel,
   type Model,
   type Speed,
   type Thinking,
@@ -1541,7 +1540,7 @@ function ChatInner() {
                 header="Model"
                 value={model}
                 options={MODELS}
-                formatTrigger={shortModel}
+                formatTrigger={(m) => MODEL_LABEL[m]}
                 formatOption={(m) => MODEL_LABEL[m]}
                 open={modelOpen}
                 setOpen={setModelOpen}
