@@ -107,14 +107,20 @@ export function SandboxTerminalPanel({
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<TerminalStatus>("connecting")
   const [sessionVersion, setSessionVersion] = useState(0)
+  const [startedSandboxId, setStartedSandboxId] = useState<string | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
   const terminalRef = useRef<Terminal | null>(null)
   const dragStartRef = useRef<{ h: number; y: number } | null>(null)
+  const openRef = useRef(open)
+  const resetSessionRef = useRef<(() => void) | null>(null)
+  const scheduleResizeRef = useRef<(() => void) | null>(null)
 
   const { resolvedTheme } = useTheme()
   const isDark = resolvedTheme !== "light"
   const palette = isDark ? darkPalette : lightPalette
   const paletteRef = useRef<TerminalPalette>(palette)
+  const connectedSandboxId =
+    startedSandboxId === sandboxId ? startedSandboxId : open ? sandboxId : null
 
   useEffect(() => {
     paletteRef.current = palette
@@ -124,8 +130,35 @@ export function SandboxTerminalPanel({
   }, [palette])
 
   useEffect(() => {
-    if (!open || !sandboxId || !containerRef.current) return
+    openRef.current = open
+  }, [open])
 
+  useEffect(() => {
+    if (!sandboxId) {
+      setStartedSandboxId(null)
+      return
+    }
+
+    if (open && startedSandboxId !== sandboxId) {
+      setStartedSandboxId(sandboxId)
+    }
+  }, [open, sandboxId, startedSandboxId])
+
+  useEffect(() => {
+    if (!open || !connectedSandboxId) return
+
+    const frame = requestAnimationFrame(() => {
+      scheduleResizeRef.current?.()
+      terminalRef.current?.focus()
+    })
+
+    return () => cancelAnimationFrame(frame)
+  }, [connectedSandboxId, height, open])
+
+  useEffect(() => {
+    if (!connectedSandboxId || !containerRef.current) return
+
+    const sessionSandboxId = connectedSandboxId
     const terminalId =
       typeof crypto !== "undefined" && "randomUUID" in crypto
         ? `cloudcode-${crypto.randomUUID()}`
@@ -161,7 +194,11 @@ export function SandboxTerminalPanel({
     function postTerminal(payload: Record<string, unknown>) {
       if (disposed) return Promise.resolve()
       return fetch("/api/sandbox/terminal/pty", {
-        body: JSON.stringify({ sandboxId, terminalId, ...payload }),
+        body: JSON.stringify({
+          sandboxId: sessionSandboxId,
+          terminalId,
+          ...payload,
+        }),
         cache: "no-store",
         headers: { "Content-Type": "application/json" },
         method: "POST",
@@ -212,17 +249,29 @@ export function SandboxTerminalPanel({
       if (resizeTimer) clearTimeout(resizeTimer)
       resizeTimer = setTimeout(sendResize, 50)
     }
+    scheduleResizeRef.current = scheduleResize
 
     function killTerminal() {
       void fetch("/api/sandbox/terminal/pty", {
-        body: JSON.stringify({ sandboxId, terminalId }),
+        body: JSON.stringify({ sandboxId: sessionSandboxId, terminalId }),
         cache: "no-store",
         headers: { "Content-Type": "application/json" },
         method: "DELETE",
       }).catch(() => undefined)
     }
 
-    const unregisterCloser = registerTerminalCloser(sandboxId, killTerminal)
+    function resetTerminalSession() {
+      killTerminal()
+      setStartedSandboxId((current) =>
+        current === sessionSandboxId ? null : current
+      )
+    }
+
+    resetSessionRef.current = resetTerminalSession
+    const unregisterCloser = registerTerminalCloser(
+      sessionSandboxId,
+      resetTerminalSession
+    )
 
     function queueInput(data: string) {
       pendingInput += data
@@ -289,7 +338,7 @@ export function SandboxTerminalPanel({
     const params = new URLSearchParams({
       cols: String(lastSize.cols || 100),
       rows: String(lastSize.rows || 30),
-      sandboxId,
+      sandboxId: sessionSandboxId,
       terminalId,
     })
 
@@ -313,7 +362,7 @@ export function SandboxTerminalPanel({
       if (message.type === "ready") {
         setStatus("ready")
         setError(null)
-        terminal.focus()
+        if (openRef.current) terminal.focus()
         return
       }
 
@@ -345,6 +394,12 @@ export function SandboxTerminalPanel({
 
     return () => {
       unregisterCloser()
+      if (resetSessionRef.current === resetTerminalSession) {
+        resetSessionRef.current = null
+      }
+      if (scheduleResizeRef.current === scheduleResize) {
+        scheduleResizeRef.current = null
+      }
       if (inputFlushTimer) clearTimeout(inputFlushTimer)
       if (resizeTimer) clearTimeout(resizeTimer)
       flushInput()
@@ -355,11 +410,10 @@ export function SandboxTerminalPanel({
       eventSource?.close()
       terminal.dispose()
       if (terminalRef.current === terminal) terminalRef.current = null
-      killTerminal()
     }
     // palette is applied via a separate effect; we intentionally don't recreate
     // the terminal when the theme changes.
-  }, [open, sandboxId, sessionVersion])
+  }, [connectedSandboxId, sessionVersion])
 
   function handleResizeStart(e: ReactMouseEvent<HTMLButtonElement>) {
     e.preventDefault()
@@ -389,10 +443,12 @@ export function SandboxTerminalPanel({
     window.addEventListener("mouseup", onUp)
   }
 
-  if (!open || !sandboxId) return null
+  if (!open && !connectedSandboxId) return null
 
-  const statusLabel =
-    status === "ready"
+  const waitingForSandbox = open && !connectedSandboxId
+  const statusLabel = waitingForSandbox
+    ? "Waiting"
+    : status === "ready"
       ? "Connected"
       : status === "reconnecting"
         ? "Reconnecting"
@@ -404,8 +460,15 @@ export function SandboxTerminalPanel({
 
   return (
     <section
+      aria-hidden={!open}
       className="absolute inset-x-0 bottom-0 z-20 flex min-h-0 flex-col overflow-hidden border-t border-border/70"
-      style={{ height, background: surfaceBg, color: palette.foreground }}
+      style={{
+        height: open ? height : 0,
+        visibility: open ? "visible" : "hidden",
+        background: surfaceBg,
+        color: palette.foreground,
+        pointerEvents: open ? undefined : "none",
+      }}
     >
       <button
         type="button"
@@ -425,13 +488,15 @@ export function SandboxTerminalPanel({
         <span
           className={cn(
             "pointer-events-none inline-flex items-center gap-1.5 px-1.5 text-xs font-medium",
-            status === "error" ? "text-red-500/90" : "text-muted-foreground"
+            !waitingForSandbox && status === "error"
+              ? "text-red-500/90"
+              : "text-muted-foreground"
           )}
-          title={error ?? undefined}
+          title={waitingForSandbox ? undefined : (error ?? undefined)}
         >
-          {status === "ready" ? (
+          {!waitingForSandbox && status === "ready" ? (
             <CircleDot className="size-3.5 text-emerald-600 dark:text-emerald-400" />
-          ) : status === "error" ? (
+          ) : !waitingForSandbox && status === "error" ? (
             <OctagonX className="size-3.5" />
           ) : (
             <Loader2 className="size-3.5 animate-spin" />
@@ -440,7 +505,10 @@ export function SandboxTerminalPanel({
         </span>
         <button
           type="button"
-          onClick={() => setSessionVersion((v) => v + 1)}
+          onClick={() => {
+            resetSessionRef.current?.()
+            setSessionVersion((v) => v + 1)
+          }}
           aria-label="Reconnect terminal"
           title="Reconnect terminal"
           className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
@@ -461,11 +529,18 @@ export function SandboxTerminalPanel({
         className="min-h-0 flex-1 overflow-hidden px-3 pt-3 pb-1"
         style={{ background: surfaceBg }}
       >
-        <div
-          ref={containerRef}
-          className="h-full w-full overflow-hidden [&_.xterm]:!bg-transparent [&_.xterm-screen]:outline-none [&_.xterm-viewport]:!bg-transparent"
-          style={{ background: surfaceBg }}
-        />
+        {connectedSandboxId ? (
+          <div
+            ref={containerRef}
+            className="h-full w-full overflow-hidden [&_.xterm]:!bg-transparent [&_.xterm-screen]:outline-none [&_.xterm-viewport]:!bg-transparent"
+            style={{ background: surfaceBg }}
+          />
+        ) : (
+          <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" />
+            <span>Waiting for sandbox</span>
+          </div>
+        )}
       </div>
     </section>
   )
