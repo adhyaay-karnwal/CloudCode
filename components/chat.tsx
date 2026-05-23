@@ -230,6 +230,7 @@ function hasCachedRunKey<K extends keyof CachedRunState>(
 const SPEED_KEY = "cloudcode:speed"
 const THINKING_KEY = "cloudcode:thinking"
 const ACTIVE_KEY = "cloudcode:activeChatId"
+const TERMINAL_OPEN_KEY = "cloudcode:terminalOpen"
 const DRAFT_RUN_KEY = "__draft__"
 const DEFAULT_COMPOSER_HEIGHT = 144
 const THREAD_BOTTOM_CLEARANCE = 32
@@ -399,7 +400,11 @@ function ChatInner() {
   const [presetOpen, setPresetOpen] = useState(false)
   const [thinkingOpen, setThinkingOpen] = useState(false)
   const [filesOpen, setFilesOpen] = useState(false)
-  const [terminalOpen, setTerminalOpen] = useState(false)
+  const [terminalOpen, setTerminalOpen] = useState(() =>
+    typeof window === "undefined"
+      ? false
+      : localStorage.getItem(TERMINAL_OPEN_KEY) === "true"
+  )
   const [terminalHeight, setTerminalHeight] = useState(380)
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null)
   const [activeFileMode, setActiveFileMode] =
@@ -800,6 +805,11 @@ function ChatInner() {
     if (activeId) localStorage.setItem(ACTIVE_KEY, activeId)
     else localStorage.removeItem(ACTIVE_KEY)
   }, [activeId])
+
+  useEffect(() => {
+    if (terminalOpen) localStorage.setItem(TERMINAL_OPEN_KEY, "true")
+    else localStorage.removeItem(TERMINAL_OPEN_KEY)
+  }, [terminalOpen])
 
   useEffect(() => {
     setOptimisticRuns((current) => {
@@ -1957,7 +1967,9 @@ function TopBar({
               active={terminalOpen}
               disabled={!sandboxId && !sandboxPending}
               label={
-                terminalOpen ? "Hide sandbox terminal" : "Show sandbox terminal"
+                terminalOpen
+                  ? "Hide sandbox terminals"
+                  : "Show sandbox terminals"
               }
             >
               <SquareTerminal className="size-3.5" />

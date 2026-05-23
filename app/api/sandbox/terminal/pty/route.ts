@@ -6,6 +6,7 @@ import {
   killDaytonaTerminal,
   resizeDaytonaTerminal,
   sendDaytonaTerminalInput,
+  type ConnectedDaytonaTerminal,
 } from "@/lib/daytona-terminal-sessions"
 
 export const runtime = "nodejs"
@@ -13,6 +14,13 @@ export const maxDuration = 3600
 
 function sse(value: unknown) {
   return `data: ${JSON.stringify(value)}\n\n`
+}
+
+function terminalData(data: Uint8Array) {
+  return {
+    data: Buffer.from(data).toString("base64"),
+    type: "data",
+  }
 }
 
 function numberParam(value: string | null, fallback: number) {
@@ -38,6 +46,7 @@ export async function GET(request: Request) {
   const encoder = new TextEncoder()
   let closed = false
   let heartbeat: ReturnType<typeof setInterval> | undefined
+  let terminalConnection: ConnectedDaytonaTerminal | undefined
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -51,19 +60,39 @@ export async function GET(request: Request) {
       }
 
       try {
-        await connectDaytonaTerminal({
+        const connection = await connectDaytonaTerminal({
           cols,
           onData: (data) => {
-            enqueue({
-              data: Buffer.from(data).toString("base64"),
-              type: "data",
-            })
+            enqueue(terminalData(data))
           },
           rows,
           sandboxId,
           terminalId,
         })
+        terminalConnection = connection
 
+        if (closed) {
+          await detachDaytonaTerminal(
+            sandboxId,
+            terminalId,
+            terminalConnection.subscriber
+          )
+          return
+        }
+
+        for (const data of connection.replay) {
+          enqueue(terminalData(data))
+        }
+        if (closed) {
+          await detachDaytonaTerminal(
+            sandboxId,
+            terminalId,
+            terminalConnection.subscriber
+          )
+          return
+        }
+
+        connection.activate()
         enqueue({ type: "ready" })
         heartbeat = setInterval(() => enqueue({ type: "ping" }), 20_000)
       } catch (error) {
@@ -81,7 +110,13 @@ export async function GET(request: Request) {
     async cancel() {
       closed = true
       if (heartbeat) clearInterval(heartbeat)
-      await detachDaytonaTerminal(sandboxId, terminalId)
+      if (terminalConnection) {
+        await detachDaytonaTerminal(
+          sandboxId,
+          terminalId,
+          terminalConnection.subscriber
+        )
+      }
     },
   })
 
