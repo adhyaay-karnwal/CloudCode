@@ -370,8 +370,10 @@ export const attachTriggerRun = mutation({
     triggerRunId: v.string(),
   },
   handler: async (ctx, args) => {
-    const userId = await ensureCurrentUser(ctx)
-    const run = await ctx.db.get(args.runId)
+    const [userId, run] = await Promise.all([
+      ensureCurrentUser(ctx),
+      ctx.db.get(args.runId),
+    ])
     if (!run || run.userId !== userId) throw new Error("Run not found.")
 
     await ctx.db.patch(args.runId, {
@@ -389,8 +391,10 @@ export const failBeforeStart = mutation({
     runId: v.id("codexRuns"),
   },
   handler: async (ctx, args) => {
-    const userId = await ensureCurrentUser(ctx)
-    const run = await ctx.db.get(args.runId)
+    const [userId, run] = await Promise.all([
+      ensureCurrentUser(ctx),
+      ctx.db.get(args.runId),
+    ])
     if (!run || run.userId !== userId) throw new Error("Run not found.")
     if (TERMINAL_RUN_STATUSES.has(run.status)) return
 

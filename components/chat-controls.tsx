@@ -3,7 +3,7 @@
 import { Check, ChevronDown, GitBranch, Package } from "lucide-react"
 import {
   type ButtonHTMLAttributes,
-  type ReactNode,
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -31,28 +31,6 @@ function repoLabel(url: string) {
   return url
     .replace(/^https?:\/\/(www\.)?github\.com\//, "")
     .replace(/\.git$/, "")
-}
-
-export function Field({
-  label,
-  hint,
-  children,
-}: {
-  label: string
-  hint?: string
-  children: ReactNode
-}) {
-  return (
-    <div className="block">
-      <div className="mb-1.5 text-xs font-medium text-muted-foreground">
-        {label}
-      </div>
-      {children}
-      {hint ? (
-        <div className="mt-1 text-xs text-muted-foreground/80">{hint}</div>
-      ) : null}
-    </div>
-  )
 }
 
 export function IconButton({
@@ -87,12 +65,12 @@ export function RepoChip({
   onChange: (v: string) => void
   locked?: boolean
 }) {
-  const [draft, setDraft] = useState(value)
+  const [draft, setDraft] = useState("")
   const inputRef = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    if (editing) inputRef.current?.focus()
-  }, [editing])
+  const setFocusedInputRef = useCallback((node: HTMLInputElement | null) => {
+    inputRef.current = node
+    node?.focus()
+  }, [])
 
   function commit() {
     onChange(draft.trim())
@@ -104,7 +82,7 @@ export function RepoChip({
       <div className="flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background pr-1 pl-2.5 text-xs">
         <GitBranch className="size-3.5 shrink-0 text-muted-foreground" />
         <input
-          ref={inputRef}
+          ref={setFocusedInputRef}
           aria-label="Repository URL"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
@@ -161,12 +139,12 @@ export function BranchChip({
   locked?: boolean
 }) {
   const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState(value)
+  const [draft, setDraft] = useState("")
   const inputRef = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    if (editing) inputRef.current?.focus()
-  }, [editing])
+  const setFocusedInputRef = useCallback((node: HTMLInputElement | null) => {
+    inputRef.current = node
+    node?.focus()
+  }, [])
 
   function commit() {
     onChange(draft.trim())
@@ -178,7 +156,7 @@ export function BranchChip({
       <div className="flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background pr-1 pl-2.5 text-xs">
         <GitBranch className="size-3.5 shrink-0 text-muted-foreground" />
         <input
-          ref={inputRef}
+          ref={setFocusedInputRef}
           aria-label="Branch name"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}

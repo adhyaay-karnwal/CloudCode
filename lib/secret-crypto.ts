@@ -20,7 +20,7 @@ function encryptionKey() {
   return createHash("sha256").update(secret).digest()
 }
 
-export function isEncryptedSecret(value: string) {
+function isEncryptedSecret(value: string) {
   return value.startsWith(PREFIX)
 }
 

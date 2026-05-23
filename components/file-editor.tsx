@@ -13,6 +13,7 @@ import {
   type FileDiffOptions,
 } from "@pierre/diffs"
 import { ImageIcon, Loader2, X } from "lucide-react"
+import NextImage from "next/image"
 import { useTheme } from "next-themes"
 import {
   type CSSProperties,
@@ -696,7 +697,7 @@ function ImageDimensionsLabel({
 
   useEffect(() => {
     let cancelled = false
-    const image = new Image()
+    const image = new window.Image()
     image.onload = () => {
       if (cancelled) return
       setDimensions({
@@ -765,16 +766,20 @@ function ImageViewer({
           <Loader2 className="size-4 animate-spin text-muted-foreground" />
         </div>
       ) : null}
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
+      <NextImage
         src={src}
         alt={basename(path)}
+        width={0}
+        height={0}
+        sizes="100vw"
+        unoptimized
         onError={() => setError(true)}
         onLoad={() => setLoaded(true)}
         className={cn(
           "mx-auto block max-h-none max-w-none p-6",
           loaded ? "opacity-100" : "opacity-0"
         )}
+        style={{ width: "auto", height: "auto" }}
       />
     </div>
   )

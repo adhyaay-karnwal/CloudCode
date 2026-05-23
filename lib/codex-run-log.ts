@@ -12,7 +12,7 @@ export type CodexRunLog = {
   message: string
 }
 
-export const CODEX_TOOL_MARKER_REGEX = /<codex-tool>([^<]*)<\/codex-tool>/g
+const CODEX_TOOL_MARKER_REGEX = /<codex-tool>([^<]*)<\/codex-tool>/g
 
 const MAX_MARKER_COMMAND_LENGTH = 1_000
 const MAX_MARKER_OUTPUT_LENGTH = 1_500

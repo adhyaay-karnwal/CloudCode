@@ -413,7 +413,6 @@ function ChatInner() {
   const [liveRunStates, setLiveRunStates] = useState<
     Record<string, CachedRunState>
   >({})
-  const [lastLiveRun, setLastLiveRun] = useState<LiveRunRecord | null>(null)
   const [revealedLiveRunContent, setRevealedLiveRunContent] = useState<
     Record<string, string>
   >({})
@@ -435,6 +434,7 @@ function ChatInner() {
     >
   >({})
   const threadRunStateRef = useRef<Record<string, CachedRunState>>({})
+  const lastLiveRunRef = useRef<LiveRunRecord | null>(null)
   const autoPresetDefaultedRef = useRef(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const composerRef = useRef<HTMLDivElement>(null)
@@ -508,38 +508,38 @@ function ChatInner() {
     },
     [revealNextLiveToken]
   )
+  const clearLiveRevealTimers = useCallback(() => {
+    for (const state of Object.values(liveRevealRef.current)) {
+      if (state.timer) clearTimeout(state.timer)
+    }
+  }, [])
 
   const active = useMemo(
     () => chats.find((c) => c.id === activeId) ?? null,
     [chats, activeId]
   )
-  useEffect(() => {
-    if (liveRun) setLastLiveRun(liveRun)
-  }, [liveRun])
-  const visibleLiveRun = useMemo(() => {
-    if (liveRun) return liveRun
-    if (!active || !lastLiveRun || active.id !== lastLiveRun.threadId) {
+  const visibleLiveRun = (() => {
+    if (liveRun) {
+      lastLiveRunRef.current = liveRun
+      return liveRun
+    }
+
+    const cachedLiveRun = lastLiveRunRef.current
+    if (!active || !cachedLiveRun || active.id !== cachedLiveRun.threadId) {
       return null
     }
 
     const liveMessage = active.messages.find(
-      (message) => message.id === lastLiveRun.assistantMessageId
+      (message) => message.id === cachedLiveRun.assistantMessageId
     )
 
-    return liveMessage?.pending || !liveMessage?.content.trim()
-      ? lastLiveRun
-      : null
-  }, [active, lastLiveRun, liveRun])
-  useEffect(() => {
-    if (liveRun || !lastLiveRun || !active) return
-
-    const liveMessage = active.messages.find(
-      (message) => message.id === lastLiveRun.assistantMessageId
-    )
     if (liveMessage && !liveMessage.pending && liveMessage.content.trim()) {
-      setLastLiveRun(null)
+      lastLiveRunRef.current = null
+      return null
     }
-  }, [active, lastLiveRun, liveRun])
+
+    return cachedLiveRun
+  })()
   useEffect(() => {
     if (!visibleLiveRun) return
 
@@ -589,19 +589,11 @@ function ChatInner() {
   useEffect(() => {
     if (visibleLiveRun) return
 
-    for (const state of Object.values(liveRevealRef.current)) {
-      if (state.timer) clearTimeout(state.timer)
-    }
+    clearLiveRevealTimers()
     liveRevealRef.current = {}
     setRevealedLiveRunContent({})
-  }, [visibleLiveRun])
-  useEffect(() => {
-    return () => {
-      for (const state of Object.values(liveRevealRef.current)) {
-        if (state.timer) clearTimeout(state.timer)
-      }
-    }
-  }, [])
+  }, [clearLiveRevealTimers, visibleLiveRun])
+  useEffect(() => clearLiveRevealTimers, [clearLiveRevealTimers])
   const liveActiveRunState = useMemo(
     () => cachedStateFromLiveRun(visibleLiveRun),
     [visibleLiveRun]
@@ -712,16 +704,15 @@ function ChatInner() {
     () => diffCacheKey(activeDiff ?? undefined),
     [activeDiff]
   )
-  const activeChangedTextPaths = useMemo(
-    () =>
-      getDiffStats(activeDiff ?? undefined)
-        .files.filter(
-          (file) => file.type !== "deleted" && canPrefetchAsText(file.path)
-        )
-        .map((file) => file.path)
-        .slice(0, 30),
-    [activeDiff]
-  )
+  const activeChangedTextPaths = useMemo(() => {
+    const paths: string[] = []
+    for (const file of getDiffStats(activeDiff ?? undefined).files) {
+      if (file.type === "deleted" || !canPrefetchAsText(file.path)) continue
+      paths.push(file.path)
+      if (paths.length === 30) break
+    }
+    return paths
+  }, [activeDiff])
   const editorDiff = activeFileDiff ?? activeDiff
   const activeRepoName = useMemo(() => {
     const label = repoLabel(repoUrl)
@@ -1852,7 +1843,10 @@ function SignedOutScreen() {
             Sign in to keep threads and Codex auth attached to your profile.
           </p>
           <SignInButton mode="modal">
-            <button className="mt-6 inline-flex h-10 items-center justify-center rounded-full bg-foreground px-5 text-sm font-medium text-background transition-opacity hover:opacity-85">
+            <button
+              type="button"
+              className="mt-6 inline-flex h-10 items-center justify-center rounded-full bg-foreground px-5 text-sm font-medium text-background transition-opacity hover:opacity-85"
+            >
               Sign in
             </button>
           </SignInButton>
@@ -2264,7 +2258,6 @@ function ConfirmDialog({
           </button>
           <button
             type="button"
-            autoFocus
             onClick={onConfirm}
             className={cn(
               "rounded-xl px-3 py-1.5 text-sm transition-colors",

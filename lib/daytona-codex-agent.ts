@@ -332,9 +332,10 @@ function findString(
   if (Array.isArray(value)) {
     if (depth > 6) return undefined
 
-    const parts = value
-      .map((nested) => findString(nested, keys, depth + 1))
-      .filter(Boolean)
+    const parts = value.flatMap((nested) => {
+      const part = findString(nested, keys, depth + 1)
+      return part ? [part] : []
+    })
 
     return parts.length ? parts.join(" ") : undefined
   }
@@ -987,8 +988,10 @@ async function updateCodexCli(
         ...[result.stderr, result.stdout].flatMap((value) =>
           value
             .split(/\r?\n/)
-            .map((line) => compactLine(line, 300))
-            .filter(Boolean)
+            .flatMap((line) => {
+              const compact = compactLine(line, 300)
+              return compact ? [compact] : []
+            })
             .slice(-8)
         ),
       ].join("\n")
@@ -998,8 +1001,10 @@ async function updateCodexCli(
   const version =
     result.stdout
       .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
+      .flatMap((line) => {
+        const trimmed = line.trim()
+        return trimmed ? [trimmed] : []
+      })
       .at(-1) || "Codex CLI ready"
 
   await emitLog(input, {
@@ -1173,10 +1178,10 @@ async function runPathInstallScript(
 
   if (result.exitCode !== 0) {
     const outputLines = [result.stderr, result.stdout].flatMap((value) =>
-      value
-        .split(/\r?\n/)
-        .map((line) => compactLine(line, 300))
-        .filter(Boolean)
+      value.split(/\r?\n/).flatMap((line) => {
+        const compact = compactLine(line, 300)
+        return compact ? [compact] : []
+      })
     )
     throw new Error(
       [
@@ -1292,10 +1297,10 @@ async function runPresetInstallScript(
 
   if (result.exitCode !== 0) {
     const outputLines = [result.stderr, result.stdout].flatMap((value) =>
-      value
-        .split(/\r?\n/)
-        .map((line) => compactLine(line, 300))
-        .filter(Boolean)
+      value.split(/\r?\n/).flatMap((line) => {
+        const compact = compactLine(line, 300)
+        return compact ? [compact] : []
+      })
     )
     throw new Error(
       [
@@ -1421,33 +1426,38 @@ async function cloneRepo({
   sandbox: Sandbox
   paths: DaytonaSandboxPaths
 }) {
-  await Promise.all([
-    emitLog(input, {
-      detail: baseBranch ? `branch ${baseBranch}` : undefined,
-      kind: "command",
-      message: `git clone ${repoUrl}`,
-    }),
-    runDaytonaCommand(
-      sandbox,
-      `rm -rf ${shellQuote(paths.repoPath)} && mkdir -p ${shellQuote(
-        paths.repoPath.replace(/\/[^/]+$/, "")
-      )}`,
-      { signal: input.signal, timeoutMs: 60_000 }
-    ),
-  ])
-  await sandbox.git.clone(
-    repoUrl,
-    paths.repoPath,
-    baseBranch,
-    undefined,
-    githubToken ? "x-access-token" : undefined,
-    githubToken
-  )
+  const cloneRepository = async () => {
+    await Promise.all([
+      emitLog(input, {
+        detail: baseBranch ? `branch ${baseBranch}` : undefined,
+        kind: "command",
+        message: `git clone ${repoUrl}`,
+      }),
+      runDaytonaCommand(
+        sandbox,
+        `rm -rf ${shellQuote(paths.repoPath)} && mkdir -p ${shellQuote(
+          paths.repoPath.replace(/\/[^/]+$/, "")
+        )}`,
+        { signal: input.signal, timeoutMs: 60_000 }
+      ),
+    ])
+    await sandbox.git.clone(
+      repoUrl,
+      paths.repoPath,
+      baseBranch,
+      undefined,
+      githubToken ? "x-access-token" : undefined,
+      githubToken
+    )
+  }
+
   if (requestedBranchName) {
+    await cloneRepository()
     await createBranch(sandbox, input, paths, requestedBranchName)
     return requestedBranchName
   }
 
+  await cloneRepository()
   return createDefaultBranch(sandbox, input, paths, branchName)
 }
 

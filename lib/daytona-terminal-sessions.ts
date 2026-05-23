@@ -26,7 +26,7 @@ function cleanSize(value: unknown, fallback: number, min: number, max: number) {
   return Math.min(max, Math.max(min, Math.round(number)))
 }
 
-export function terminalSessionKey(sandboxId: string, terminalId: string) {
+function terminalSessionKey(sandboxId: string, terminalId: string) {
   return keyFor(sandboxId, cleanTerminalId(terminalId))
 }
 

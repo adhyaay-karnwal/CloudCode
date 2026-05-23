@@ -92,7 +92,7 @@ export async function getConvexAuthToken() {
   return token
 }
 
-export function normalizeProfile(profile?: string) {
+function normalizeProfile(profile?: string) {
   const normalized = profile?.trim() || DEFAULT_PROFILE
 
   if (!/^[a-zA-Z0-9_-]{1,64}$/.test(normalized)) {
@@ -167,7 +167,7 @@ export function buildCodexAuthJson(auth: CodexChatGptAuth) {
   )
 }
 
-export function parseCodexAuthJson(authJson: string) {
+function parseCodexAuthJson(authJson: string) {
   let parsed: unknown
 
   try {
@@ -288,20 +288,6 @@ export async function saveCodexAuthJsonForWorker(
     userId: input.userId,
     workerSecret: input.workerSecret,
   })
-}
-
-export async function getCodexAuthJson(profileInput?: string) {
-  const profile = normalizeProfile(profileInput)
-  const client = await getClient()
-  const stored = await client.query(api.codexAuth.get, { profile })
-
-  if (!stored) {
-    throw new Error(
-      `No Codex ChatGPT OAuth credentials are stored for profile "${profile}".`
-    )
-  }
-
-  return buildCodexAuthJson(stored)
 }
 
 export async function getCodexAuthStatus(profileInput?: string) {

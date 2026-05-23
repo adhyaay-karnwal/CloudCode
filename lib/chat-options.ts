@@ -25,7 +25,3 @@ export const THINKING_LABEL: Record<Thinking, string> = {
   high: "High",
   xhigh: "Extra High",
 }
-
-export function shortModel(m: Model) {
-  return m.replace(/^gpt-/, "")
-}

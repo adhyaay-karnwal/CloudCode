@@ -7,7 +7,6 @@ import { useTheme } from "next-themes"
 import {
   type MouseEvent as ReactMouseEvent,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from "react"
@@ -114,12 +113,11 @@ export function SandboxTerminalPanel({
 
   const { resolvedTheme } = useTheme()
   const isDark = resolvedTheme !== "light"
-  const palette = useMemo<TerminalPalette>(
-    () => (isDark ? darkPalette : lightPalette),
-    [isDark]
-  )
+  const palette = isDark ? darkPalette : lightPalette
+  const paletteRef = useRef<TerminalPalette>(palette)
 
   useEffect(() => {
+    paletteRef.current = palette
     if (terminalRef.current) {
       terminalRef.current.options.theme = palette
     }
@@ -149,7 +147,7 @@ export function SandboxTerminalPanel({
       minimumContrastRatio: 4,
       scrollback: 10_000,
       smoothScrollDuration: 80,
-      theme: palette,
+      theme: paletteRef.current,
     })
     terminalRef.current = terminal
     const fitAddon = new FitAddon()
@@ -361,7 +359,6 @@ export function SandboxTerminalPanel({
     }
     // palette is applied via a separate effect; we intentionally don't recreate
     // the terminal when the theme changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, sandboxId, sessionVersion])
 
   function handleResizeStart(e: ReactMouseEvent<HTMLButtonElement>) {
