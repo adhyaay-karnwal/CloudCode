@@ -679,7 +679,8 @@ function ChatInner() {
     Boolean(active?.pending) || messages.some((message) => message.pending)
   const activeRunPending = activeLocalRunPending || activeMessagePending
   const canStopActiveRun = Boolean(active && activeRunPending)
-  const terminalVisible = terminalOpen && Boolean(activeSandboxId)
+  const terminalVisible =
+    terminalOpen && (Boolean(activeSandboxId) || activeRunPending)
   const threadBottomInset =
     Math.max(composerHeight, DEFAULT_COMPOSER_HEIGHT) +
     THREAD_BOTTOM_CLEARANCE +
@@ -1954,7 +1955,7 @@ function TopBar({
               onClick={onToggleTerminal}
               onPointerEnter={() => warmBrowserTerminal(sandboxId)}
               active={terminalOpen}
-              disabled={!sandboxId}
+              disabled={!sandboxId && !sandboxPending}
               label={
                 terminalOpen ? "Hide sandbox terminal" : "Show sandbox terminal"
               }
