@@ -234,6 +234,7 @@ const TERMINAL_OPEN_KEY = "cloudcode:terminalOpen"
 const DRAFT_RUN_KEY = "__draft__"
 const DEFAULT_COMPOSER_HEIGHT = 144
 const THREAD_BOTTOM_CLEARANCE = 32
+const DISPLAY_THREAD_TITLE_MAX_CHARS = 48
 const EMPTY_MESSAGES: Message[] = []
 const STREAM_TOOL_MARKER_REGEX = /<codex-tool>[\s\S]*?<\/codex-tool>/g
 
@@ -242,6 +243,12 @@ function repoLabel(url: string) {
   return url
     .replace(/^https?:\/\/(www\.)?github\.com\//, "")
     .replace(/\.git$/, "")
+}
+
+function limitThreadDisplayTitle(title: string) {
+  const chars = Array.from(title)
+  if (chars.length <= DISPLAY_THREAD_TITLE_MAX_CHARS) return title
+  return `${chars.slice(0, DISPLAY_THREAD_TITLE_MAX_CHARS - 3).join("")}...`
 }
 
 function splitStreamingTokens(delta: string) {
@@ -1619,6 +1626,13 @@ function ChatInner() {
       </div>
     )
 
+  const pendingDeleteTitle = pendingDeleteId
+    ? chats.find((c) => c.id === pendingDeleteId)?.title.trim()
+    : undefined
+  const pendingDeleteDisplayTitle = pendingDeleteTitle
+    ? limitThreadDisplayTitle(pendingDeleteTitle)
+    : null
+
   return (
     <div className="fixed inset-0 flex min-w-0 overflow-hidden bg-background text-foreground">
       {sidebarOpen ? (
@@ -1640,8 +1654,8 @@ function ChatInner() {
         <ConfirmDialog
           title="Delete chat?"
           description={
-            chats.find((c) => c.id === pendingDeleteId)?.title
-              ? `“${chats.find((c) => c.id === pendingDeleteId)?.title}” will be permanently deleted. This action cannot be undone.`
+            pendingDeleteDisplayTitle
+              ? `“${pendingDeleteDisplayTitle}” will be permanently deleted. This action cannot be undone.`
               : "This chat will be permanently deleted. This action cannot be undone."
           }
           confirmLabel="Delete"
@@ -1908,7 +1922,8 @@ function TopBar({
   sidebarOpen: boolean
   onToggleSidebar: () => void
 }) {
-  const displayTitle = title?.trim() || (isNew ? "New chat" : "Untitled")
+  const fullTitle = title?.trim() || (isNew ? "New chat" : "Untitled")
+  const displayTitle = limitThreadDisplayTitle(fullTitle)
   const repo = repoUrl ? repoLabel(repoUrl) : ""
   const showSandboxSection =
     showSandboxControls || Boolean(sandboxId || sandboxPending)
@@ -1926,7 +1941,11 @@ function TopBar({
       >
         <PanelLeft className="size-3.5" />
       </button>
-      <span className="min-w-0 truncate text-sm font-medium text-foreground/85">
+      <span
+        title={displayTitle === fullTitle ? undefined : fullTitle}
+        aria-label={fullTitle}
+        className="max-w-[42ch] min-w-0 truncate text-sm font-medium text-foreground/85"
+      >
         {displayTitle}
       </span>
       {repo ? (
