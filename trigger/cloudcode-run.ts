@@ -147,12 +147,22 @@ function createLogBuffer(
         return flushUntilDone()
       }
 
-      await flushUntilDone()
-      if (pending.length > 0 || flushError) {
-        throw flushError instanceof Error
-          ? flushError
-          : new Error("Unable to flush Codex run logs.")
+      if (pending.length === 0 && !flushPromise) {
+        if (flushError) {
+          throw flushError instanceof Error
+            ? flushError
+            : new Error("Unable to flush Codex run logs.")
+        }
+        return
       }
+
+      return flushUntilDone().then(() => {
+        if (pending.length > 0 || flushError) {
+          throw flushError instanceof Error
+            ? flushError
+            : new Error("Unable to flush Codex run logs.")
+        }
+      })
     },
   }
 }
@@ -255,12 +265,22 @@ function createContentBuffer(
         return flushUntilDone()
       }
 
-      await flushUntilDone()
-      if (content !== flushedContent || flushError) {
-        throw flushError instanceof Error
-          ? flushError
-          : new Error("Unable to flush Codex run content.")
+      if (content === flushedContent && !flushPromise) {
+        if (flushError) {
+          throw flushError instanceof Error
+            ? flushError
+            : new Error("Unable to flush Codex run content.")
+        }
+        return
       }
+
+      return flushUntilDone().then(() => {
+        if (content !== flushedContent || flushError) {
+          throw flushError instanceof Error
+            ? flushError
+            : new Error("Unable to flush Codex run content.")
+        }
+      })
     },
   }
 }

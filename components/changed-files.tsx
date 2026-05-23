@@ -34,8 +34,20 @@ type TreeNode =
   | { kind: "dir"; name: string; path: string; children: TreeNode[] }
   | { kind: "file"; name: string; path: string; stat: DiffFileStat }
 
+type DirNode = Extract<TreeNode, { kind: "dir" }>
+
 function buildFileTree(files: DiffFileStat[]): TreeNode[] {
   const roots: TreeNode[] = []
+  const dirIndexes = new WeakMap<TreeNode[], Map<string, DirNode>>()
+
+  const indexFor = (level: TreeNode[]) => {
+    let index = dirIndexes.get(level)
+    if (!index) {
+      index = new Map()
+      dirIndexes.set(level, index)
+    }
+    return index
+  }
 
   for (const file of files) {
     const segments = file.path.split("/").filter(Boolean)
@@ -51,13 +63,12 @@ function buildFileTree(files: DiffFileStat[]): TreeNode[] {
         return
       }
 
-      let dir = level.find(
-        (n): n is Extract<TreeNode, { kind: "dir" }> =>
-          n.kind === "dir" && n.name === segment
-      )
+      const levelIndex = indexFor(level)
+      let dir = levelIndex.get(segment)
       if (!dir) {
         dir = { kind: "dir", name: segment, path: acc, children: [] }
         level.push(dir)
+        levelIndex.set(segment, dir)
       }
       level = dir.children
     })

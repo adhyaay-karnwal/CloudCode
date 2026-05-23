@@ -377,8 +377,10 @@ export const saveRunState = mutation({
     threadId: v.id("threads"),
   },
   handler: async (ctx, args) => {
-    const userId = await ensureCurrentUser(ctx)
-    const thread = await ctx.db.get(args.threadId)
+    const [userId, thread] = await Promise.all([
+      ensureCurrentUser(ctx),
+      ctx.db.get(args.threadId),
+    ])
 
     if (!thread || thread.userId !== userId) {
       return { saved: false }

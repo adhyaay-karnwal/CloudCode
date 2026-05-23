@@ -2,11 +2,9 @@ import { randomUUID } from "node:crypto"
 
 import { Daytona, type Sandbox } from "@daytona/sdk"
 
-export const DAYTONA_TERMINAL_PORT = 22222
-export const DEFAULT_DAYTONA_HOME =
+const DAYTONA_TERMINAL_PORT = 22222
+const DEFAULT_DAYTONA_HOME =
   process.env.DAYTONA_SANDBOX_HOME?.trim() || "/home/daytona"
-export const DEFAULT_DAYTONA_REPO_PATH =
-  process.env.DAYTONA_REPO_PATH?.trim() || `${DEFAULT_DAYTONA_HOME}/repo`
 
 const DEFAULT_AUTO_STOP_MINUTES = 30
 const DEFAULT_AUTO_ARCHIVE_MINUTES = 7 * 24 * 60
@@ -113,7 +111,7 @@ function envNumber(name: string, fallback: number) {
   return Number.isFinite(value) ? value : fallback
 }
 
-export function defaultDaytonaAutostopMinutes() {
+function defaultDaytonaAutostopMinutes() {
   return Math.max(
     1,
     Math.round(
@@ -122,7 +120,7 @@ export function defaultDaytonaAutostopMinutes() {
   )
 }
 
-export function defaultDaytonaArchiveMinutes() {
+function defaultDaytonaArchiveMinutes() {
   return Math.max(
     0,
     Math.round(
@@ -131,13 +129,13 @@ export function defaultDaytonaArchiveMinutes() {
   )
 }
 
-export function defaultDaytonaDeleteMinutes() {
+function defaultDaytonaDeleteMinutes() {
   return Math.round(
     envNumber("DAYTONA_AUTO_DELETE_MINUTES", DEFAULT_AUTO_DELETE_MINUTES)
   )
 }
 
-export function defaultDaytonaCreateTimeoutSeconds() {
+function defaultDaytonaCreateTimeoutSeconds() {
   return Math.max(
     30,
     Math.round(
@@ -166,7 +164,7 @@ export function defaultDaytonaSandboxResources() {
   }
 }
 
-export function daytonaAutostopMinutesForRun(timeoutMs: number) {
+function daytonaAutostopMinutesForRun(timeoutMs: number) {
   const requested = Math.ceil(timeoutMs / 60_000) + 10
   return Math.max(defaultDaytonaAutostopMinutes(), requested)
 }
@@ -177,7 +175,7 @@ export function defaultDaytonaSnapshot() {
   )
 }
 
-export function defaultDaytonaImage() {
+function defaultDaytonaImage() {
   return process.env.DAYTONA_DEFAULT_IMAGE?.trim() || DEFAULT_DAYTONA_IMAGE
 }
 
@@ -215,7 +213,7 @@ function uniquePathEntries(entries: string[]) {
   return [...new Set(entries.filter(Boolean))]
 }
 
-export function daytonaPathForHomes(homes: string[]) {
+function daytonaPathForHomes(homes: string[]) {
   return uniquePathEntries([
     ...homes.flatMap((home) => daytonaUserPathEntries(home)),
     ...DAYTONA_SYSTEM_PATH_ENTRIES,
@@ -232,7 +230,7 @@ export function daytonaCodexPath(
   return daytonaPathForHomes([paths.runtimeHome, paths.home])
 }
 
-export function getDaytonaClient() {
+function getDaytonaClient() {
   return new Daytona({
     apiKey: process.env.DAYTONA_API_KEY,
     apiUrl: process.env.DAYTONA_API_URL,
@@ -271,7 +269,7 @@ export async function resolveDaytonaPaths(
   }
 }
 
-export function normalizeDaytonaState(state?: string): DaytonaUiState {
+function normalizeDaytonaState(state?: string): DaytonaUiState {
   if (state === "destroyed" || state === "destroying") {
     return "deleted"
   }
@@ -397,15 +395,6 @@ export async function stopDaytonaSandbox(sandboxId: string) {
   const sandbox = await getDaytonaSandbox(sandboxId)
   await sandbox.stop(120, true)
   return await readDaytonaSandboxInfo(sandboxId)
-}
-
-export async function stopDaytonaSandboxQuietly(sandboxId?: string) {
-  if (!sandboxId) return
-  try {
-    await stopDaytonaSandbox(sandboxId)
-  } catch {
-    // A stopped/missing sandbox is good enough for cancellation cleanup.
-  }
 }
 
 export async function resumeDaytonaSandbox(sandboxId: string) {
@@ -676,6 +665,10 @@ export async function runDaytonaCommand(
       }
     }
 
+    if (options.signal?.aborted) {
+      throw new Error("Run was canceled.")
+    }
+
     const response = await sandbox.process.executeSessionCommand(
       sessionId,
       {
@@ -684,10 +677,6 @@ export async function runDaytonaCommand(
       },
       timeout
     )
-    if (options.signal?.aborted) {
-      throw new Error("Run was canceled.")
-    }
-
     return {
       exitCode: response.exitCode ?? 0,
       stderr: response.stderr ?? "",

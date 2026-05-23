@@ -202,17 +202,18 @@ export const listWithEnvironments = query({
     const user = await getCurrentUser(ctx)
     if (!user) return []
 
-    const presets = await ctx.db
-      .query("sandboxPresets")
-      .withIndex("by_user_updated", (q) => q.eq("userId", user._id))
-      .order("desc")
-      .collect()
-
-    const environments = await ctx.db
-      .query("sandboxPresetEnvironments")
-      .withIndex("by_user_updated", (q) => q.eq("userId", user._id))
-      .order("desc")
-      .take(ENVIRONMENT_LIST_LIMIT)
+    const [presets, environments] = await Promise.all([
+      ctx.db
+        .query("sandboxPresets")
+        .withIndex("by_user_updated", (q) => q.eq("userId", user._id))
+        .order("desc")
+        .collect(),
+      ctx.db
+        .query("sandboxPresetEnvironments")
+        .withIndex("by_user_updated", (q) => q.eq("userId", user._id))
+        .order("desc")
+        .take(ENVIRONMENT_LIST_LIMIT),
+    ])
 
     const rows = await Promise.all(
       presets.map(async (preset) => {
@@ -801,18 +802,24 @@ export const remove = mutation({
       .collect()
 
     await Promise.all(
-      environments
-        .filter((environment) => environment.presetId === args.presetId)
-        .map(async (environment) => {
-          const builds = await ctx.db
-            .query("sandboxPresetBuilds")
-            .withIndex("by_environment_updated", (q) =>
-              q.eq("environmentId", environment._id)
-            )
-            .collect()
-          await Promise.all(builds.map((build) => ctx.db.delete(build._id)))
-          await ctx.db.delete(environment._id)
-        })
+      environments.flatMap((environment) =>
+        environment.presetId === args.presetId
+          ? [
+              (async () => {
+                const builds = await ctx.db
+                  .query("sandboxPresetBuilds")
+                  .withIndex("by_environment_updated", (q) =>
+                    q.eq("environmentId", environment._id)
+                  )
+                  .collect()
+                await Promise.all(
+                  builds.map((build) => ctx.db.delete(build._id))
+                )
+                await ctx.db.delete(environment._id)
+              })(),
+            ]
+          : []
+      )
     )
 
     await ctx.db.delete(args.presetId)
@@ -869,8 +876,10 @@ export const removeSecret = mutation({
     secretId: v.id("sandboxPresetSecrets"),
   },
   handler: async (ctx, args) => {
-    const userId = await ensureCurrentUser(ctx)
-    const secret = await ctx.db.get(args.secretId)
+    const [userId, secret] = await Promise.all([
+      ensureCurrentUser(ctx),
+      ctx.db.get(args.secretId),
+    ])
 
     if (!secret || secret.userId !== userId) {
       throw new Error("Secret not found.")

@@ -404,7 +404,7 @@ function PresetSettings({ presets }: { presets: SandboxPresetRecord[] }) {
             </label>
 
             {selectedIsAuto ? (
-              <div className="rounded-md border border-border/70 px-3 py-3">
+              <div className="rounded-md border border-border/70 p-3">
                 <div className="text-xs font-medium text-foreground/80">
                   Automatic cloudcode.yaml environments
                 </div>

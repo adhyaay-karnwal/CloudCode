@@ -107,8 +107,10 @@ export const MessageBlock = memo(function MessageBlock({
 const TOOL_MARKER_REGEX = /<codex-tool>([^<]*)<\/codex-tool>/g
 
 type AssistantSegment =
-  | { kind: "text"; text: string }
-  | { kind: "tool"; detail: ParsedLogDetail }
+  | { key: string; kind: "text"; text: string }
+  | { detail: ParsedLogDetail; key: string; kind: "tool" }
+
+const EMPTY_TOOL_DETAILS: ParsedLogDetail[] = []
 
 function splitContentByToolMarkers(text: string): AssistantSegment[] {
   const segments: AssistantSegment[] = []
@@ -117,19 +119,27 @@ function splitContentByToolMarkers(text: string): AssistantSegment[] {
   TOOL_MARKER_REGEX.lastIndex = 0
   while ((m = TOOL_MARKER_REGEX.exec(text)) !== null) {
     if (m.index > last) {
-      segments.push({ kind: "text", text: text.slice(last, m.index) })
+      segments.push({
+        key: `text-${last}-${m.index}`,
+        kind: "text",
+        text: text.slice(last, m.index),
+      })
     }
     try {
       const decoded = decodeURIComponent(m[1])
       const detail = JSON.parse(decoded) as ParsedLogDetail
-      segments.push({ kind: "tool", detail })
+      segments.push({ detail, key: `tool-${m.index}`, kind: "tool" })
     } catch {
       // ignore malformed marker
     }
     last = m.index + m[0].length
   }
   if (last < text.length) {
-    segments.push({ kind: "text", text: text.slice(last) })
+    segments.push({
+      key: `text-${last}-${text.length}`,
+      kind: "text",
+      text: text.slice(last),
+    })
   }
   return segments
 }
@@ -166,18 +176,25 @@ const AssistantBody = memo(function AssistantBody({
   const fallbackTools = hasMarkers ? [] : toolDetailsFromLogs(logs)
 
   const grouped: Array<
-    | { kind: "text"; text: string }
-    | { kind: "tools"; details: ParsedLogDetail[] }
+    | { key: string; kind: "text"; text: string }
+    | { details: ParsedLogDetail[]; key: string; kind: "tools" }
   > = []
   let toolBuf: ParsedLogDetail[] = []
+  let toolBufKey = ""
   function flushToolBuf() {
     if (toolBuf.length === 0) return
-    grouped.push({ kind: "tools", details: toolBuf })
+    grouped.push({
+      details: toolBuf,
+      key: `tools-${toolBufKey}`,
+      kind: "tools",
+    })
     toolBuf = []
+    toolBufKey = ""
   }
   for (const seg of segments) {
     if (seg.kind === "tool") {
       toolBuf.push(seg.detail)
+      toolBufKey = toolBufKey ? `${toolBufKey}-${seg.key}` : seg.key
     } else {
       flushToolBuf()
       grouped.push(seg)
@@ -185,7 +202,11 @@ const AssistantBody = memo(function AssistantBody({
   }
   flushToolBuf()
   if (fallbackTools.length > 0) {
-    grouped.push({ kind: "tools", details: fallbackTools })
+    grouped.push({
+      details: fallbackTools,
+      key: "fallback-tools",
+      kind: "tools",
+    })
   }
 
   let lastTextIndex = -1
@@ -207,7 +228,7 @@ const AssistantBody = memo(function AssistantBody({
   grouped.forEach((seg, i) => {
     if (showFinalSeparator && i === lastTextIndex) {
       rendered.push(
-        <div key={`sep-${i}`} className="flex items-center gap-4 py-4">
+        <div key={`sep-${seg.key}`} className="flex items-center gap-4 py-4">
           <div className="h-px flex-1 bg-border" />
           <span className="text-[10px] font-medium tracking-wider text-muted-foreground/60 uppercase">
             Response
@@ -217,11 +238,11 @@ const AssistantBody = memo(function AssistantBody({
       )
     }
     if (seg.kind === "tools") {
-      rendered.push(<ToolGroup key={i} details={seg.details} />)
+      rendered.push(<ToolGroup key={seg.key} details={seg.details} />)
     } else if (seg.text.trim()) {
       rendered.push(
         <Markdown
-          key={i}
+          key={seg.key}
           text={seg.text}
           className={cn("text-[15px] leading-7", error && "text-destructive")}
           repoName={repoName}
@@ -249,16 +270,18 @@ const PendingAssistantBody = memo(function PendingAssistantBody({
 }) {
   const segments = splitContentByToolMarkers(text)
   const hasMarkers = segments.some((segment) => segment.kind === "tool")
-  const fallbackTools = hasMarkers ? [] : toolDetailsFromLogs(logs)
+  const fallbackTools = hasMarkers
+    ? EMPTY_TOOL_DETAILS
+    : toolDetailsFromLogs(logs)
 
   return (
     <div className="space-y-3">
-      {segments.map((segment, index) =>
+      {segments.map((segment) =>
         segment.kind === "tool" ? (
-          <ToolGroup key={index} details={[segment.detail]} />
+          <SingleToolGroup key={segment.key} detail={segment.detail} />
         ) : segment.text.trim() ? (
           <Markdown
-            key={index}
+            key={segment.key}
             text={segment.text}
             className={cn("text-[15px] leading-7", error && "text-destructive")}
             repoName={repoName}
@@ -366,6 +389,20 @@ function toolDetailsFromLogs(logs: ChatRunLog[]) {
     )
 }
 
+function toolDetailKey(detail: ParsedLogDetail) {
+  return [
+    detail.kind,
+    detail.name,
+    detail.status,
+    detail.exitCode,
+    detail.command,
+    detail.text,
+    detail.output,
+  ]
+    .filter((part) => part !== undefined && part !== "")
+    .join(":")
+}
+
 const SetupLogRow = memo(function SetupLogRow({ log }: { log: ChatRunLog }) {
   const Icon =
     log.kind === "stderr" || log.kind === "command" ? Terminal : ScrollText
@@ -423,9 +460,21 @@ const ToolGroup = memo(function ToolGroup({
   if (details.length === 0) return null
   return (
     <div className="rounded-lg border border-border/40 px-2.5 py-1">
-      {details.map((detail, i) => (
-        <ToolRow key={i} detail={detail} />
+      {details.map((detail) => (
+        <ToolRow key={toolDetailKey(detail)} detail={detail} />
       ))}
+    </div>
+  )
+})
+
+const SingleToolGroup = memo(function SingleToolGroup({
+  detail,
+}: {
+  detail: ParsedLogDetail
+}) {
+  return (
+    <div className="rounded-lg border border-border/40 px-2.5 py-1">
+      <ToolRow detail={detail} />
     </div>
   )
 })
