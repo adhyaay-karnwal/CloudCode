@@ -2,16 +2,28 @@
 
 import { FitAddon } from "@xterm/addon-fit"
 import { Terminal } from "@xterm/xterm"
-import { CircleDot, Loader2, OctagonX, RefreshCw, X } from "lucide-react"
+import {
+  CircleDot,
+  Loader2,
+  OctagonX,
+  Plus,
+  RefreshCw,
+  SquareTerminal,
+  X,
+} from "lucide-react"
 import { useTheme } from "next-themes"
 import {
   type MouseEvent as ReactMouseEvent,
+  useCallback,
   useEffect,
   useRef,
   useState,
 } from "react"
 
-import { registerTerminalCloser } from "@/components/sandbox-terminal-session"
+import {
+  killBrowserTerminalSession,
+  registerTerminalCloser,
+} from "@/components/sandbox-terminal-session"
 import { cn } from "@/lib/utils"
 
 type TerminalStatus = "connecting" | "ready" | "reconnecting" | "error"
@@ -40,6 +52,27 @@ type TerminalPalette = {
   white: string
   yellow: string
 }
+
+type TerminalWindow = {
+  id: string
+  label: string
+  restartKey: number
+}
+
+type TerminalDockState = {
+  activeBySandbox: Record<string, string>
+  sessionsBySandbox: Record<string, TerminalWindow[]>
+}
+
+type MountedTerminalState = Record<string, Record<string, true>>
+
+type TerminalSessionState = {
+  error: string | null
+  status: TerminalStatus
+}
+
+const TERMINAL_DOCK_KEY = "cloudcode:terminalDock:v1"
+const TERMINAL_ID_PATTERN = /^[A-Za-z0-9._:-]{1,120}$/
 
 const darkPalette: TerminalPalette = {
   background: "#0b0d10",
@@ -91,6 +124,132 @@ const lightPalette: TerminalPalette = {
   yellow: "#bf8700",
 }
 
+function createTerminalId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return `cloudcode-${crypto.randomUUID()}`
+  }
+  return `cloudcode-${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2)}`
+}
+
+function terminalStatusLabel(state: TerminalSessionState | undefined) {
+  if (!state) return "Starting"
+  if (state.status === "ready") return "Connected"
+  if (state.status === "reconnecting") return "Reconnecting"
+  if (state.status === "error") return state.error ?? "Connection issue"
+  return "Connecting"
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value))
+}
+
+function loadPersistedTerminalDock(): TerminalDockState {
+  if (typeof window === "undefined") {
+    return { activeBySandbox: {}, sessionsBySandbox: {} }
+  }
+
+  try {
+    const raw = localStorage.getItem(TERMINAL_DOCK_KEY)
+    if (!raw) return { activeBySandbox: {}, sessionsBySandbox: {} }
+
+    const parsed = JSON.parse(raw) as unknown
+    if (!isPlainRecord(parsed)) {
+      return { activeBySandbox: {}, sessionsBySandbox: {} }
+    }
+
+    const persistedSessions = isPlainRecord(parsed.sessionsBySandbox)
+      ? parsed.sessionsBySandbox
+      : {}
+    const persistedActive = isPlainRecord(parsed.activeBySandbox)
+      ? parsed.activeBySandbox
+      : {}
+    const sessionsBySandbox: Record<string, TerminalWindow[]> = {}
+    const activeBySandbox: Record<string, string> = {}
+
+    for (const [sandboxId, value] of Object.entries(persistedSessions)) {
+      if (!sandboxId || !Array.isArray(value)) continue
+      const seen = new Set<string>()
+      const sessions: TerminalWindow[] = []
+
+      for (const item of value) {
+        if (!isPlainRecord(item)) continue
+        const id = typeof item.id === "string" ? item.id : ""
+        if (!TERMINAL_ID_PATTERN.test(id) || seen.has(id)) continue
+
+        seen.add(id)
+        sessions.push({
+          id,
+          label:
+            typeof item.label === "string" && item.label.trim()
+              ? item.label.trim()
+              : `Terminal ${sessions.length + 1}`,
+          restartKey: 0,
+        })
+      }
+
+      if (sessions.length === 0) continue
+      sessionsBySandbox[sandboxId] = sessions
+
+      const activeId = persistedActive[sandboxId]
+      activeBySandbox[sandboxId] =
+        typeof activeId === "string" &&
+        sessions.some((session) => session.id === activeId)
+          ? activeId
+          : sessions[0].id
+    }
+
+    return { activeBySandbox, sessionsBySandbox }
+  } catch {
+    return { activeBySandbox: {}, sessionsBySandbox: {} }
+  }
+}
+
+function persistTerminalDock(dock: TerminalDockState) {
+  if (typeof window === "undefined") return
+
+  try {
+    const sessionsBySandbox = Object.fromEntries(
+      Object.entries(dock.sessionsBySandbox)
+        .map(([sandboxId, sessions]) => [
+          sandboxId,
+          sessions.map(({ id, label }) => ({ id, label })),
+        ])
+        .filter(([, sessions]) => sessions.length > 0)
+    )
+
+    if (Object.keys(sessionsBySandbox).length === 0) {
+      localStorage.removeItem(TERMINAL_DOCK_KEY)
+      return
+    }
+
+    localStorage.setItem(
+      TERMINAL_DOCK_KEY,
+      JSON.stringify({
+        activeBySandbox: dock.activeBySandbox,
+        sessionsBySandbox,
+      })
+    )
+  } catch {
+    // Losing persisted dock metadata should not interrupt live terminal input.
+  }
+}
+
+function terminalNumbersFromDock(dock: TerminalDockState) {
+  const numbers: Record<string, number> = {}
+
+  for (const [sandboxId, sessions] of Object.entries(dock.sessionsBySandbox)) {
+    numbers[sandboxId] = sessions.reduce((max, session, index) => {
+      const match = /^Terminal (\d+)$/.exec(session.label)
+      const labelNumber = match ? Number(match[1]) : index + 1
+      return Number.isFinite(labelNumber) ? Math.max(max, labelNumber) : max
+    }, 0)
+  }
+
+  return numbers
+}
+
 export function SandboxTerminalPanel({
   open,
   sandboxId,
@@ -104,34 +263,34 @@ export function SandboxTerminalPanel({
   height: number
   onHeightChange: (height: number) => void
 }) {
-  const [error, setError] = useState<string | null>(null)
-  const [status, setStatus] = useState<TerminalStatus>("connecting")
-  const [sessionVersion, setSessionVersion] = useState(0)
   const [startedSandboxId, setStartedSandboxId] = useState<string | null>(null)
-  const containerRef = useRef<HTMLDivElement | null>(null)
-  const terminalRef = useRef<Terminal | null>(null)
+  const [dock, setDock] = useState<TerminalDockState>(loadPersistedTerminalDock)
+  const [sessionStates, setSessionStates] = useState<
+    Record<string, TerminalSessionState>
+  >({})
+  const [mountedBySandbox, setMountedBySandbox] =
+    useState<MountedTerminalState>({})
   const dragStartRef = useRef<{ h: number; y: number } | null>(null)
-  const openRef = useRef(open)
-  const resetSessionRef = useRef<(() => void) | null>(null)
-  const scheduleResizeRef = useRef<(() => void) | null>(null)
+  const nextTerminalNumberRef = useRef<Record<string, number>>(
+    terminalNumbersFromDock(dock)
+  )
 
   const { resolvedTheme } = useTheme()
   const isDark = resolvedTheme !== "light"
   const palette = isDark ? darkPalette : lightPalette
-  const paletteRef = useRef<TerminalPalette>(palette)
   const connectedSandboxId =
     startedSandboxId === sandboxId ? startedSandboxId : open ? sandboxId : null
 
-  useEffect(() => {
-    paletteRef.current = palette
-    if (terminalRef.current) {
-      terminalRef.current.options.theme = palette
-    }
-  }, [palette])
+  const createTerminalWindow = useCallback((targetSandboxId: string) => {
+    const nextNumber = (nextTerminalNumberRef.current[targetSandboxId] ?? 0) + 1
+    nextTerminalNumberRef.current[targetSandboxId] = nextNumber
 
-  useEffect(() => {
-    openRef.current = open
-  }, [open])
+    return {
+      id: createTerminalId(),
+      label: `Terminal ${nextNumber}`,
+      restartKey: 0,
+    }
+  }, [])
 
   useEffect(() => {
     if (!sandboxId) {
@@ -145,7 +304,410 @@ export function SandboxTerminalPanel({
   }, [open, sandboxId, startedSandboxId])
 
   useEffect(() => {
-    if (!open || !connectedSandboxId) return
+    persistTerminalDock(dock)
+  }, [dock])
+
+  useEffect(() => {
+    if (!connectedSandboxId) return
+
+    setDock((current) => {
+      const sessions = current.sessionsBySandbox[connectedSandboxId] ?? []
+      if (sessions.length > 0) {
+        const activeId = current.activeBySandbox[connectedSandboxId]
+        if (activeId && sessions.some((session) => session.id === activeId)) {
+          return current
+        }
+
+        return {
+          activeBySandbox: {
+            ...current.activeBySandbox,
+            [connectedSandboxId]: sessions[0].id,
+          },
+          sessionsBySandbox: current.sessionsBySandbox,
+        }
+      }
+
+      const terminal = createTerminalWindow(connectedSandboxId)
+      return {
+        activeBySandbox: {
+          ...current.activeBySandbox,
+          [connectedSandboxId]: terminal.id,
+        },
+        sessionsBySandbox: {
+          ...current.sessionsBySandbox,
+          [connectedSandboxId]: [terminal],
+        },
+      }
+    })
+  }, [connectedSandboxId, createTerminalWindow])
+
+  const handleSessionStatusChange = useCallback(
+    (terminalId: string, nextState: TerminalSessionState) => {
+      setSessionStates((current) => {
+        const currentState = current[terminalId]
+        if (
+          currentState?.status === nextState.status &&
+          currentState.error === nextState.error
+        ) {
+          return current
+        }
+        return { ...current, [terminalId]: nextState }
+      })
+    },
+    []
+  )
+
+  const sessions = connectedSandboxId
+    ? (dock.sessionsBySandbox[connectedSandboxId] ?? [])
+    : []
+  const activeSessionId = connectedSandboxId
+    ? dock.activeBySandbox[connectedSandboxId]
+    : undefined
+  const activeSession =
+    sessions.find((session) => session.id === activeSessionId) ??
+    sessions[0] ??
+    null
+  const activeState = activeSession
+    ? sessionStates[activeSession.id]
+    : undefined
+  const mountedSessions = connectedSandboxId
+    ? (mountedBySandbox[connectedSandboxId] ?? {})
+    : {}
+  const renderSessions = sessions.filter(
+    (session) => mountedSessions[session.id] || session.id === activeSession?.id
+  )
+
+  useEffect(() => {
+    if (!connectedSandboxId || !activeSession) return
+
+    setMountedBySandbox((current) => {
+      if (current[connectedSandboxId]?.[activeSession.id]) return current
+
+      return {
+        ...current,
+        [connectedSandboxId]: {
+          ...current[connectedSandboxId],
+          [activeSession.id]: true,
+        },
+      }
+    })
+  }, [activeSession, connectedSandboxId])
+
+  function addTerminalWindow() {
+    if (!connectedSandboxId) return
+    const terminal = createTerminalWindow(connectedSandboxId)
+    setDock((current) => ({
+      activeBySandbox: {
+        ...current.activeBySandbox,
+        [connectedSandboxId]: terminal.id,
+      },
+      sessionsBySandbox: {
+        ...current.sessionsBySandbox,
+        [connectedSandboxId]: [
+          ...(current.sessionsBySandbox[connectedSandboxId] ?? []),
+          terminal,
+        ],
+      },
+    }))
+  }
+
+  function selectTerminalWindow(terminalId: string) {
+    if (!connectedSandboxId) return
+    setDock((current) => ({
+      activeBySandbox: {
+        ...current.activeBySandbox,
+        [connectedSandboxId]: terminalId,
+      },
+      sessionsBySandbox: current.sessionsBySandbox,
+    }))
+  }
+
+  function closeTerminalWindow(terminalId: string) {
+    if (!connectedSandboxId || sessions.length <= 1) return
+    void killBrowserTerminalSession(connectedSandboxId, terminalId)
+    setSessionStates((current) => {
+      const next = { ...current }
+      delete next[terminalId]
+      return next
+    })
+    setMountedBySandbox((current) => {
+      const currentSessions = current[connectedSandboxId]
+      if (!currentSessions?.[terminalId]) return current
+
+      const { [terminalId]: _removed, ...nextSessions } = currentSessions
+      void _removed
+      return {
+        ...current,
+        [connectedSandboxId]: nextSessions,
+      }
+    })
+    setDock((current) => {
+      const currentSessions =
+        current.sessionsBySandbox[connectedSandboxId] ?? []
+      const removedIndex = currentSessions.findIndex(
+        (session) => session.id === terminalId
+      )
+      const nextSessions = currentSessions.filter(
+        (session) => session.id !== terminalId
+      )
+      const nextActiveId =
+        current.activeBySandbox[connectedSandboxId] === terminalId
+          ? (nextSessions[Math.max(0, removedIndex - 1)] ?? nextSessions[0])?.id
+          : current.activeBySandbox[connectedSandboxId]
+
+      return {
+        activeBySandbox: {
+          ...current.activeBySandbox,
+          ...(nextActiveId ? { [connectedSandboxId]: nextActiveId } : {}),
+        },
+        sessionsBySandbox: {
+          ...current.sessionsBySandbox,
+          [connectedSandboxId]: nextSessions,
+        },
+      }
+    })
+  }
+
+  function reconnectActiveTerminal() {
+    if (!connectedSandboxId || !activeSession) return
+    const sandboxId = connectedSandboxId
+    const terminalId = activeSession.id
+    setSessionStates((current) => ({
+      ...current,
+      [terminalId]: { error: null, status: "connecting" },
+    }))
+    void (async () => {
+      await killBrowserTerminalSession(sandboxId, terminalId, {
+        forget: false,
+      })
+      setDock((current) => {
+        const currentSessions = current.sessionsBySandbox[sandboxId] ?? []
+        return {
+          activeBySandbox: current.activeBySandbox,
+          sessionsBySandbox: {
+            ...current.sessionsBySandbox,
+            [sandboxId]: currentSessions.map((session) =>
+              session.id === terminalId
+                ? { ...session, restartKey: session.restartKey + 1 }
+                : session
+            ),
+          },
+        }
+      })
+    })()
+  }
+
+  function handleResizeStart(e: ReactMouseEvent<HTMLButtonElement>) {
+    e.preventDefault()
+    dragStartRef.current = { h: height, y: e.clientY }
+
+    function onMove(ev: MouseEvent) {
+      const ctx = dragStartRef.current
+      if (!ctx) return
+      const next = Math.min(
+        Math.max(260, ctx.h + (ctx.y - ev.clientY)),
+        Math.max(300, window.innerHeight - 180)
+      )
+      onHeightChange(next)
+    }
+
+    function onUp() {
+      dragStartRef.current = null
+      window.removeEventListener("mousemove", onMove)
+      window.removeEventListener("mouseup", onUp)
+      document.body.style.removeProperty("cursor")
+      document.body.style.removeProperty("user-select")
+    }
+
+    document.body.style.cursor = "row-resize"
+    document.body.style.userSelect = "none"
+    window.addEventListener("mousemove", onMove)
+    window.addEventListener("mouseup", onUp)
+  }
+
+  if (!open && !connectedSandboxId) return null
+
+  const waitingForSandbox = open && !connectedSandboxId
+  const statusLabel = waitingForSandbox
+    ? "Waiting"
+    : terminalStatusLabel(activeState)
+  const statusIsError = !waitingForSandbox && activeState?.status === "error"
+  const statusIsReady = !waitingForSandbox && activeState?.status === "ready"
+
+  return (
+    <section
+      aria-hidden={!open}
+      className="absolute inset-x-0 bottom-0 z-20 flex min-h-0 flex-col overflow-hidden border-t border-border/60 bg-background text-foreground"
+      style={{
+        height: open ? height : 0,
+        visibility: open ? "visible" : "hidden",
+        pointerEvents: open ? undefined : "none",
+      }}
+    >
+      <button
+        type="button"
+        aria-label="Resize terminal"
+        onMouseDown={handleResizeStart}
+        className="group absolute top-0 right-0 left-0 z-30 h-2 -translate-y-1 cursor-row-resize border-0 bg-transparent p-0"
+      >
+        <span
+          aria-hidden
+          className="pointer-events-none absolute top-1 right-0 left-0 h-px bg-border/60 transition-colors group-hover:bg-primary/40"
+        />
+      </button>
+      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border/60 px-2">
+        <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
+          {sessions.map((session) => {
+            const active = session.id === activeSession?.id
+            return (
+              <div
+                key={session.id}
+                className={cn(
+                  "flex h-7 min-w-0 shrink-0 items-center rounded-lg text-xs transition-colors",
+                  active
+                    ? "bg-muted text-foreground"
+                    : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                )}
+              >
+                <button
+                  type="button"
+                  onClick={() => selectTerminalWindow(session.id)}
+                  aria-label={`Open ${session.label}`}
+                  aria-pressed={active}
+                  title={session.label}
+                  className={cn(
+                    "flex h-full min-w-0 items-center gap-1.5 rounded-lg px-2.5 outline-none focus-visible:ring-3 focus-visible:ring-ring/30",
+                    sessions.length > 1 && "pr-1.5"
+                  )}
+                >
+                  <SquareTerminal className="size-3.5 shrink-0" />
+                  <span className="max-w-28 truncate">{session.label}</span>
+                </button>
+                {sessions.length > 1 ? (
+                  <button
+                    type="button"
+                    onClick={() => closeTerminalWindow(session.id)}
+                    aria-label={`Close ${session.label}`}
+                    title={`Close ${session.label}`}
+                    className="mr-0.5 inline-flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/30"
+                  >
+                    <X className="size-3" />
+                  </button>
+                ) : null}
+              </div>
+            )
+          })}
+          <button
+            type="button"
+            onClick={addTerminalWindow}
+            disabled={!connectedSandboxId}
+            aria-label="New terminal"
+            title="New terminal"
+            className="ml-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/30 disabled:pointer-events-none disabled:opacity-40"
+          >
+            <Plus className="size-3.5" />
+          </button>
+        </div>
+        <div className="flex shrink-0 items-center gap-1" aria-live="polite">
+          <span
+            className={cn(
+              "pointer-events-none inline-flex max-w-48 items-center gap-1.5 truncate px-1.5 text-xs font-medium",
+              statusIsError ? "text-destructive" : "text-muted-foreground"
+            )}
+            title={
+              statusIsError ? (activeState?.error ?? undefined) : undefined
+            }
+          >
+            {statusIsReady ? (
+              <CircleDot className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+            ) : statusIsError ? (
+              <OctagonX className="size-3.5 shrink-0" />
+            ) : (
+              <Loader2 className="size-3.5 shrink-0 animate-spin" />
+            )}
+            <span className="truncate">{statusLabel}</span>
+          </span>
+          <button
+            type="button"
+            onClick={reconnectActiveTerminal}
+            disabled={!activeSession}
+            aria-label="Reconnect terminal"
+            title="Reconnect terminal"
+            className="inline-flex size-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/30 disabled:pointer-events-none disabled:opacity-40"
+          >
+            <RefreshCw className="size-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Hide terminal dock"
+            title="Hide terminal dock"
+            className="inline-flex size-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/30"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+      </div>
+      <div
+        className="min-h-0 flex-1 overflow-hidden px-3 pt-3 pb-1"
+        style={{ background: palette.background, color: palette.foreground }}
+      >
+        <div className="relative h-full w-full overflow-hidden">
+          {connectedSandboxId && sessions.length > 0 ? (
+            renderSessions.map((session) => (
+              <SandboxTerminalPane
+                key={`${connectedSandboxId}:${session.id}:${session.restartKey}`}
+                active={open && session.id === activeSession?.id}
+                palette={palette}
+                sandboxId={connectedSandboxId}
+                session={session}
+                onStatusChange={handleSessionStatusChange}
+              />
+            ))
+          ) : (
+            <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" />
+              <span>Waiting for sandbox</span>
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function SandboxTerminalPane({
+  active,
+  palette,
+  sandboxId,
+  session,
+  onStatusChange,
+}: {
+  active: boolean
+  palette: TerminalPalette
+  sandboxId: string
+  session: TerminalWindow
+  onStatusChange: (terminalId: string, state: TerminalSessionState) => void
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const terminalRef = useRef<Terminal | null>(null)
+  const activeRef = useRef(active)
+  const paletteRef = useRef<TerminalPalette>(palette)
+  const scheduleResizeRef = useRef<(() => void) | null>(null)
+
+  useEffect(() => {
+    activeRef.current = active
+  }, [active])
+
+  useEffect(() => {
+    paletteRef.current = palette
+    if (terminalRef.current) {
+      terminalRef.current.options.theme = palette
+    }
+  }, [palette])
+
+  useEffect(() => {
+    if (!active) return
 
     const frame = requestAnimationFrame(() => {
       scheduleResizeRef.current?.()
@@ -153,16 +715,13 @@ export function SandboxTerminalPanel({
     })
 
     return () => cancelAnimationFrame(frame)
-  }, [connectedSandboxId, height, open])
+  }, [active])
 
   useEffect(() => {
-    if (!connectedSandboxId || !containerRef.current) return
+    if (!containerRef.current) return
 
-    const sessionSandboxId = connectedSandboxId
-    const terminalId =
-      typeof crypto !== "undefined" && "randomUUID" in crypto
-        ? `cloudcode-${crypto.randomUUID()}`
-        : `cloudcode-${Date.now().toString(36)}`
+    const sessionSandboxId = sandboxId
+    const terminalId = session.id
     const terminal = new Terminal({
       allowProposedApi: false,
       convertEol: false,
@@ -190,6 +749,13 @@ export function SandboxTerminalPanel({
     let pendingInput = ""
     let resizeTimer: ReturnType<typeof setTimeout> | undefined
     let lastSize = { cols: 0, rows: 0 }
+
+    function setTerminalState(
+      status: TerminalStatus,
+      error: string | null = null
+    ) {
+      onStatusChange(terminalId, { error, status })
+    }
 
     function postTerminal(payload: Record<string, unknown>) {
       if (disposed) return Promise.resolve()
@@ -221,13 +787,15 @@ export function SandboxTerminalPanel({
       pendingInput = ""
       void postTerminal({ data }).catch((err) => {
         if (disposed) return
-        setStatus("error")
-        setError(err instanceof Error ? err.message : "Terminal input failed.")
+        setTerminalState(
+          "error",
+          err instanceof Error ? err.message : "Terminal input failed."
+        )
       })
     }
 
     function sendResize() {
-      if (disposed) return
+      if (disposed || !activeRef.current) return
       try {
         fitAddon.fit()
       } catch {
@@ -246,31 +814,20 @@ export function SandboxTerminalPanel({
     }
 
     function scheduleResize() {
+      if (!activeRef.current) return
       if (resizeTimer) clearTimeout(resizeTimer)
       resizeTimer = setTimeout(sendResize, 50)
     }
     scheduleResizeRef.current = scheduleResize
 
     function killTerminal() {
-      void fetch("/api/sandbox/terminal/pty", {
-        body: JSON.stringify({ sandboxId: sessionSandboxId, terminalId }),
-        cache: "no-store",
-        headers: { "Content-Type": "application/json" },
-        method: "DELETE",
-      }).catch(() => undefined)
+      void killBrowserTerminalSession(sessionSandboxId, terminalId)
     }
 
-    function resetTerminalSession() {
-      killTerminal()
-      setStartedSandboxId((current) =>
-        current === sessionSandboxId ? null : current
-      )
-    }
-
-    resetSessionRef.current = resetTerminalSession
     const unregisterCloser = registerTerminalCloser(
       sessionSandboxId,
-      resetTerminalSession
+      terminalId,
+      killTerminal
     )
 
     function queueInput(data: string) {
@@ -324,7 +881,7 @@ export function SandboxTerminalPanel({
 
     terminal.loadAddon(fitAddon)
     terminal.open(node)
-    terminal.focus()
+    if (activeRef.current) terminal.focus()
     resizeObserver?.observe(node)
     window.addEventListener("resize", scheduleResize)
 
@@ -342,8 +899,7 @@ export function SandboxTerminalPanel({
       terminalId,
     })
 
-    setStatus("connecting")
-    setError(null)
+    setTerminalState("connecting")
 
     const eventSource = new EventSource(`/api/sandbox/terminal/pty?${params}`)
     eventSource.onmessage = (event) => {
@@ -360,9 +916,8 @@ export function SandboxTerminalPanel({
       }
 
       if (message.type === "ready") {
-        setStatus("ready")
-        setError(null)
-        if (openRef.current) terminal.focus()
+        setTerminalState("ready")
+        if (activeRef.current) terminal.focus()
         return
       }
 
@@ -381,22 +936,18 @@ export function SandboxTerminalPanel({
           typeof message.error === "string"
             ? message.error
             : "Unable to connect Daytona terminal."
-        setStatus("error")
-        setError(detail)
+        setTerminalState("error", detail)
         terminal.writeln(`\r\n${detail}`)
-        eventSource?.close()
+        eventSource.close()
       }
     }
     eventSource.onerror = () => {
-      if (disposed || eventSource?.readyState === EventSource.CLOSED) return
-      setStatus("reconnecting")
+      if (disposed || eventSource.readyState === EventSource.CLOSED) return
+      setTerminalState("reconnecting")
     }
 
     return () => {
       unregisterCloser()
-      if (resetSessionRef.current === resetTerminalSession) {
-        resetSessionRef.current = null
-      }
       if (scheduleResizeRef.current === scheduleResize) {
         scheduleResizeRef.current = null
       }
@@ -407,141 +958,28 @@ export function SandboxTerminalPanel({
       dataDisposable.dispose()
       resizeObserver?.disconnect()
       window.removeEventListener("resize", scheduleResize)
-      eventSource?.close()
+      eventSource.close()
       terminal.dispose()
       if (terminalRef.current === terminal) terminalRef.current = null
     }
     // palette is applied via a separate effect; we intentionally don't recreate
     // the terminal when the theme changes.
-  }, [connectedSandboxId, sessionVersion])
-
-  function handleResizeStart(e: ReactMouseEvent<HTMLButtonElement>) {
-    e.preventDefault()
-    dragStartRef.current = { h: height, y: e.clientY }
-
-    function onMove(ev: MouseEvent) {
-      const ctx = dragStartRef.current
-      if (!ctx) return
-      const next = Math.min(
-        Math.max(260, ctx.h + (ctx.y - ev.clientY)),
-        Math.max(300, window.innerHeight - 180)
-      )
-      onHeightChange(next)
-    }
-
-    function onUp() {
-      dragStartRef.current = null
-      window.removeEventListener("mousemove", onMove)
-      window.removeEventListener("mouseup", onUp)
-      document.body.style.removeProperty("cursor")
-      document.body.style.removeProperty("user-select")
-    }
-
-    document.body.style.cursor = "row-resize"
-    document.body.style.userSelect = "none"
-    window.addEventListener("mousemove", onMove)
-    window.addEventListener("mouseup", onUp)
-  }
-
-  if (!open && !connectedSandboxId) return null
-
-  const waitingForSandbox = open && !connectedSandboxId
-  const statusLabel = waitingForSandbox
-    ? "Waiting"
-    : status === "ready"
-      ? "Connected"
-      : status === "reconnecting"
-        ? "Reconnecting"
-        : status === "error"
-          ? (error ?? "Connection issue")
-          : "Connecting"
-
-  const surfaceBg = palette.background
+  }, [onStatusChange, sandboxId, session.id, session.restartKey])
 
   return (
-    <section
-      aria-hidden={!open}
-      className="absolute inset-x-0 bottom-0 z-20 flex min-h-0 flex-col overflow-hidden border-t border-border/70"
-      style={{
-        height: open ? height : 0,
-        visibility: open ? "visible" : "hidden",
-        background: surfaceBg,
-        color: palette.foreground,
-        pointerEvents: open ? undefined : "none",
-      }}
+    <div
+      aria-hidden={!active}
+      className={cn(
+        "absolute inset-0 overflow-hidden transition-opacity",
+        active ? "opacity-100" : "pointer-events-none opacity-0"
+      )}
+      style={{ background: palette.background }}
     >
-      <button
-        type="button"
-        aria-label="Resize terminal"
-        onMouseDown={handleResizeStart}
-        className="group absolute top-0 right-0 left-0 z-30 h-2 -translate-y-1 cursor-row-resize border-0 bg-transparent p-0"
-      >
-        <span
-          aria-hidden
-          className="pointer-events-none absolute top-1 right-0 left-0 h-px bg-border/50 transition-colors group-hover:bg-primary/40"
-        />
-      </button>
       <div
-        className="absolute top-2 right-2 z-20 flex items-center gap-1"
-        aria-live="polite"
-      >
-        <span
-          className={cn(
-            "pointer-events-none inline-flex items-center gap-1.5 px-1.5 text-xs font-medium",
-            !waitingForSandbox && status === "error"
-              ? "text-red-500/90"
-              : "text-muted-foreground"
-          )}
-          title={waitingForSandbox ? undefined : (error ?? undefined)}
-        >
-          {!waitingForSandbox && status === "ready" ? (
-            <CircleDot className="size-3.5 text-emerald-600 dark:text-emerald-400" />
-          ) : !waitingForSandbox && status === "error" ? (
-            <OctagonX className="size-3.5" />
-          ) : (
-            <Loader2 className="size-3.5 animate-spin" />
-          )}
-          <span>{statusLabel}</span>
-        </span>
-        <button
-          type="button"
-          onClick={() => {
-            resetSessionRef.current?.()
-            setSessionVersion((v) => v + 1)
-          }}
-          aria-label="Reconnect terminal"
-          title="Reconnect terminal"
-          className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        >
-          <RefreshCw className="size-3.5" />
-        </button>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close terminal"
-          title="Close terminal"
-          className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        >
-          <X className="size-4" />
-        </button>
-      </div>
-      <div
-        className="min-h-0 flex-1 overflow-hidden px-3 pt-3 pb-1"
-        style={{ background: surfaceBg }}
-      >
-        {connectedSandboxId ? (
-          <div
-            ref={containerRef}
-            className="h-full w-full overflow-hidden [&_.xterm]:!bg-transparent [&_.xterm-screen]:outline-none [&_.xterm-viewport]:!bg-transparent"
-            style={{ background: surfaceBg }}
-          />
-        ) : (
-          <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" />
-            <span>Waiting for sandbox</span>
-          </div>
-        )}
-      </div>
-    </section>
+        ref={containerRef}
+        className="h-full w-full overflow-hidden [&_.xterm]:!bg-transparent [&_.xterm-screen]:outline-none [&_.xterm-viewport]:!bg-transparent"
+        style={{ background: palette.background }}
+      />
+    </div>
   )
 }
