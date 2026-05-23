@@ -20,6 +20,7 @@ import {
   useState,
 } from "react"
 
+import { ContextMenu } from "@/components/context-menu"
 import {
   killBrowserTerminalSession,
   registerTerminalCloser,
@@ -270,6 +271,12 @@ export function SandboxTerminalPanel({
   >({})
   const [mountedBySandbox, setMountedBySandbox] =
     useState<MountedTerminalState>({})
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [menu, setMenu] = useState<{
+    terminalId: string
+    x: number
+    y: number
+  } | null>(null)
   const dragStartRef = useRef<{ h: number; y: number } | null>(null)
   const nextTerminalNumberRef = useRef<Record<string, number>>(
     terminalNumbersFromDock(dock)
@@ -422,6 +429,32 @@ export function SandboxTerminalPanel({
     }))
   }
 
+  function renameTerminalWindow(terminalId: string, nextLabel: string) {
+    if (!connectedSandboxId) return
+    const trimmed = nextLabel.trim()
+    if (!trimmed) return
+    setDock((current) => {
+      const currentSessions =
+        current.sessionsBySandbox[connectedSandboxId] ?? []
+      if (
+        !currentSessions.some(
+          (session) => session.id === terminalId && session.label !== trimmed
+        )
+      ) {
+        return current
+      }
+      return {
+        activeBySandbox: current.activeBySandbox,
+        sessionsBySandbox: {
+          ...current.sessionsBySandbox,
+          [connectedSandboxId]: currentSessions.map((session) =>
+            session.id === terminalId ? { ...session, label: trimmed } : session
+          ),
+        },
+      }
+    })
+  }
+
   function closeTerminalWindow(terminalId: string) {
     if (!connectedSandboxId || sessions.length <= 1) return
     void killBrowserTerminalSession(connectedSandboxId, terminalId)
@@ -557,46 +590,33 @@ export function SandboxTerminalPanel({
       </button>
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border/60 px-2">
         <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
-          {sessions.map((session) => {
-            const active = session.id === activeSession?.id
-            return (
-              <div
-                key={session.id}
-                className={cn(
-                  "flex h-7 min-w-0 shrink-0 items-center rounded-lg text-xs transition-colors",
-                  active
-                    ? "bg-muted text-foreground"
-                    : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-                )}
-              >
-                <button
-                  type="button"
-                  onClick={() => selectTerminalWindow(session.id)}
-                  aria-label={`Open ${session.label}`}
-                  aria-pressed={active}
-                  title={session.label}
-                  className={cn(
-                    "flex h-full min-w-0 items-center gap-1.5 rounded-lg px-2.5 outline-none focus-visible:ring-3 focus-visible:ring-ring/30",
-                    sessions.length > 1 && "pr-1.5"
-                  )}
-                >
-                  <SquareTerminal className="size-3.5 shrink-0" />
-                  <span className="max-w-28 truncate">{session.label}</span>
-                </button>
-                {sessions.length > 1 ? (
-                  <button
-                    type="button"
-                    onClick={() => closeTerminalWindow(session.id)}
-                    aria-label={`Close ${session.label}`}
-                    title={`Close ${session.label}`}
-                    className="mr-0.5 inline-flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/30"
-                  >
-                    <X className="size-3" />
-                  </button>
-                ) : null}
-              </div>
-            )
-          })}
+          {sessions.map((session) => (
+            <TerminalTab
+              key={session.id}
+              session={session}
+              active={session.id === activeSession?.id}
+              editing={editingId === session.id}
+              onSelect={() => selectTerminalWindow(session.id)}
+              onStartRename={() => {
+                setMenu(null)
+                setEditingId(session.id)
+              }}
+              onCancelRename={() => setEditingId(null)}
+              onCommitRename={(label) => {
+                renameTerminalWindow(session.id, label)
+                setEditingId(null)
+              }}
+              onContextMenu={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                setMenu({
+                  terminalId: session.id,
+                  x: event.clientX,
+                  y: event.clientY,
+                })
+              }}
+            />
+          ))}
           <button
             type="button"
             onClick={addTerminalWindow}
@@ -672,7 +692,112 @@ export function SandboxTerminalPanel({
           )}
         </div>
       </div>
+      {menu ? (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          items={[
+            {
+              label: "Rename",
+              onSelect: () => setEditingId(menu.terminalId),
+            },
+            {
+              label: "Delete",
+              destructive: true,
+              disabled: sessions.length <= 1,
+              onSelect: () => closeTerminalWindow(menu.terminalId),
+            },
+          ]}
+        />
+      ) : null}
     </section>
+  )
+}
+
+function TerminalTab({
+  active,
+  editing,
+  session,
+  onSelect,
+  onStartRename,
+  onCancelRename,
+  onCommitRename,
+  onContextMenu,
+}: {
+  active: boolean
+  editing: boolean
+  session: TerminalWindow
+  onSelect: () => void
+  onStartRename: () => void
+  onCancelRename: () => void
+  onCommitRename: (label: string) => void
+  onContextMenu: (event: ReactMouseEvent<HTMLElement>) => void
+}) {
+  const [draft, setDraft] = useState(session.label)
+  const inputRef = useRef<HTMLInputElement | null>(null)
+
+  useEffect(() => {
+    if (!editing) return
+    setDraft(session.label)
+    const frame = requestAnimationFrame(() => {
+      inputRef.current?.focus()
+      inputRef.current?.select()
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [editing, session.label])
+
+  const containerClass = cn(
+    "flex h-7 min-w-0 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-xs transition-colors",
+    active
+      ? "bg-muted text-foreground"
+      : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+  )
+
+  if (editing) {
+    return (
+      <div onContextMenu={onContextMenu} className={containerClass}>
+        <SquareTerminal className="size-3.5 shrink-0" />
+        <input
+          ref={inputRef}
+          aria-label={`Rename ${session.label}`}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={(e) => onCommitRename(e.currentTarget.value)}
+          onFocus={(e) => e.currentTarget.select()}
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault()
+              onCommitRename(e.currentTarget.value)
+            } else if (e.key === "Escape") {
+              e.preventDefault()
+              onCancelRename()
+            }
+          }}
+          className="w-28 min-w-0 bg-transparent p-0 text-xs text-foreground outline-none"
+        />
+      </div>
+    )
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      onDoubleClick={onStartRename}
+      onContextMenu={onContextMenu}
+      aria-label={`Open ${session.label}`}
+      aria-pressed={active}
+      title={session.label}
+      className={cn(
+        containerClass,
+        "outline-none focus-visible:ring-3 focus-visible:ring-ring/30"
+      )}
+    >
+      <SquareTerminal className="size-3.5 shrink-0" />
+      <span className="max-w-28 truncate">{session.label}</span>
+    </button>
   )
 }
 
