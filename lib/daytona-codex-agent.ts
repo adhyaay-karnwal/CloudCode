@@ -5,18 +5,13 @@ import type { Sandbox } from "@daytona/sdk"
 import {
   CodexAppServerError,
   type CodexAppServerNotification,
-  CodexAppServerStdioRpcClient,
-  type CodexAppServerTransport,
-  type CodexAppServerChatgptAuthTokens,
   createCodexAppServerTurnReducer,
-  type CodexAppServerThreadResponse,
-  type CodexAppServerTurnResponse,
 } from "./codex-app-server"
 import {
-  buildCodexAuthJsonFromParsed,
-  getAccountIdFromIdToken,
-  parseCodexAuthJson,
-} from "./codex-auth-json"
+  CODEX_APP_SERVER_DAEMON_CLIENT_SCRIPT,
+  CODEX_APP_SERVER_DAEMON_SCRIPT,
+  CODEX_APP_SERVER_DAEMON_VERSION,
+} from "./codex-app-server-daemon-script"
 import {
   defaultBranchName,
   defaultBranchNameWithSuffix,
@@ -28,7 +23,6 @@ import {
   codexCliVersionOutput,
   desiredCodexCliVersion,
 } from "./codex-cli-version"
-import { refreshCodexOAuthTokens } from "./codex-oauth-refresh"
 import {
   daytonaDesktopAgentContext,
   installDaytonaDesktopTools,
@@ -76,7 +70,6 @@ import {
   type SandboxGitHubAuth,
 } from "./sandbox-github-auth"
 
-const CODEX_AUTH_CURRENT = "__CLOUDCODE_CODEX_AUTH_CURRENT__"
 const CODEX_UPDATE_TIMEOUT_MS = 3 * 60 * 1000
 const CODEX_APP_SERVER_LOCAL_READY_TIMEOUT_MS = 5_000
 const CODEX_APP_SERVER_REQUEST_TIMEOUT_MS = 45_000
@@ -248,6 +241,29 @@ function compactLine(value: string, max = 220) {
   return line.length > max ? `${line.slice(0, max - 3)}...` : line
 }
 
+function wait(ms: number, signal?: AbortSignal) {
+  if (!signal) return new Promise<void>((resolve) => setTimeout(resolve, ms))
+  if (signal.aborted) return Promise.reject(new Error("Run was canceled."))
+
+  return new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(done, ms)
+
+    function done() {
+      clearTimeout(timeout)
+      signal?.removeEventListener("abort", abort)
+      resolve()
+    }
+
+    function abort() {
+      clearTimeout(timeout)
+      signal?.removeEventListener("abort", abort)
+      reject(new Error("Run was canceled."))
+    }
+
+    signal.addEventListener("abort", abort, { once: true })
+  })
+}
+
 function stripAnsi(value: string) {
   let output = ""
   for (let index = 0; index < value.length; index += 1) {
@@ -292,35 +308,6 @@ export function codexAppServerStderrLogForLine(
   return { kind: "stderr", message: trimmed }
 }
 
-function createCodexAppServerStderrLogger(input: RunCodexInSandboxInput) {
-  let buffer = ""
-  let bundledBubblewrapWarningLogged = false
-
-  const emitLine = (line: string) => {
-    const log = codexAppServerStderrLogForLine(line, {
-      bundledBubblewrapWarningAlreadyLogged: bundledBubblewrapWarningLogged,
-    })
-    if (!log) return
-    if (log.message === "Codex using bundled bubblewrap sandbox helper") {
-      bundledBubblewrapWarningLogged = true
-    }
-    void input.onLog?.(log)
-  }
-
-  return {
-    flush() {
-      if (buffer.trim()) emitLine(buffer)
-      buffer = ""
-    },
-    write(chunk: string) {
-      buffer += chunk
-      const lines = buffer.split(/\r?\n/)
-      buffer = lines.pop() ?? ""
-      for (const line of lines) emitLine(line)
-    },
-  }
-}
-
 function objectRecord(value: unknown): Record<string, unknown> | undefined {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     return value as Record<string, unknown>
@@ -333,27 +320,13 @@ function stringValue(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined
 }
 
-type CodexAppServerHandle = {
-  attachClient: (client: CodexAppServerStdioRpcClient) => void
-  commandId: string
-  log: () => string
-  sessionId: string
-  stop: () => Promise<void>
-  transport: CodexAppServerTransport
-}
-
 type CodexAppServerRunResult = {
   codexThreadId: string
   exitCode: number
   lastMessage: string
   stderr: string
   stdout: string
-}
-
-type CodexAppServerAuthRefreshContext = {
-  input: RunCodexInSandboxInput
-  paths: DaytonaSandboxPaths
-  sandbox: Sandbox
+  updatedAuthJson: string
 }
 
 export function codexAppServerStdioCommand({
@@ -383,7 +356,423 @@ function validShellEnvName(name: string) {
   return /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)
 }
 
-async function startCodexAppServer({
+type CodexAppServerDaemonPaths = {
+  clientPath: string
+  scriptPath: string
+  sessionId: string
+  socketPath: string
+  statePath: string
+}
+
+type CodexAppServerDaemonEvent =
+  | {
+      notification: CodexAppServerNotification
+      type: "notification"
+    }
+  | {
+      line: string
+      type: "stderr"
+    }
+  | {
+      message: string
+      type: "setup"
+    }
+  | {
+      message: string
+      type: "error"
+    }
+  | {
+      threadId: string
+      type: "thread"
+    }
+  | {
+      envHash: string
+      ok: boolean
+      pid?: number
+      type: "health"
+      version: string
+    }
+  | {
+      finalAssistantText?: string
+      status: string
+      threadId: string
+      turnError?: string
+      type: "result"
+      updatedAuthJson: string
+    }
+
+type CodexAppServerDaemonHandle = {
+  env: Record<string, string>
+  envHash: string
+  paths: CodexAppServerDaemonPaths
+}
+
+function codexAppServerDaemonPaths(
+  paths: DaytonaSandboxPaths
+): CodexAppServerDaemonPaths {
+  const root = `${paths.runtimeHome}/codex-app-server`
+  return {
+    clientPath: `${root}/cloudcode-codex-daemon-client.mjs`,
+    scriptPath: `${root}/cloudcode-codex-daemon.mjs`,
+    sessionId: "cloudcode-codex-app-server-daemon",
+    socketPath: `${root}/codex-app-server.sock`,
+    statePath: `${root}/codex-app-server-daemon.json`,
+  }
+}
+
+function stableHashRecord(value: Record<string, string>) {
+  return JSON.stringify(
+    Object.fromEntries(
+      Object.entries(value).sort(([left], [right]) => {
+        if (left < right) return -1
+        if (left > right) return 1
+        return 0
+      })
+    )
+  )
+}
+
+function codexAppServerDaemonEnv({
+  gitAuth,
+  input,
+  paths,
+}: {
+  gitAuth?: SandboxGitHubAuth | null
+  input: RunCodexInSandboxInput
+  paths: DaytonaSandboxPaths
+}) {
+  const daemonPaths = codexAppServerDaemonPaths(paths)
+  const baseEnv = {
+    ...codexShellEnv(paths, input.sandboxPreset?.secrets, gitAuth?.env),
+    CLOUDCODE_APP_SERVER_REQUEST_TIMEOUT_MS: String(
+      CODEX_APP_SERVER_REQUEST_TIMEOUT_MS
+    ),
+    CLOUDCODE_CODEX_LAUNCHER: paths.codexLauncherPath,
+    CLOUDCODE_DAEMON_SOCKET: daemonPaths.socketPath,
+    CLOUDCODE_DAEMON_STATE: daemonPaths.statePath,
+    CLOUDCODE_REPO_PATH: paths.repoPath,
+  }
+  const envHash = sha256(
+    [
+      CODEX_APP_SERVER_DAEMON_VERSION,
+      sha256(CODEX_APP_SERVER_DAEMON_SCRIPT),
+      sha256(CODEX_APP_SERVER_DAEMON_CLIENT_SCRIPT),
+      stableHashRecord(baseEnv),
+    ].join("\0")
+  )
+
+  return {
+    daemonPaths,
+    env: {
+      ...baseEnv,
+      CLOUDCODE_DAEMON_ENV_HASH: envHash,
+    },
+    envHash,
+  }
+}
+
+export function codexAppServerDaemonCommand({
+  daemonPaths,
+  env,
+  paths,
+}: {
+  daemonPaths: CodexAppServerDaemonPaths
+  env: Record<string, string>
+  paths: DaytonaSandboxPaths
+}) {
+  const envExports = Object.entries(env)
+    .filter(([name, value]) => validShellEnvName(name) && value !== undefined)
+    .map(([name, value]) => `export ${name}=${shellQuote(value)}`)
+
+  return `bash -c ${shellQuote(
+    [
+      `[ -f ${shellQuote(paths.presetEnvPath)} ] && . ${shellQuote(
+        paths.presetEnvPath
+      )}`,
+      ...envExports,
+      `cd ${shellQuote(paths.repoPath)}`,
+      `exec node ${shellQuote(daemonPaths.scriptPath)}`,
+    ].join("\n")
+  )}`
+}
+
+function codexAppServerDaemonClientCommand({
+  daemonPaths,
+  payloadPath,
+  paths,
+}: {
+  daemonPaths: CodexAppServerDaemonPaths
+  payloadPath: string
+  paths: DaytonaSandboxPaths
+}) {
+  return `bash -c ${shellQuote(
+    [
+      `export CLOUDCODE_DAEMON_SOCKET=${shellQuote(daemonPaths.socketPath)}`,
+      `export PATH=${shellQuote(daytonaTerminalPath(paths.home))}:$PATH`,
+      `cd ${shellQuote(paths.repoPath)}`,
+      `exec node ${shellQuote(daemonPaths.clientPath)} ${shellQuote(
+        payloadPath
+      )}`,
+    ].join("\n")
+  )}`
+}
+
+export function parseCodexAppServerDaemonEventLine(
+  line: string
+): CodexAppServerDaemonEvent | undefined {
+  const trimmed = line.trim()
+  if (!trimmed) return undefined
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(trimmed)
+  } catch {
+    return undefined
+  }
+
+  const record = objectRecord(parsed)
+  const type = stringValue(record?.type)
+  if (!record || !type) return undefined
+
+  switch (type) {
+    case "notification": {
+      const notification = objectRecord(record.notification)
+      return notification ? { notification, type } : undefined
+    }
+    case "stderr": {
+      const value = stringValue(record.line)
+      return value ? { line: value, type } : undefined
+    }
+    case "setup": {
+      const message = stringValue(record.message)
+      return message ? { message, type } : undefined
+    }
+    case "error": {
+      const message = stringValue(record.message)
+      return message ? { message, type } : undefined
+    }
+    case "thread": {
+      const threadId = stringValue(record.threadId)
+      return threadId ? { threadId, type } : undefined
+    }
+    case "health": {
+      const envHash = stringValue(record.envHash) ?? ""
+      const version = stringValue(record.version) ?? ""
+      return {
+        envHash,
+        ok: record.ok === true,
+        ...(typeof record.pid === "number" ? { pid: record.pid } : {}),
+        type,
+        version,
+      }
+    }
+    case "result": {
+      const status = stringValue(record.status)
+      const threadId = stringValue(record.threadId)
+      const updatedAuthJson = stringValue(record.updatedAuthJson)
+      if (!status || !threadId || !updatedAuthJson) return undefined
+      return {
+        ...(stringValue(record.finalAssistantText)
+          ? { finalAssistantText: stringValue(record.finalAssistantText) }
+          : {}),
+        status,
+        threadId,
+        ...(stringValue(record.turnError)
+          ? { turnError: stringValue(record.turnError) }
+          : {}),
+        type,
+        updatedAuthJson,
+      }
+    }
+    default:
+      return undefined
+  }
+}
+
+function codexAppServerDaemonRequestPath(
+  paths: DaytonaSandboxPaths,
+  label: string
+) {
+  return `${paths.runtimeHome}/codex-app-server/request-${label}-${Date.now()}-${randomBytes(4).toString("hex")}.json`
+}
+
+async function writeCodexAppServerDaemonScripts(
+  sandbox: Sandbox,
+  paths: DaytonaSandboxPaths,
+  daemonPaths: CodexAppServerDaemonPaths,
+  signal?: AbortSignal
+) {
+  const mkdir = await runDaytonaCommand(
+    sandbox,
+    `mkdir -p ${shellQuote(`${paths.runtimeHome}/codex-app-server`)}`,
+    { signal, timeoutMs: 10_000 }
+  )
+  if (mkdir.exitCode !== 0) {
+    throw new Error(
+      compactLine(mkdir.stderr || mkdir.stdout) ||
+        "Unable to create Codex app-server daemon directory."
+    )
+  }
+
+  await Promise.all([
+    writeDaytonaTextFile(
+      sandbox,
+      daemonPaths.scriptPath,
+      CODEX_APP_SERVER_DAEMON_SCRIPT
+    ),
+    writeDaytonaTextFile(
+      sandbox,
+      daemonPaths.clientPath,
+      CODEX_APP_SERVER_DAEMON_CLIENT_SCRIPT
+    ),
+  ])
+
+  const chmod = await runDaytonaCommand(
+    sandbox,
+    [
+      "set -e",
+      `chmod 700 ${shellQuote(`${paths.runtimeHome}/codex-app-server`)}`,
+      `chmod 600 ${shellQuote(daemonPaths.scriptPath)} ${shellQuote(
+        daemonPaths.clientPath
+      )}`,
+    ].join("\n"),
+    { signal, timeoutMs: 10_000 }
+  )
+  if (chmod.exitCode !== 0) {
+    throw new Error(
+      compactLine(chmod.stderr || chmod.stdout) ||
+        "Unable to install Codex app-server daemon scripts."
+    )
+  }
+}
+
+async function requestCodexAppServerDaemon({
+  daemonPaths,
+  gitAuth,
+  label,
+  onEvent,
+  paths,
+  payload,
+  sandbox,
+  signal,
+  timeoutMs,
+}: {
+  daemonPaths: CodexAppServerDaemonPaths
+  gitAuth?: SandboxGitHubAuth | null
+  label: string
+  onEvent?: (event: CodexAppServerDaemonEvent) => void | Promise<void>
+  paths: DaytonaSandboxPaths
+  payload: Record<string, unknown>
+  sandbox: Sandbox
+  signal?: AbortSignal
+  timeoutMs?: number
+}) {
+  const payloadPath = codexAppServerDaemonRequestPath(paths, label)
+  await writeDaytonaTextFile(sandbox, payloadPath, JSON.stringify(payload))
+
+  let buffer = ""
+  const events: CodexAppServerDaemonEvent[] = []
+  const emitLine = (line: string) => {
+    const event = parseCodexAppServerDaemonEventLine(line)
+    if (!event) return
+    events.push(event)
+    void onEvent?.(event)
+  }
+  const flush = () => {
+    if (buffer.trim()) emitLine(buffer)
+    buffer = ""
+  }
+
+  try {
+    const result = await runDaytonaCommand(
+      sandbox,
+      codexAppServerDaemonClientCommand({ daemonPaths, paths, payloadPath }),
+      {
+        env: repoCommandEnv(paths, gitAuth?.env),
+        onStdout: (chunk) => {
+          buffer += chunk
+          const lines = buffer.split(/\r?\n/)
+          buffer = lines.pop() ?? ""
+          for (const line of lines) emitLine(line)
+        },
+        signal,
+        timeoutMs,
+      }
+    )
+    flush()
+    return { events, result }
+  } finally {
+    await runDaytonaCommand(sandbox, `rm -f ${shellQuote(payloadPath)}`, {
+      signal,
+      timeoutMs: 10_000,
+    }).catch(() => undefined)
+  }
+}
+
+async function codexAppServerDaemonHealth({
+  daemonPaths,
+  gitAuth,
+  paths,
+  sandbox,
+  signal,
+}: {
+  daemonPaths: CodexAppServerDaemonPaths
+  gitAuth?: SandboxGitHubAuth | null
+  paths: DaytonaSandboxPaths
+  sandbox: Sandbox
+  signal?: AbortSignal
+}) {
+  const { events, result } = await requestCodexAppServerDaemon({
+    daemonPaths,
+    gitAuth,
+    label: "health",
+    paths,
+    payload: { type: "health" },
+    sandbox,
+    signal,
+    timeoutMs: CODEX_APP_SERVER_REQUEST_TIMEOUT_MS,
+  }).catch(() => ({ events: [], result: undefined }))
+
+  if (!result || result.exitCode !== 0) return undefined
+  return events.find((event) => event.type === "health")
+}
+
+async function stopCodexAppServerDaemon({
+  daemonPaths,
+  gitAuth,
+  paths,
+  sandbox,
+  signal,
+}: {
+  daemonPaths: CodexAppServerDaemonPaths
+  gitAuth?: SandboxGitHubAuth | null
+  paths: DaytonaSandboxPaths
+  sandbox: Sandbox
+  signal?: AbortSignal
+}) {
+  await requestCodexAppServerDaemon({
+    daemonPaths,
+    gitAuth,
+    label: "stop",
+    paths,
+    payload: { type: "stop" },
+    sandbox,
+    signal,
+    timeoutMs: 5_000,
+  }).catch(() => undefined)
+  await sandbox.process
+    .deleteSession(daemonPaths.sessionId)
+    .catch(() => undefined)
+  await runDaytonaCommand(
+    sandbox,
+    `rm -f ${shellQuote(daemonPaths.socketPath)} ${shellQuote(
+      daemonPaths.statePath
+    )}`,
+    { signal, timeoutMs: 10_000 }
+  ).catch(() => undefined)
+}
+
+async function ensureCodexAppServerDaemon({
   gitAuth,
   input,
   paths,
@@ -393,31 +782,56 @@ async function startCodexAppServer({
   input: RunCodexInSandboxInput
   paths: DaytonaSandboxPaths
   sandbox: Sandbox
-}): Promise<CodexAppServerHandle> {
-  const sessionId = `cloudcode-codex-app-server-${Date.now()}-${randomBytes(4).toString("hex")}`
-  const command = codexAppServerStdioCommand({
-    env: codexShellEnv(paths, input.sandboxPreset?.secrets, gitAuth?.env),
+}): Promise<CodexAppServerDaemonHandle> {
+  const { daemonPaths, env, envHash } = codexAppServerDaemonEnv({
+    gitAuth,
+    input,
     paths,
+  })
+  await writeCodexAppServerDaemonScripts(
+    sandbox,
+    paths,
+    daemonPaths,
+    input.signal
+  )
+
+  const health = await codexAppServerDaemonHealth({
+    daemonPaths,
+    gitAuth,
+    paths,
+    sandbox,
+    signal: input.signal,
+  })
+  if (
+    health?.type === "health" &&
+    health.ok &&
+    health.version === CODEX_APP_SERVER_DAEMON_VERSION &&
+    health.envHash === envHash
+  ) {
+    return { env, envHash, paths: daemonPaths }
+  }
+
+  await stopCodexAppServerDaemon({
+    daemonPaths,
+    gitAuth,
+    paths,
+    sandbox,
+    signal: input.signal,
   })
 
   await emitLog(input, {
-    detail: "stdio",
+    detail: "daemon",
     kind: "command",
     message: "codex app-server",
   })
 
-  await sandbox.process.createSession(sessionId)
+  await sandbox.process.createSession(daemonPaths.sessionId)
   let commandId = ""
-  let client: CodexAppServerStdioRpcClient | undefined
-  let stderr = ""
-  const stderrLogger = createCodexAppServerStderrLogger(input)
-  let stopped = false
-
   try {
     const started = await sandbox.process.executeSessionCommand(
-      sessionId,
+      daemonPaths.sessionId,
       {
-        command,
+        command: codexAppServerDaemonCommand({ daemonPaths, env, paths }),
         runAsync: true,
         suppressInputEcho: true,
       },
@@ -425,60 +839,54 @@ async function startCodexAppServer({
     )
     commandId = started.cmdId
     if (!commandId) {
-      throw new Error("Codex app-server did not return a Daytona command id.")
+      throw new Error(
+        "Codex app-server daemon did not return a Daytona command id."
+      )
     }
   } catch (error) {
-    await sandbox.process.deleteSession(sessionId).catch(() => undefined)
+    await sandbox.process
+      .deleteSession(daemonPaths.sessionId)
+      .catch(() => undefined)
     throw error
   }
 
-  const stop = async () => {
-    stopped = true
-    await sandbox.process.deleteSession(sessionId).catch(() => undefined)
-  }
-
-  const transport: CodexAppServerTransport = {
-    close: stop,
-    isConnected: () => !stopped,
-    send: (data) =>
-      sandbox.process.sendSessionCommandInput(sessionId, commandId, data),
-  }
-
-  void sandbox.process
-    .getSessionCommandLogs(
-      sessionId,
-      commandId,
-      (chunk) => {
-        client?.receive(chunk)
-      },
-      (chunk) => {
-        stderr += chunk
-        stderrLogger.write(chunk)
-      }
-    )
-    .finally(async () => {
-      stderrLogger.flush()
-      if (stopped) return
-      stopped = true
-      const command = await sandbox.process
-        .getSessionCommand(sessionId, commandId)
-        .catch(() => undefined)
-      const suffix =
-        command?.exitCode === undefined ? "" : ` with code ${command.exitCode}`
-      client?.terminate(new Error(`Codex app-server exited${suffix}.`))
+  const deadline = Date.now() + CODEX_APP_SERVER_REQUEST_TIMEOUT_MS
+  let lastHealth: CodexAppServerDaemonEvent | undefined
+  while (Date.now() < deadline) {
+    lastHealth = await codexAppServerDaemonHealth({
+      daemonPaths,
+      gitAuth,
+      paths,
+      sandbox,
+      signal: input.signal,
     })
-    .catch(() => undefined)
-
-  return {
-    attachClient: (stdioClient) => {
-      client = stdioClient
-    },
-    commandId,
-    log: () => stderr.replaceAll(paths.codexHome, "$CODEX_HOME"),
-    sessionId,
-    stop,
-    transport,
+    if (
+      lastHealth?.type === "health" &&
+      lastHealth.ok &&
+      lastHealth.version === CODEX_APP_SERVER_DAEMON_VERSION &&
+      lastHealth.envHash === envHash
+    ) {
+      await emitLog(input, {
+        kind: "setup",
+        message: "Codex app-server daemon ready",
+      })
+      return { env, envHash, paths: daemonPaths }
+    }
+    await wait(250, input.signal)
   }
+
+  const logs = await sandbox.process
+    .getSessionCommandLogs(daemonPaths.sessionId, commandId)
+    .catch(() => undefined)
+  throw new Error(
+    [
+      "Codex app-server daemon did not become ready.",
+      compactLine(logs?.stderr || logs?.stdout || logs?.output || ""),
+      lastHealth ? JSON.stringify(lastHealth) : "",
+    ]
+      .filter(Boolean)
+      .join("\n")
+  )
 }
 
 export function appServerThreadParams({
@@ -577,63 +985,6 @@ function codexAppServerNotificationMatchesActiveRoute({
   return true
 }
 
-function readCodexAppServerLog(handle: CodexAppServerHandle | undefined) {
-  if (!handle) return ""
-  return handle.log()
-}
-
-function createCodexAppServerAuthRefresher({
-  input,
-  paths,
-  sandbox,
-}: CodexAppServerAuthRefreshContext) {
-  let auth = parseCodexAuthJson(input.authJson)
-
-  return async function refreshChatgptAuthTokens(
-    params: unknown
-  ): Promise<CodexAppServerChatgptAuthTokens> {
-    const previousAccountId = stringValue(
-      objectRecord(params)?.previousAccountId
-    )
-    const refreshed = await refreshCodexOAuthTokens(auth.refreshToken)
-    const idToken = refreshed.idToken ?? auth.idToken
-    const accountId =
-      (refreshed.idToken ? getAccountIdFromIdToken(idToken) : auth.accountId) ??
-      previousAccountId ??
-      null
-
-    auth = {
-      ...auth,
-      accessToken: refreshed.accessToken,
-      accountId,
-      idToken,
-      lastRefresh: new Date().toISOString(),
-      refreshToken: refreshed.refreshToken ?? auth.refreshToken,
-    }
-
-    const authPath = `${paths.codexHome}/auth.json`
-    await writeDaytonaTextFile(
-      sandbox,
-      authPath,
-      buildCodexAuthJsonFromParsed(auth)
-    )
-    await runDaytonaCommand(sandbox, `chmod 600 ${shellQuote(authPath)}`, {
-      signal: input.signal,
-      timeoutMs: 10_000,
-    })
-    await emitLog(input, {
-      kind: "setup",
-      message: "Refreshed Codex auth tokens",
-    })
-
-    return {
-      accessToken: auth.accessToken,
-      chatgptAccountId: auth.accountId ?? "",
-      chatgptPlanType: null,
-    }
-  }
-}
-
 async function runCodexViaAppServer({
   codexThreadIdToResume,
   gitAuth,
@@ -655,212 +1006,188 @@ async function runCodexViaAppServer({
   sandbox: Sandbox
   speed: CodexSpeed
 }): Promise<CodexAppServerRunResult> {
-  let handle: CodexAppServerHandle | undefined
-  let client: CodexAppServerStdioRpcClient | undefined
   let activeThreadId = codexThreadIdToResume
   let activeTurnId: string | undefined
+  let daemonResult:
+    | Extract<CodexAppServerDaemonEvent, { type: "result" }>
+    | undefined
+  let daemonError = ""
+  let stdout = ""
+  let stderr = ""
+  let resumeLogged = false
+  let bundledBubblewrapWarningLogged = false
 
   try {
-    handle = await startCodexAppServer({ gitAuth, input, paths, sandbox })
-    client = new CodexAppServerStdioRpcClient(handle.transport, {
-      refreshChatgptAuthTokens: createCodexAppServerAuthRefresher({
-        input,
-        paths,
-        sandbox,
-      }),
+    const daemon = await ensureCodexAppServerDaemon({
+      gitAuth,
+      input,
+      paths,
+      sandbox,
     })
-    handle.attachClient(client)
     const reducer = createCodexAppServerTurnReducer({
       onContentDelta: input.onContentDelta,
       onLog: input.onLog,
     })
-    const turnCompleted = new Promise<void>((resolve) => {
-      client?.onNotification((notification) => {
-        if (
-          !codexAppServerNotificationMatchesActiveRoute({
-            activeThreadId,
-            activeTurnId,
-            notification,
-          })
-        ) {
-          return
-        }
-
-        const route = codexAppServerNotificationRoute(notification)
-        if (
-          notification.method === "turn/started" &&
-          route.turnId &&
-          (!activeThreadId ||
-            !route.threadId ||
-            route.threadId === activeThreadId)
-        ) {
-          activeTurnId ??= route.turnId
-        }
-
-        reducer.handleNotification(notification)
-        if (notification.method !== "turn/completed" || !activeThreadId) return
-        if (route.threadId && route.threadId !== activeThreadId) return
-        if (activeTurnId && route.turnId && route.turnId !== activeTurnId)
-          return
-        resolve()
-      })
-    })
-
-    await client.connect(input.signal)
-    await client.request(
-      "initialize",
-      {
-        capabilities: {
-          experimentalApi: true,
-          requestAttestation: false,
-        },
-        clientInfo: {
-          name: "cloudcode",
-          title: "Cloudcode",
-          version: "0.0.1",
-        },
-      },
-      { signal: input.signal, timeoutMs: CODEX_APP_SERVER_REQUEST_TIMEOUT_MS }
-    )
-    await client.notify("initialized")
-
     const threadParams = appServerThreadParams({
       model,
       paths,
       reasoningEffort,
       speed,
     })
-    if (codexThreadIdToResume) {
-      try {
-        const resumed = await client.request<
-          "thread/resume",
-          CodexAppServerThreadResponse
-        >(
-          "thread/resume",
-          { ...threadParams, threadId: codexThreadIdToResume },
-          {
-            signal: input.signal,
-            timeoutMs: CODEX_APP_SERVER_REQUEST_TIMEOUT_MS,
-          }
-        )
-        activeThreadId = resumed.thread?.id || codexThreadIdToResume
-        await emitLog(input, {
-          detail: activeThreadId,
-          kind: "setup",
-          message: "Resumed Codex thread",
-        })
-      } catch (error) {
-        const message =
-          error instanceof Error
-            ? compactLine(error.message)
-            : "Unable to resume Codex thread."
-        throw new Error(
-          `Codex app-server could not resume thread ${codexThreadIdToResume}. Refusing to start a fresh thread because fresh-thread recovery is disabled. ${message}`
-        )
-      }
-    } else {
-      const started = await client.request<
-        "thread/start",
-        CodexAppServerThreadResponse
-      >("thread/start", threadParams, {
-        signal: input.signal,
-        timeoutMs: CODEX_APP_SERVER_REQUEST_TIMEOUT_MS,
+    const turnParams = appServerTurnParams({
+      model,
+      paths,
+      prompt,
+      reasoningEffort,
+      speed,
+      threadId: activeThreadId ?? "__cloudcode_pending_thread__",
+    })
+
+    const emitDaemonStderr = (line: string) => {
+      const log = codexAppServerStderrLogForLine(line, {
+        bundledBubblewrapWarningAlreadyLogged: bundledBubblewrapWarningLogged,
       })
-      activeThreadId = started.thread?.id
+      if (!log) return
+      if (log.message === "Codex using bundled bubblewrap sandbox helper") {
+        bundledBubblewrapWarningLogged = true
+      }
+      void input.onLog?.(log)
+    }
+
+    const { result } = await requestCodexAppServerDaemon({
+      daemonPaths: daemon.paths,
+      gitAuth,
+      label: "run",
+      onEvent: (event) => {
+        stdout += `${JSON.stringify(event)}\n`
+        switch (event.type) {
+          case "thread": {
+            activeThreadId = event.threadId
+            if (codexThreadIdToResume && !resumeLogged) {
+              resumeLogged = true
+              void emitLog(input, {
+                detail: activeThreadId,
+                kind: "setup",
+                message: "Resumed Codex thread",
+              })
+            }
+            return
+          }
+          case "notification": {
+            const { notification } = event
+            if (
+              !codexAppServerNotificationMatchesActiveRoute({
+                activeThreadId,
+                activeTurnId,
+                notification,
+              })
+            ) {
+              return
+            }
+
+            const route = codexAppServerNotificationRoute(notification)
+            if (
+              notification.method === "turn/started" &&
+              route.turnId &&
+              (!activeThreadId ||
+                !route.threadId ||
+                route.threadId === activeThreadId)
+            ) {
+              activeTurnId ??= route.turnId
+            }
+
+            reducer.handleNotification(notification)
+            return
+          }
+          case "stderr":
+            stderr += `${event.line}\n`
+            emitDaemonStderr(event.line)
+            return
+          case "setup":
+            if (
+              event.message === "Codex using bundled bubblewrap sandbox helper"
+            ) {
+              if (bundledBubblewrapWarningLogged) return
+              bundledBubblewrapWarningLogged = true
+            }
+            void emitLog(input, { kind: "setup", message: event.message })
+            return
+          case "error":
+            daemonError = event.message
+            return
+          case "result":
+            daemonResult = event
+            activeThreadId = event.threadId
+            return
+        }
+      },
+      paths,
+      payload: {
+        authHash: sha256(input.authJson),
+        authJson: input.authJson,
+        codexThreadIdToResume,
+        threadParams,
+        turnParams,
+        type: "run",
+      },
+      sandbox,
+      signal: input.signal,
+    })
+
+    if (result.stderr) {
+      stderr += result.stderr
+    }
+    if (result.exitCode !== 0 && !daemonError) {
+      daemonError =
+        compactLine(result.stderr || result.stdout) ||
+        "Codex app-server daemon client failed."
+    }
+    if (daemonError) {
+      throw new Error(daemonError)
+    }
+    if (!daemonResult) {
+      throw new Error("Codex app-server daemon did not return a turn result.")
+    }
+    if (!daemonResult.updatedAuthJson) {
+      throw new Error("Codex app-server daemon did not return updated auth.")
     }
 
     if (!activeThreadId) {
       throw new Error("Codex app-server did not return a thread id.")
     }
 
-    const startedTurn = await client.request<
-      "turn/start",
-      CodexAppServerTurnResponse
-    >(
-      "turn/start",
-      appServerTurnParams({
-        model,
-        paths,
-        prompt,
-        reasoningEffort,
-        speed,
-        threadId: activeThreadId,
-      }),
-      { signal: input.signal, timeoutMs: CODEX_APP_SERVER_REQUEST_TIMEOUT_MS }
-    )
-    activeTurnId = startedTurn.turn?.id
-    const turnAlreadyCompleted =
-      startedTurn.turn?.status && startedTurn.turn.status !== "inProgress"
-        ? startedTurn.turn
-        : undefined
-
-    const abortTurn = () => {
-      if (!activeThreadId || !activeTurnId) return
-      void client
-        ?.request(
-          "turn/interrupt",
-          { threadId: activeThreadId, turnId: activeTurnId },
-          { timeoutMs: 5_000 }
-        )
-        .catch(() => undefined)
-    }
-    if (turnAlreadyCompleted) {
-      reducer.handleNotification({
-        method: "turn/completed",
-        params: { threadId: activeThreadId, turn: turnAlreadyCompleted },
-      })
-    } else {
-      input.signal?.addEventListener("abort", abortTurn, { once: true })
-      let removeAbortWait: (() => void) | undefined
-      let removeCloseWait: (() => void) | undefined
-      const abortWait = new Promise<never>((_, reject) => {
-        if (input.signal?.aborted) {
-          reject(new Error("Run was canceled."))
-          return
-        }
-        const onAbort = () => reject(new Error("Run was canceled."))
-        removeAbortWait = () =>
-          input.signal?.removeEventListener("abort", onAbort)
-        input.signal?.addEventListener("abort", onAbort, { once: true })
-      })
-      const closeWait = new Promise<never>((_, reject) => {
-        removeCloseWait = client?.onClose((error) => reject(error))
-      })
-      try {
-        await Promise.race([turnCompleted, abortWait, closeWait])
-      } finally {
-        input.signal?.removeEventListener("abort", abortTurn)
-        removeAbortWait?.()
-        removeCloseWait?.()
-      }
-    }
-
     const summary = reducer.summary()
-    const log = readCodexAppServerLog(handle)
-    const exitCode = summary.status === "completed" ? 0 : 1
+    const status =
+      summary.status === "inProgress" ? daemonResult.status : summary.status
+    const exitCode = status === "completed" ? 0 : 1
+    const lastMessage =
+      summary.finalAssistantText || daemonResult.finalAssistantText || ""
+    const turnError =
+      status === "completed"
+        ? ""
+        : summary.turnError || daemonResult.turnError || stderr
 
     return {
       codexThreadId: activeThreadId,
       exitCode,
-      lastMessage: summary.finalAssistantText,
-      stderr: summary.status === "completed" ? "" : summary.turnError || "",
-      stdout: log,
+      lastMessage,
+      stderr: turnError,
+      stdout,
+      updatedAuthJson: daemonResult.updatedAuthJson,
     }
   } catch (error) {
-    const log = readCodexAppServerLog(handle)
     const message =
       error instanceof CodexAppServerError && error.code !== undefined
         ? `${error.message} (${error.code})`
         : error instanceof Error
           ? error.message
           : "Codex app-server run failed."
-    if (log.trim()) {
-      throw new Error(`${message}\n\n${log.trim()}`)
+    if (stdout.trim() || stderr.trim()) {
+      throw new Error(
+        [message, stdout.trim(), stderr.trim()].filter(Boolean).join("\n\n")
+      )
     }
     throw error
-  } finally {
-    await client?.close()
-    await handle?.stop()
   }
 }
 
@@ -924,21 +1251,15 @@ async function collectRunDiffAndStatus({
           }
         )
       ).stdout
-      const [status] = await Promise.all([
-        runDaytonaCommand(
-          sandbox,
-          `git -C ${shellQuote(paths.repoPath)} status --short --branch`,
-          {
-            env: repoCommandEnv(paths, gitAuth?.env),
-            signal: input.signal,
-            timeoutMs: 60_000,
-          }
-        ).then((result) => result.stdout),
-        emitLog(input, {
-          kind: "command",
-          message: "git status --short --branch",
-        }),
-      ])
+      const status = await runDaytonaCommand(
+        sandbox,
+        `git -C ${shellQuote(paths.repoPath)} status --short --branch`,
+        {
+          env: repoCommandEnv(paths, gitAuth?.env),
+          signal: input.signal,
+          timeoutMs: 60_000,
+        }
+      ).then((result) => result.stdout)
       await emitLog(input, {
         kind: "result",
         message:
@@ -1353,90 +1674,6 @@ async function updateCodexCli(
   })
 }
 
-function codexAuthMarkerPath(paths: DaytonaSandboxPaths) {
-  return `${paths.codexHome}/auth.sha256`
-}
-
-async function prepareCodexAuthAndPrompt({
-  authJson,
-  paths,
-  prompt,
-  sandbox,
-  signal,
-}: {
-  authJson: string
-  paths: DaytonaSandboxPaths
-  prompt: string
-  sandbox: Sandbox
-  signal?: AbortSignal
-}) {
-  const authHash = sha256(authJson)
-  const authPath = `${paths.codexHome}/auth.json`
-  const authMarkerPath = codexAuthMarkerPath(paths)
-  const authState = await runDaytonaCommand(
-    sandbox,
-    [
-      "set -e",
-      `mkdir -p ${shellQuote(paths.codexHome)}`,
-      `chmod 700 ${shellQuote(paths.codexHome)}`,
-      `auth_hash=${shellQuote(authHash)}`,
-      `if [ -s ${shellQuote(authPath)} ] && grep -qxF -- "$auth_hash" ${shellQuote(authMarkerPath)} 2>/dev/null; then`,
-      `  printf '%s\\n' ${shellQuote(CODEX_AUTH_CURRENT)}`,
-      "fi",
-    ].join("\n"),
-    { signal, timeoutMs: 10_000 }
-  )
-
-  if (authState.exitCode !== 0) {
-    throw new Error(
-      compactLine(authState.stderr || authState.stdout) ||
-        "Unable to prepare Codex auth directory."
-    )
-  }
-
-  const authCurrent = authState.stdout.includes(CODEX_AUTH_CURRENT)
-  await Promise.all([
-    authCurrent
-      ? Promise.resolve()
-      : writeDaytonaTextFile(sandbox, authPath, authJson),
-    writeDaytonaTextFile(sandbox, paths.promptPath, prompt),
-  ])
-
-  const chmodResult = await runDaytonaCommand(
-    sandbox,
-    [
-      "set -e",
-      `chmod 600 ${shellQuote(paths.promptPath)} ${shellQuote(authPath)}`,
-      authCurrent
-        ? ""
-        : [
-            `printf '%s\\n' ${shellQuote(authHash)} > ${shellQuote(authMarkerPath)}`,
-            `chmod 600 ${shellQuote(authMarkerPath)}`,
-          ].join("\n"),
-    ].join("\n"),
-    { signal, timeoutMs: 10_000 }
-  )
-
-  if (chmodResult.exitCode !== 0) {
-    throw new Error(
-      compactLine(chmodResult.stderr || chmodResult.stdout) ||
-        "Unable to prepare Codex auth files."
-    )
-  }
-}
-
-async function writeCodexAuthMarker(
-  sandbox: Sandbox,
-  paths: DaytonaSandboxPaths,
-  authJson: string
-) {
-  await writeDaytonaTextFile(
-    sandbox,
-    codexAuthMarkerPath(paths),
-    `${sha256(authJson)}\n`
-  ).catch(() => undefined)
-}
-
 async function prepareSandboxRuntime(
   sandbox: Sandbox,
   input: RunCodexInSandboxInput,
@@ -1760,9 +1997,7 @@ async function cleanupRunFiles(
 ) {
   await runDaytonaCommand(
     sandbox,
-    `rm -f ${shellQuote(paths.promptPath)} ${shellQuote(
-      paths.previousDiffPath
-    )} ${shellQuote(paths.lastMessagePath)}`,
+    `rm -f ${shellQuote(paths.previousDiffPath)} ${shellQuote(paths.lastMessagePath)}`,
     {
       signal,
       timeoutMs: 10_000,
@@ -1887,13 +2122,28 @@ async function writeBaseRef(sandbox: Sandbox, paths: DaytonaSandboxPaths) {
   await writeDaytonaTextFile(sandbox, paths.baseRefPath, baseRef)
 }
 
-async function repoExists(sandbox: Sandbox, paths: DaytonaSandboxPaths) {
+async function readRepoState(sandbox: Sandbox, paths: DaytonaSandboxPaths) {
   const result = await runDaytonaCommand(
     sandbox,
-    `test -d ${shellQuote(`${paths.repoPath}/.git`)}`,
+    [
+      "set -e",
+      `if [ ! -d ${shellQuote(`${paths.repoPath}/.git`)} ]; then`,
+      "  printf 'missing\\n'",
+      "  exit 0",
+      "fi",
+      "printf 'exists\\n'",
+      `git -C ${shellQuote(paths.repoPath)} rev-parse --abbrev-ref HEAD 2>/dev/null || true`,
+      `git -C ${shellQuote(paths.repoPath)} remote get-url origin 2>/dev/null || true`,
+    ].join("\n"),
     { timeoutMs: 10_000 }
   )
-  return result.exitCode === 0
+  if (result.exitCode !== 0) return { exists: false, branch: null }
+
+  const lines = result.stdout.split(/\r?\n/).map((line) => line.trim())
+  const exists = lines[0] === "exists"
+  const branch = exists && lines[1] && lines[1] !== "HEAD" ? lines[1] : null
+  const remoteUrl = exists && lines[2] ? lines[2] : null
+  return { exists, branch, remoteUrl }
 }
 
 async function cloneRepo({
@@ -2064,14 +2314,6 @@ async function runLiveCloudcodeYamlSetup(
   const selected = await readCloudcodeYamlForLiveSandbox(sandbox, input, paths)
   if (!selected) return
 
-  await emitLog(input, {
-    kind: "setup",
-    message:
-      selected.source === "repo"
-        ? "Using repo cloudcode.yaml"
-        : "Using saved Convex cloudcode.yaml",
-  })
-
   const result = await runCloudcodeYamlSetup({
     cloudcodeYaml: selected.yaml,
     emit: (log) => emitLog(input, log),
@@ -2187,7 +2429,7 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
       sandbox,
       signal: input.signal,
     })
-    const repoAlreadyExistsPromise = repoExists(sandbox, paths)
+    const repoStatePromise = readRepoState(sandbox, paths)
 
     await emitLog(input, {
       detail: sandbox.snapshot,
@@ -2225,18 +2467,19 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
       await updateCodexCli(sandbox, input, paths)
     }
 
-    await Promise.all([
-      emitLog(input, { kind: "setup", message: "Preparing Codex auth" }),
-      prepareCodexAuthAndPrompt({
-        authJson: input.authJson,
+    const repoState = await repoStatePromise
+    const repoAlreadyExists = repoState.exists
+    const configureGitHubRemoteIfNeeded = async () => {
+      if (gitAuth?.remoteUrl && repoState.remoteUrl === gitAuth.remoteUrl) {
+        return
+      }
+      await configureSandboxGitHubRemote({
+        auth: gitAuth,
         paths,
-        prompt,
         sandbox,
         signal: input.signal,
-      }),
-    ])
-
-    const repoAlreadyExists = await repoAlreadyExistsPromise
+      })
+    }
     let preparedFreshRepo = false
     if (!repoAlreadyExists) {
       branchName = await cloneRepo({
@@ -2261,12 +2504,7 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
       await writeBaseRef(sandbox, paths)
       preparedFreshRepo = true
     } else {
-      await configureSandboxGitHubRemote({
-        auth: gitAuth,
-        paths,
-        sandbox,
-        signal: input.signal,
-      })
+      await configureGitHubRemoteIfNeeded()
       await trustRepoMiseConfig(sandbox, input, paths)
       const shouldPrepareFreshRepo = createdSandbox
       if (shouldPrepareFreshRepo) {
@@ -2285,15 +2523,10 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
       }
     }
     if (repoAlreadyExists && !preparedFreshRepo) {
-      await emitLog(input, {
-        kind: "command",
-        message: `test -d ${paths.repoPath}/.git`,
-      })
       // No branch was created this run, so report the branch HEAD is actually on
       // rather than the generated fallback. Matters most for "base" mode, where
       // the work stays on the base branch across continuations.
-      const currentBranch = await readSandboxHeadBranch(sandbox, input, paths)
-      if (currentBranch) branchName = currentBranch
+      if (repoState.branch) branchName = repoState.branch
     }
     if (preparedFreshRepo && input.previousDiff?.trim()) {
       await Promise.all([
@@ -2356,27 +2589,17 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
       })
       await stopDesktopAgentRecording()
 
-      const [, runArtifacts] = await Promise.all([
-        Promise.all([
-          emitLog(input, {
-            detail: String(appServerResult.exitCode),
-            kind: appServerResult.exitCode === 0 ? "setup" : "stderr",
-            message: `Codex exited with code ${appServerResult.exitCode}`,
-          }),
-          emitLog(input, {
-            kind: "command",
-            message: "git diff --binary base",
-          }),
-        ]),
-        readDaytonaTextFile(sandbox, `${paths.codexHome}/auth.json`).then(
-          async (updatedAuthJson) => {
-            await cleanupRunFiles(sandbox, paths, input.signal)
-            await writeCodexAuthMarker(sandbox, paths, updatedAuthJson)
-            return { updatedAuthJson }
-          }
-        ),
+      await Promise.all([
+        appServerResult.exitCode === 0
+          ? Promise.resolve()
+          : emitLog(input, {
+              detail: String(appServerResult.exitCode),
+              kind: "stderr",
+              message: `Codex exited with code ${appServerResult.exitCode}`,
+            }),
+        cleanupRunFiles(sandbox, paths, input.signal),
       ])
-      const { updatedAuthJson } = runArtifacts
+      const { updatedAuthJson } = appServerResult
 
       const { diff, status } = await collectRunDiffAndStatus({
         exitCode: appServerResult.exitCode,

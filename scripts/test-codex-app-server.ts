@@ -11,15 +11,18 @@ import {
   buildCodexAuthJsonFromParsed,
   parseCodexAuthJson,
 } from "@/lib/codex-auth-json"
+import { getFilePathFromHref, normalizeLinkHref } from "@/lib/chat-link-path"
 import { refreshCodexOAuthTokens } from "@/lib/codex-oauth-refresh"
 import { inlineToolMarker, stripInlineToolMarkers } from "@/lib/codex-run-log"
 import { workerRunFinalContent } from "@/lib/codex-run-worker"
 import { cloudcodeContextCodexConfig } from "@/lib/daytona-context"
 import {
+  codexAppServerDaemonCommand,
   appServerThreadParams,
   codexAppServerNotificationRoute,
   codexAppServerStderrLogForLine,
   codexAppServerStdioCommand,
+  parseCodexAppServerDaemonEventLine,
 } from "@/lib/daytona-codex-agent"
 import type {
   RunCodexInSandboxResult,
@@ -51,6 +54,52 @@ assert.ok(stdioCommand.includes("app-server"))
 assert.ok(!stdioCommand.includes("--listen"))
 assert.ok(stdioCommand.includes("CODEX_HOME="))
 assert.ok(!stdioCommand.includes("bad-name"))
+const daemonCommand = codexAppServerDaemonCommand({
+  daemonPaths: {
+    clientPath: "/tmp/daemon-client.mjs",
+    scriptPath: "/tmp/daemon.mjs",
+    sessionId: "daemon-session",
+    socketPath: "/tmp/daemon.sock",
+    statePath: "/tmp/daemon.json",
+  },
+  env: {
+    CLOUDCODE_DAEMON_SOCKET: "/tmp/daemon.sock",
+    CODEX_HOME: "/tmp/codex",
+    HOME: "/tmp/home",
+  },
+  paths: testPaths,
+})
+assert.ok(daemonCommand.includes("exec node"))
+assert.ok(daemonCommand.includes("/tmp/daemon.mjs"))
+assert.ok(daemonCommand.includes("CLOUDCODE_DAEMON_SOCKET="))
+assert.ok(!daemonCommand.includes("--listen"))
+assert.deepEqual(
+  parseCodexAppServerDaemonEventLine(
+    '{"type":"thread","threadId":"thread-from-daemon"}'
+  ),
+  { threadId: "thread-from-daemon", type: "thread" }
+)
+assert.deepEqual(
+  parseCodexAppServerDaemonEventLine(
+    '{"type":"result","threadId":"thread-from-daemon","status":"completed","updatedAuthJson":"{\\"auth_mode\\":\\"chatgpt\\"}"}'
+  ),
+  {
+    status: "completed",
+    threadId: "thread-from-daemon",
+    type: "result",
+    updatedAuthJson: '{"auth_mode":"chatgpt"}',
+  }
+)
+assert.deepEqual(
+  parseCodexAppServerDaemonEventLine(
+    '{"type":"setup","message":"Codex using bundled bubblewrap sandbox helper"}'
+  ),
+  {
+    message: "Codex using bundled bubblewrap sandbox helper",
+    type: "setup",
+  }
+)
+assert.equal(parseCodexAppServerDaemonEventLine("not-json"), undefined)
 const daytonaCodexAgentSource = await readFile(
   new URL("../lib/daytona-codex-agent.ts", import.meta.url),
   "utf8"
@@ -58,6 +107,20 @@ const daytonaCodexAgentSource = await readFile(
 assert.ok(!daytonaCodexAgentSource.includes("restoredConversationPrompt"))
 assert.ok(!daytonaCodexAgentSource.includes("resumeFallbackPrompt"))
 assert.ok(!daytonaCodexAgentSource.includes("restoring conversation context"))
+assert.ok(!daytonaCodexAgentSource.includes("runCodexViaEphemeralAppServer"))
+assert.ok(!daytonaCodexAgentSource.includes("Preparing Codex auth"))
+assert.ok(
+  !daytonaCodexAgentSource.includes("Codex app-server daemon already running")
+)
+assert.ok(!daytonaCodexAgentSource.includes("Repo already prepared"))
+assert.ok(daytonaCodexAgentSource.includes("authHash: sha256(input.authJson)"))
+const daemonScriptSource = await readFile(
+  new URL("../lib/codex-app-server-daemon-script.ts", import.meta.url),
+  "utf8"
+)
+assert.ok(daemonScriptSource.includes("initializedAuthHash"))
+assert.ok(daemonScriptSource.includes("fs.chmodSync(CODEX_HOME"))
+assert.ok(daemonScriptSource.includes("isBundledBubblewrapWarning"))
 assert.deepEqual(
   codexAppServerStderrLogForLine(
     "Codex could not find bubblewrap on PATH. Codex will use the bundled bubblewrap in the meantime."
@@ -527,7 +590,18 @@ assert.ok(logs.some((log) => log.message.includes("Model rerouted")))
 assert.ok(logs.some((log) => log.message === "Codex compacted context"))
 assert.ok(logs.some((log) => log.message.includes("OAuth login completed")))
 assert.ok(logs.some((log) => log.message === "Codex thread status: running"))
-assert.ok(logs.some((log) => log.message === "Codex token usage updated"))
+assert.equal(
+  logs.some((log) => log.message === "Codex token usage updated"),
+  false
+)
+assert.equal(
+  logs.some((log) => log.message === "Codex rate limits updated"),
+  false
+)
+assert.equal(
+  logs.some((log) => log.message === "Codex turn started"),
+  false
+)
 assert.ok(
   logs.some((log) => log.message === "Automatic approval review completed")
 )
@@ -564,8 +638,17 @@ const authoritativeContent = workerRunFinalContent(
   `Partial stale stream${mcpMarker}`,
   authoritativeResult
 )
-assert.equal(stripInlineToolMarkers(authoritativeContent), "Final answer")
+assert.equal(
+  stripInlineToolMarkers(authoritativeContent),
+  "Partial stale stream\n\nFinal answer"
+)
 assert.ok(authoritativeContent.includes("<codex-tool>"))
+assert.equal(
+  stripInlineToolMarkers(
+    workerRunFinalContent(`${mcpMarker}Final answer`, authoritativeResult)
+  ),
+  "Final answer"
+)
 
 const nonAuthoritativeContent = workerRunFinalContent(
   `Partial stale stream${mcpMarker}`,
@@ -574,6 +657,22 @@ const nonAuthoritativeContent = workerRunFinalContent(
 assert.equal(
   stripInlineToolMarkers(nonAuthoritativeContent),
   "Partial stale stream"
+)
+assert.equal(
+  normalizeLinkHref("https://example.com/repo/app/page.tsx"),
+  "https://example.com/repo/app/page.tsx"
+)
+assert.equal(
+  getFilePathFromHref("https://example.com/repo/app/page.tsx", "repo"),
+  null
+)
+assert.equal(
+  getFilePathFromHref("/root/repo/app/page.tsx:12", "repo"),
+  "app/page.tsx"
+)
+assert.equal(
+  getFilePathFromHref("components/chat.tsx", "repo"),
+  "components/chat.tsx"
 )
 
 const failed = createCodexAppServerTurnReducer({})
@@ -714,11 +813,7 @@ mcpStartup.handleNotification({
 })
 assert.deepEqual(
   mcpStartupLogs.map((log) => [log.kind, log.message]),
-  [
-    ["setup", "cloudcode_context: starting"],
-    ["setup", "cloudcode_context: ready"],
-    ["stderr", "cloudcode_context: failed: boom"],
-  ]
+  [["stderr", "cloudcode_context: failed: boom"]]
 )
 
 let resolveApprovalResponse!: (value: Record<string, unknown>) => void

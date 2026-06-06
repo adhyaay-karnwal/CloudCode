@@ -483,7 +483,8 @@ const RunSetupSummary = memo(function RunSetupSummary({
   const [open, setOpen] = useState(false)
   const setupLogs = visibleSetupSummaryLogs(logs)
   const current = setupLogs.at(-1)
-  const expanded = pending && !contentStarted ? true : open
+  const hasReasoningLogs = setupLogs.some((log) => log.kind === "reasoning")
+  const expanded = pending && !contentStarted ? true : open || hasReasoningLogs
 
   if (!pending && setupLogs.length === 0) return null
 
@@ -529,6 +530,7 @@ function isSetupSummaryLog(log: ChatRunLog) {
   return (
     log.kind === "setup" ||
     log.kind === "command" ||
+    log.kind === "reasoning" ||
     log.kind === "stdout" ||
     log.kind === "stderr" ||
     log.kind === "result"

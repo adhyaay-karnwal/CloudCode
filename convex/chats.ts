@@ -61,6 +61,7 @@ const MAX_STORED_LOG_DETAIL_LENGTH = 1_500
 const STORED_LOG_KINDS = new Set<string>([
   "setup",
   "command",
+  "reasoning",
   "result",
   "stderr",
 ] as const)

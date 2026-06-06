@@ -20,7 +20,7 @@
     "format:prettier": "prettier --write \"**/*.{ts,tsx}\"",
     "check:codex-app-server-protocol": "tsx scripts/check-codex-app-server-protocol.ts",
     "smoke:codex-app-server": "tsx scripts/smoke-codex-app-server.ts",
-    "test:codex-app-server": "tsx scripts/test-codex-app-server.ts && pnpm check:codex-app-server-protocol",
+    "test:codex-app-server": "tsx scripts/test-codex-app-server.ts && tsx scripts/test-codex-app-server-daemon.ts && pnpm check:codex-app-server-protocol",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

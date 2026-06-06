@@ -51,6 +51,7 @@ const ACTIVE_RUN_STATUSES = new Set(["queued", "running", "canceling"])
 const STORED_LOG_KINDS = new Set<string>([
   "setup",
   "command",
+  "reasoning",
   "result",
   "stderr",
 ] as const)

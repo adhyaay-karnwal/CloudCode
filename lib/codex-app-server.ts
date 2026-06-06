@@ -626,21 +626,11 @@ export function createCodexAppServerTurnReducer({
         return
       }
       case "thread/tokenUsage/updated": {
-        void onLog?.({
-          detail: logDetail({
-            threadId: stringValue(params?.threadId),
-            tokenUsage: objectRecord(params?.tokenUsage) ?? null,
-            turnId: stringValue(params?.turnId),
-          }),
-          kind: "setup",
-          message: "Codex token usage updated",
-        })
         return
       }
       case "turn/started": {
         const turn = objectRecord(params?.turn)
         turnId = stringValue(turn?.id) ?? turnId
-        void onLog?.({ kind: "setup", message: "Codex turn started" })
         return
       }
       case "hook/started":
@@ -891,13 +881,21 @@ export function createCodexAppServerTurnReducer({
         const name = stringValue(params?.name) ?? "MCP server"
         const status = stringValue(params?.status)
         const error = stringValue(params?.error)
+        const normalizedStatus = status?.trim().toLowerCase()
+        if (
+          !error &&
+          normalizedStatus !== "failed" &&
+          normalizedStatus !== "error"
+        ) {
+          return
+        }
         const message = compactLine(
           [name, status, error].filter(Boolean).join(": ")
         )
         if (!message || mcpStartupMessages.has(message)) return
         mcpStartupMessages.add(message)
         void onLog?.({
-          kind: error ? "stderr" : "setup",
+          kind: "stderr",
           message,
         })
         return
@@ -932,13 +930,6 @@ export function createCodexAppServerTurnReducer({
         return
       }
       case "account/rateLimits/updated": {
-        void onLog?.({
-          detail: logDetail({
-            rateLimits: objectRecord(params?.rateLimits) ?? null,
-          }),
-          kind: "setup",
-          message: "Codex rate limits updated",
-        })
         return
       }
       case "turn/plan/updated": {

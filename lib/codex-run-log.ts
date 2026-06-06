@@ -156,7 +156,10 @@ export function inlineToolMarker(log: { kind: string; detail?: string }) {
 
 export function stripInlineToolMarkers(content: string) {
   CODEX_TOOL_MARKER_REGEX.lastIndex = 0
-  return content.replace(CODEX_TOOL_MARKER_REGEX, "").trim()
+  return content
+    .replace(CODEX_TOOL_MARKER_REGEX, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
 }
 
 export function extractInlineToolMarkers(content: string) {

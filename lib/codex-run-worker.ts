@@ -321,9 +321,21 @@ function authoritativeLastMessageContent(
   lastMessage: string
 ) {
   const markers = extractInlineToolMarkers(streamed)
-  if (markers.length === 0) return lastMessage
+  const visibleStreamed = stripInlineToolMarkers(streamed)
+  if (!visibleStreamed) {
+    return `${markers.join("")}${lastMessage}`.trim()
+  }
 
-  if (stripInlineToolMarkers(streamed) === lastMessage) return streamed
+  if (
+    visibleStreamed === lastMessage ||
+    visibleStreamed.endsWith(lastMessage)
+  ) {
+    return streamed
+  }
 
-  return `${markers.join("")}${lastMessage}`.trim()
+  if (lastMessage.startsWith(visibleStreamed)) {
+    return `${markers.join("")}${lastMessage}`.trim()
+  }
+
+  return `${streamed.trimEnd()}\n\n${lastMessage}`.trim()
 }

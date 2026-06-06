@@ -229,16 +229,22 @@ function githubApiHeaders(token?: string) {
   }
 }
 
-async function readRepoCloudcodeYamlFromGitHub(
+async function readRepoCloudcodeYamlFromGitHub({
+  input,
+  logCheck,
+}: {
   input: EnsureAutoEnvironmentInput
-) {
+  logCheck: boolean
+}) {
   const repo = parseGitHubRepoUrl(input.repoUrl)
   if (!repo) return undefined
 
-  await input.onLog?.({
-    kind: "setup",
-    message: "Checking repo cloudcode.yaml",
-  })
+  if (logCheck) {
+    await input.onLog?.({
+      kind: "setup",
+      message: "Checking repo cloudcode.yaml",
+    })
+  }
 
   const url = new URL(
     `https://api.github.com/repos/${encodeURIComponent(
@@ -871,7 +877,10 @@ export async function ensureAutoEnvironmentSandbox(
   input: EnsureAutoEnvironmentInput
 ): Promise<AutoEnvironmentResult> {
   const currentSandboxId = input.currentSandboxId?.trim()
-  const repoCloudcodeYaml = await readRepoCloudcodeYamlFromGitHub(input)
+  const repoCloudcodeYaml = await readRepoCloudcodeYamlFromGitHub({
+    input,
+    logCheck: !currentSandboxId,
+  })
 
   if (!currentSandboxId) {
     await input.onLog?.({

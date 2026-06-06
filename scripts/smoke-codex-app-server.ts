@@ -9,6 +9,10 @@ import {
   type CodexAppServerTransport,
   type CodexAppServerThreadResponse,
 } from "@/lib/codex-app-server"
+import {
+  CODEX_APP_SERVER_DAEMON_CLIENT_SCRIPT,
+  CODEX_APP_SERVER_DAEMON_SCRIPT,
+} from "@/lib/codex-app-server-daemon-script"
 import { appServerThreadParams } from "@/lib/daytona-codex-agent"
 
 const REQUEST_TIMEOUT_MS = 45_000
@@ -134,6 +138,110 @@ async function stopProcessGroup(child: ChildProcess) {
     } catch {
       child.kill("SIGKILL")
     }
+  }
+}
+
+async function runDaemonHealthSmoke(root: string) {
+  const daemonScriptPath = join(root, "cloudcode-codex-daemon.mjs")
+  const daemonClientPath = join(root, "cloudcode-codex-daemon-client.mjs")
+  const socketPath = join(root, "codex-app-server.sock")
+  const statePath = join(root, "codex-app-server-daemon.json")
+  const healthPayloadPath = join(root, "daemon-health.json")
+  const stopPayloadPath = join(root, "daemon-stop.json")
+
+  await Promise.all([
+    writeFile(daemonScriptPath, CODEX_APP_SERVER_DAEMON_SCRIPT, {
+      mode: 0o600,
+    }),
+    writeFile(daemonClientPath, CODEX_APP_SERVER_DAEMON_CLIENT_SCRIPT, {
+      mode: 0o600,
+    }),
+    writeFile(healthPayloadPath, JSON.stringify({ type: "health" })),
+    writeFile(stopPayloadPath, JSON.stringify({ type: "stop" })),
+  ])
+
+  const env = {
+    ...process.env,
+    CLOUDCODE_CODEX_LAUNCHER: "codex",
+    CLOUDCODE_DAEMON_ENV_HASH: "smoke-env",
+    CLOUDCODE_DAEMON_SOCKET: socketPath,
+    CLOUDCODE_DAEMON_STATE: statePath,
+    CLOUDCODE_REPO_PATH: root,
+    CODEX_HOME: root,
+    HOME: root,
+  }
+  const daemon = spawn(process.execPath, [daemonScriptPath], {
+    detached: true,
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  })
+
+  let daemonStderr = ""
+  daemon.stderr?.on("data", (chunk) => {
+    daemonStderr += chunk.toString()
+  })
+
+  try {
+    const deadline = Date.now() + REQUEST_TIMEOUT_MS
+    while (Date.now() < deadline) {
+      const health = await new Promise<{
+        exitCode: number | null
+        stdout: string
+        stderr: string
+      }>((resolve) => {
+        const child = spawn(
+          process.execPath,
+          [daemonClientPath, healthPayloadPath],
+          {
+            env,
+            stdio: ["ignore", "pipe", "pipe"],
+          }
+        )
+        let stdout = ""
+        let stderr = ""
+        child.stdout?.on("data", (chunk) => {
+          stdout += chunk.toString()
+        })
+        child.stderr?.on("data", (chunk) => {
+          stderr += chunk.toString()
+        })
+        child.once("exit", (exitCode) => {
+          resolve({ exitCode, stderr, stdout })
+        })
+      })
+      const event = health.stdout
+        .split(/\r?\n/)
+        .flatMap((line) => {
+          if (!line.trim()) return []
+          try {
+            return [JSON.parse(line) as { type?: string; ok?: boolean }]
+          } catch {
+            return []
+          }
+        })
+        .find((candidate) => candidate.type === "health")
+      if (health.exitCode === 0 && event?.ok) return event
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+
+    throw new Error(
+      `Codex app-server daemon smoke did not become healthy.\n${daemonStderr.trim()}`
+    )
+  } finally {
+    await new Promise<void>((resolve) => {
+      const child = spawn(
+        process.execPath,
+        [daemonClientPath, stopPayloadPath],
+        {
+          env,
+          stdio: ["ignore", "ignore", "ignore"],
+        }
+      )
+      child.once("exit", () => resolve())
+      child.once("error", () => resolve())
+      setTimeout(resolve, 500)
+    })
+    await stopProcessGroup(daemon)
   }
 }
 
@@ -279,9 +387,13 @@ try {
       throw new Error("Codex app-server MCP tool call returned the wrong data.")
     }
 
+    await client.close()
+    const daemonHealth = await runDaemonHealthSmoke(root)
+
     console.log(
       JSON.stringify(
         {
+          daemonHealth: Boolean(daemonHealth),
           initialized: Boolean(initialized),
           mcpEcho: mcpToolResult.structuredContent.echoed,
           mcpTools: Object.keys(smokeServer.tools),
