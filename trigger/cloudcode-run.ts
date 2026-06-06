@@ -2,7 +2,7 @@ import { task, timeout } from "@trigger.dev/sdk"
 
 import { ensureAutoEnvironmentSandbox } from "@/lib/sandbox-auto-environment"
 import { runCodexInSandbox, type RunCodexLog } from "@/lib/daytona-codex-agent"
-import { inlineToolMarker } from "@/lib/codex-run-log"
+import { inlineToolMarker, shouldPersistRunLog } from "@/lib/codex-run-log"
 import {
   appendWorkerRunLogs,
   cancelWorkerRun,
@@ -125,6 +125,7 @@ function createLogBuffer(
       if (isWorkerRunCanceledError(flushError)) throw flushError
       const sandboxId = sandboxIdFromLog(log)
       if (sandboxId) onSandboxId(sandboxId)
+      if (!shouldPersistRunLog(log)) return
 
       pending.push({ ...log, time: Date.now() })
       if (sandboxId) {

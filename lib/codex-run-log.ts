@@ -20,6 +20,11 @@ const MAX_MARKER_OUTPUT_LENGTH = 1_500
 const MAX_MARKER_TEXT_LENGTH = 800
 const MAX_MARKER_FILE_CHANGES = 50
 const MAX_MARKER_FILE_DIFF_LENGTH = 12_000
+const NON_PERSISTED_RUN_LOG_MESSAGES = new Set([
+  "Codex diff updated",
+  "File change",
+  "Shell command",
+])
 
 type ToolMarkerFileChange = {
   diff?: string
@@ -168,4 +173,8 @@ export function extractInlineToolMarkers(content: string) {
     content.matchAll(CODEX_TOOL_MARKER_REGEX),
     (match) => match[0]
   )
+}
+
+export function shouldPersistRunLog(log: { message: string }) {
+  return !NON_PERSISTED_RUN_LOG_MESSAGES.has(log.message)
 }

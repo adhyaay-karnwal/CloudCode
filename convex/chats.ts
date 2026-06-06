@@ -144,7 +144,6 @@ async function requireRunThreadNotesAccess(
     !thread ||
     run.threadId !== args.threadId ||
     thread.userId !== run.userId ||
-    run.status !== "running" ||
     !run.notesAccessToken ||
     run.notesAccessToken !== args.notesAccessToken
   ) {

@@ -13,7 +13,11 @@ import {
 } from "@/lib/codex-auth-json"
 import { getFilePathFromHref, normalizeLinkHref } from "@/lib/chat-link-path"
 import { refreshCodexOAuthTokens } from "@/lib/codex-oauth-refresh"
-import { inlineToolMarker, stripInlineToolMarkers } from "@/lib/codex-run-log"
+import {
+  inlineToolMarker,
+  shouldPersistRunLog,
+  stripInlineToolMarkers,
+} from "@/lib/codex-run-log"
 import { workerRunFinalContent } from "@/lib/codex-run-worker"
 import { cloudcodeContextCodexConfig } from "@/lib/daytona-context"
 import {
@@ -605,6 +609,11 @@ assert.equal(
 assert.ok(
   logs.some((log) => log.message === "Automatic approval review completed")
 )
+for (const message of ["Codex diff updated", "File change", "Shell command"]) {
+  assert.equal(shouldPersistRunLog({ message }), false)
+}
+assert.equal(shouldPersistRunLog({ message: "Codex run completed" }), true)
+assert.equal(shouldPersistRunLog({ message: "Reasoning summary" }), true)
 assert.ok(
   logs.some((log) => log.kind === "stderr" && log.message === "process stderr")
 )
