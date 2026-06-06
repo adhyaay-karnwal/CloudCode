@@ -24,6 +24,7 @@ import {
 } from "react"
 
 import { formatCodeLanguage } from "@/components/code-block"
+import { InlineMarkdown } from "@/components/inline-markdown"
 import { Checkbox } from "@/components/ui/checkbox"
 import { IconButton } from "@/components/ui/icon-button"
 import { cardSurfaceClass } from "@/components/ui/surface"
@@ -272,6 +273,14 @@ export function MarkdownEditor({
     el.setSelectionRange(pos, pos)
   })
 
+  // Request focus for a block. A block only mounts its editable field while it
+  // is the focused one (otherwise it renders as formatted markdown), so we make
+  // it focused first and let the effect above focus the field once it mounts.
+  const queueFocus = useCallback((id: string, caret: number | "end") => {
+    pendingFocusRef.current = { id, caret }
+    setFocusedId(id)
+  }, [])
+
   const changeText = useCallback(
     (id: string, text: string) => {
       const current = blocksRef.current
@@ -307,7 +316,7 @@ export function MarkdownEditor({
         const para = makeBlock("paragraph", "")
         const next = [...current]
         next[idx] = para
-        pendingFocusRef.current = { id: para.id, caret: 0 }
+        queueFocus(para.id, 0)
         commit(next)
         return
       }
@@ -320,10 +329,10 @@ export function MarkdownEditor({
       const next = [...current]
       next[idx] = { ...block, text: before }
       next.splice(idx + 1, 0, newBlock)
-      pendingFocusRef.current = { id: newBlock.id, caret: 0 }
+      queueFocus(newBlock.id, 0)
       commit(next)
     },
-    [commit]
+    [commit, queueFocus]
   )
 
   const removeBlock = useCallback(
@@ -334,10 +343,10 @@ export function MarkdownEditor({
       let next = current.filter((b) => b.id !== id)
       if (next.length === 0) next = [emptyParagraph()]
       const focusTarget = next[idx - 1] ?? next[0]
-      pendingFocusRef.current = { id: focusTarget.id, caret: "end" }
+      queueFocus(focusTarget.id, "end")
       commit(next)
     },
-    [commit]
+    [commit, queueFocus]
   )
 
   const handleBackspaceAtStart = useCallback(
@@ -351,7 +360,7 @@ export function MarkdownEditor({
         const para = makeBlock("paragraph", block.text)
         const next = [...current]
         next[idx] = para
-        pendingFocusRef.current = { id: para.id, caret: 0 }
+        queueFocus(para.id, 0)
         commit(next)
         return true
       }
@@ -370,26 +379,25 @@ export function MarkdownEditor({
       const next = [...current]
       next[idx - 1] = { ...prev, text: prev.text + block.text }
       next.splice(idx, 1)
-      pendingFocusRef.current = { id: prev.id, caret }
+      queueFocus(prev.id, caret)
       commit(next)
       return true
     },
-    [commit, removeBlock]
+    [commit, queueFocus, removeBlock]
   )
 
-  const navigate = useCallback((id: string, dir: -1 | 1) => {
-    const current = blocksRef.current
-    const idx = current.findIndex((b) => b.id === id)
-    if (idx === -1) return false
-    const target = current[idx + dir]
-    if (!target) return false
-    const el = refs.current.get(target.id)
-    if (!el) return false
-    el.focus()
-    const pos = dir < 0 ? el.value.length : 0
-    el.setSelectionRange(pos, pos)
-    return true
-  }, [])
+  const navigate = useCallback(
+    (id: string, dir: -1 | 1) => {
+      const current = blocksRef.current
+      const idx = current.findIndex((b) => b.id === id)
+      if (idx === -1) return false
+      const target = current[idx + dir]
+      if (!target) return false
+      queueFocus(target.id, dir < 0 ? "end" : 0)
+      return true
+    },
+    [queueFocus]
+  )
 
   const toggleTodo = useCallback(
     (id: string) => {
@@ -420,14 +428,14 @@ export function MarkdownEditor({
     (type: BlockType) => {
       const id = lastFocusedRef.current ?? blocksRef.current.at(-1)?.id
       if (!id) return
-      pendingFocusRef.current = { id, caret: "end" }
+      queueFocus(id, "end")
       commit(
         blocksRef.current.map((b) =>
           b.id === id ? makeTransformed(b, type, b.text) : b
         )
       )
     },
-    [commit]
+    [commit, queueFocus]
   )
 
   const insertImage = useCallback(() => {
@@ -445,9 +453,9 @@ export function MarkdownEditor({
     } else {
       next.splice(idx + 1, 0, image)
     }
-    pendingFocusRef.current = { id: image.id, caret: 0 }
+    queueFocus(image.id, 0)
     commit(next)
-  }, [commit])
+  }, [commit, queueFocus])
 
   // Insert a placeholder for each pasted/dropped image, upload it, then swap in
   // its public URL (or drop the placeholder if the upload fails).
@@ -500,15 +508,15 @@ export function MarkdownEditor({
     [addImageFiles, onUploadImage]
   )
 
-  const focusLast = useCallback((event: ReactMouseEvent<HTMLButtonElement>) => {
-    event.preventDefault()
-    const last = blocksRef.current.at(-1)
-    if (!last) return
-    const el = refs.current.get(last.id)
-    if (!el) return
-    el.focus()
-    el.setSelectionRange(el.value.length, el.value.length)
-  }, [])
+  const focusLast = useCallback(
+    (event: ReactMouseEvent<HTMLButtonElement>) => {
+      event.preventDefault()
+      const last = blocksRef.current.at(-1)
+      if (!last) return
+      queueFocus(last.id, "end")
+    },
+    [queueFocus]
+  )
 
   const onRowFocus = useCallback((id: string) => {
     lastFocusedRef.current = id
@@ -516,6 +524,9 @@ export function MarkdownEditor({
   }, [])
 
   const focusedType = blocks.find((b) => b.id === focusedId)?.type ?? null
+  // The editor is in edit mode whenever anything inside it holds focus; on blur
+  // it clears, so every block flips back to formatted markdown together.
+  const editing = focusedId !== null
   const isSoleEmpty =
     blocks.length === 1 &&
     blocks[0].type === "paragraph" &&
@@ -573,11 +584,11 @@ export function MarkdownEditor({
       className={cn("flex min-h-0 flex-col", className)}
       onPaste={enableImages && onUploadImage ? handlePaste : undefined}
       onBlur={(event) => {
-        if (
-          onBlur &&
-          !event.currentTarget.contains(event.relatedTarget as Node | null)
-        ) {
-          onBlur()
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          // Focus left the editor entirely — drop the active row so every block
+          // renders as formatted markdown.
+          setFocusedId(null)
+          onBlur?.()
         }
       }}
     >
@@ -623,10 +634,12 @@ export function MarkdownEditor({
                 key={block.id}
                 block={block}
                 number={numberCounter}
+                editing={editing}
                 placeholder={isSoleEmpty ? placeholder : undefined}
                 ariaLabel={ariaLabel}
                 setRef={setRef}
                 onFocus={() => onRowFocus(block.id)}
+                onStartEdit={(caret) => queueFocus(block.id, caret)}
                 onChangeText={(text) => changeText(block.id, text)}
                 onEnter={(caret) => handleEnter(block.id, caret)}
                 onBackspaceAtStart={() => handleBackspaceAtStart(block.id)}
@@ -648,6 +661,62 @@ export function MarkdownEditor({
       {toolbarPlacement === "bottom" ? toolbar : null}
     </div>
   )
+}
+
+type CaretDoc = Document & {
+  caretPositionFromPoint?: (
+    x: number,
+    y: number
+  ) => { offsetNode: Node; offset: number } | null
+  caretRangeFromPoint?: (x: number, y: number) => Range | null
+}
+
+// The character offset into a rendered element's text where (x, y) lands.
+function renderedOffsetFromPoint(
+  root: HTMLElement,
+  x: number,
+  y: number
+): number | null {
+  const doc = root.ownerDocument as CaretDoc
+  let node: Node | null = null
+  let offset = 0
+  const pos = doc.caretPositionFromPoint?.(x, y)
+  if (pos) {
+    node = pos.offsetNode
+    offset = pos.offset
+  } else {
+    const range = doc.caretRangeFromPoint?.(x, y)
+    if (!range) return null
+    node = range.startContainer
+    offset = range.startOffset
+  }
+  if (!node || node.nodeType !== Node.TEXT_NODE || !root.contains(node)) {
+    return null
+  }
+  let total = 0
+  const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  let cur: Node | null
+  while ((cur = walker.nextNode())) {
+    if (cur === node) return total + offset
+    total += cur.textContent?.length ?? 0
+  }
+  return null
+}
+
+// Map an offset in the formatted text back to an offset in the raw markdown.
+// Markdown only drops syntax characters, so the rendered text is an in-order
+// subsequence of the raw text — advance through both, matching char by char.
+function mapRenderedToRawOffset(
+  rendered: string,
+  raw: string,
+  renderedOffset: number
+): number {
+  let r = 0
+  for (let i = 0; i < renderedOffset && r < raw.length; i += 1) {
+    while (r < raw.length && raw[r] !== rendered[i]) r += 1
+    if (r < raw.length) r += 1
+  }
+  return r
 }
 
 // Whether the textarea currently renders as a single visual line, so a vertical
@@ -694,10 +763,12 @@ const PLACEHOLDER: Record<Exclude<BlockType, "image" | "code">, string> = {
 function TextRow({
   block,
   number,
+  editing,
   placeholder,
   ariaLabel,
   setRef,
   onFocus,
+  onStartEdit,
   onChangeText,
   onEnter,
   onBackspaceAtStart,
@@ -706,10 +777,12 @@ function TextRow({
 }: {
   block: Block
   number: number
+  editing: boolean
   placeholder?: string
   ariaLabel: string
   setRef: (id: string) => (el: EditableField | null) => void
   onFocus: () => void
+  onStartEdit: (caret: number | "end") => void
   onChangeText: (text: string) => void
   onEnter: (caret: number) => void
   onBackspaceAtStart: () => boolean
@@ -719,13 +792,17 @@ function TextRow({
   const ref = useRef<HTMLTextAreaElement | null>(null)
   const type = block.type as Exclude<BlockType, "image" | "code">
   const done = block.type === "todo" && block.checked
+  // Edit the raw markdown while focused; otherwise render it formatted. An empty
+  // block always stays editable so its placeholder shows and it can be clicked.
+  const showEditor = editing || block.text === ""
 
   useLayoutEffect(() => {
+    if (!showEditor) return
     const el = ref.current
     if (!el) return
     el.style.height = "0px"
     el.style.height = `${el.scrollHeight}px`
-  }, [block.text, block.type])
+  }, [block.text, block.type, showEditor])
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
     const el = event.currentTarget
@@ -768,7 +845,7 @@ function TextRow({
     }
   }
 
-  const textarea = (
+  const content = showEditor ? (
     <textarea
       ref={(el) => {
         ref.current = el
@@ -788,10 +865,36 @@ function TextRow({
         done && "text-muted-foreground line-through"
       )}
     />
+  ) : (
+    // Not a control: a formatted view of the line that drops into the raw
+    // textarea on click. Keyboard users reach the textarea via arrow keys.
+    // eslint-disable-next-line jsx-a11y/no-static-element-interactions
+    <div
+      // Click anywhere on the rendered line to edit its raw markdown, placing
+      // the caret where the click landed rather than at the end of the line.
+      onMouseDown={(event) => {
+        event.preventDefault()
+        const el = event.currentTarget
+        const rendered = el.textContent ?? ""
+        const offset = renderedOffsetFromPoint(el, event.clientX, event.clientY)
+        if (offset === null || offset >= rendered.length) {
+          onStartEdit("end")
+          return
+        }
+        onStartEdit(mapRenderedToRawOffset(rendered, block.text, offset))
+      }}
+      className={cn(
+        "w-full cursor-text whitespace-pre-wrap",
+        TEXT_CLASS[type],
+        done && "text-muted-foreground line-through"
+      )}
+    >
+      <InlineMarkdown text={block.text} />
+    </div>
   )
 
   if (block.type === "heading" || block.type === "paragraph") {
-    return textarea
+    return content
   }
 
   return (
@@ -812,7 +915,7 @@ function TextRow({
           •
         </span>
       )}
-      {textarea}
+      {content}
     </div>
   )
 }
