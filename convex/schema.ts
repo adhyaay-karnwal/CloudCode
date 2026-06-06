@@ -73,8 +73,11 @@ const messageMeta = v.object({
 export default defineSchema({
   codexAuth: defineTable({
     accessToken: v.string(),
+    accountEmail: v.optional(v.string()),
     accountId: v.union(v.string(), v.null()),
+    accountName: v.optional(v.string()),
     authMode: v.literal("chatgpt"),
+    displayName: v.optional(v.string()),
     fingerprint: v.string(),
     idToken: v.string(),
     lastRefresh: v.string(),
@@ -268,6 +271,7 @@ export default defineSchema({
     .index("by_user_repo_updated", ["userId", "repoUrl", "updatedAt"]),
 
   users: defineTable({
+    activeCodexProfile: v.optional(v.string()),
     createdAt: v.number(),
     email: v.optional(v.string()),
     imageUrl: v.optional(v.string()),

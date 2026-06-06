@@ -7,17 +7,22 @@ import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
 import {
   buildCodexAuthJsonFromParsed,
-  getAccountIdFromIdToken,
+  getCodexProfileFromIdToken,
   parseCodexAuthJson,
 } from "@/lib/codex-auth-json"
+import {
+  normalizeCodexProfile,
+  type CodexAuthOverview,
+} from "@/lib/codex-auth-types"
 
-const DEFAULT_PROFILE = "default"
 const CONVEX_JWT_TEMPLATE = "convex"
 type ClerkAuthSession = Awaited<ReturnType<typeof auth>>
 
 export type CodexChatGptAuth = {
   accessToken: string
+  accountEmail?: string
   accountId: string | null
+  accountName?: string
   authMode: "chatgpt"
   fingerprint: string
   idToken: string
@@ -28,23 +33,17 @@ export type CodexChatGptAuth = {
   updatedAt: string
 }
 
-export type AuthStatus = {
-  accountId?: string | null
-  authMode?: "chatgpt"
-  exists: boolean
-  fingerprint?: string
-  lastRefresh?: string
-  profile: string
-  updatedAt?: string
-}
+export type AuthStatus = CodexAuthOverview
 
 export type SaveCodexOAuthTokensInput = {
   accessToken: string
+  activate?: boolean
   convexToken?: string
   idToken: string
   openaiApiKey?: string
   profile?: string
   refreshToken: string
+  useAccountProfile?: boolean
 }
 
 export type SaveCodexAuthJsonForWorkerInput = {
@@ -100,23 +99,22 @@ export async function getConvexAuthToken() {
   return await getConvexAuthTokenForSession(await auth())
 }
 
-function normalizeProfile(profile?: string) {
-  const normalized = profile?.trim() || DEFAULT_PROFILE
-
-  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(normalized)) {
-    throw new Error(
-      "Profile must use only letters, numbers, underscores, or hyphens."
-    )
-  }
-
-  return normalized
-}
-
 function fingerprint(...values: string[]) {
   return createHash("sha256")
     .update(values.join("\0"))
     .digest("hex")
     .slice(0, 16)
+}
+
+function profileFromAccount(accountId: string | null, idToken: string) {
+  const safePrefix =
+    (accountId ? `chatgpt_${accountId}` : "chatgpt")
+      .replace(/[^a-zA-Z0-9_-]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 48) || "chatgpt"
+  const suffix = fingerprint(accountId ?? idToken).slice(0, 8)
+
+  return normalizeCodexProfile(`${safePrefix}_${suffix}`)
 }
 
 export function buildCodexAuthJson(auth: CodexChatGptAuth) {
@@ -135,11 +133,20 @@ async function getClient(convexToken?: string) {
 }
 
 export async function saveCodexOAuthTokens(input: SaveCodexOAuthTokensInput) {
-  const profile = normalizeProfile(input.profile)
+  const idTokenProfile = getCodexProfileFromIdToken(input.idToken)
+  const profile = normalizeCodexProfile(
+    input.profile ??
+      (input.useAccountProfile
+        ? profileFromAccount(idTokenProfile.accountId, input.idToken)
+        : undefined)
+  )
   const lastRefresh = new Date().toISOString()
   const auth = {
     accessToken: input.accessToken,
-    accountId: getAccountIdFromIdToken(input.idToken),
+    accountEmail: idTokenProfile.accountEmail,
+    accountId: idTokenProfile.accountId,
+    accountName: idTokenProfile.accountName,
+    activate: input.activate,
     fingerprint: fingerprint(input.idToken, input.refreshToken, lastRefresh),
     idToken: input.idToken,
     lastRefresh,
@@ -152,7 +159,7 @@ export async function saveCodexOAuthTokens(input: SaveCodexOAuthTokensInput) {
   return (await client.mutation(
     api.codexAuth.saveOAuthTokens,
     auth
-  )) satisfies AuthStatus
+  )) satisfies CodexAuthOverview
 }
 
 export async function saveCodexAuthJson(
@@ -174,7 +181,7 @@ export async function saveCodexAuthJsonForWorker(
   input: SaveCodexAuthJsonForWorkerInput
 ) {
   const parsed = parseCodexAuthJson(input.authJson)
-  const profile = normalizeProfile(input.profile)
+  const profile = normalizeCodexProfile(input.profile)
   const lastRefresh = new Date().toISOString()
   const client = new ConvexHttpClient(getConvexUrl())
 
@@ -193,9 +200,40 @@ export async function saveCodexAuthJsonForWorker(
 }
 
 export async function getCodexAuthStatus(profileInput?: string) {
-  const profile = normalizeProfile(profileInput)
+  const profile = profileInput ? normalizeCodexProfile(profileInput) : undefined
   const client = await getClient()
-  return (await client.query(api.codexAuth.status, {
+  return (await client.query(api.codexAuth.overview, {
     profile,
-  })) satisfies AuthStatus
+  })) satisfies CodexAuthOverview
+}
+
+export async function setActiveCodexAuthProfile(profileInput: string) {
+  const profile = normalizeCodexProfile(profileInput)
+  const client = await getClient()
+
+  return (await client.mutation(api.codexAuth.setActiveProfile, {
+    profile,
+  })) satisfies CodexAuthOverview
+}
+
+export async function renameCodexAuthProfile(
+  profileInput: string,
+  displayName: string
+) {
+  const profile = normalizeCodexProfile(profileInput)
+  const client = await getClient()
+
+  return (await client.mutation(api.codexAuth.renameProfile, {
+    displayName,
+    profile,
+  })) satisfies CodexAuthOverview
+}
+
+export async function disconnectCodexAuthProfile(profileInput: string) {
+  const profile = normalizeCodexProfile(profileInput)
+  const client = await getClient()
+
+  return (await client.mutation(api.codexAuth.disconnectProfile, {
+    profile,
+  })) satisfies CodexAuthOverview
 }

@@ -7,6 +7,7 @@ import { escapeHtml } from "@/lib/html-escape"
 
 const DEFAULT_PORT = 1455
 const FALLBACK_PORT = 1457
+const LOGIN_SERVER_VERSION = "settings-return-v1"
 const SCOPE =
   "openid profile email offline_access api.connectors.read api.connectors.invoke"
 
@@ -15,13 +16,22 @@ type PendingLogin = {
   codeVerifier: string
   convexToken: string
   profile?: string
+  forceLogin?: boolean
+  returnUrl: string
   state: string
+  useAccountProfile?: boolean
 }
 
 type LoginServerState = {
   pending: Map<string, PendingLogin>
   port: number
   server: Server
+  version: string
+}
+
+type HtmlDocumentOptions = {
+  autoRedirect?: boolean
+  returnUrl?: string
 }
 
 declare global {
@@ -51,10 +61,12 @@ function createState() {
 
 function buildAuthorizeUrl({
   codeChallenge,
+  forceLogin,
   port,
   state,
 }: {
   codeChallenge: string
+  forceLogin?: boolean
   port: number
   state: string
 }) {
@@ -71,8 +83,22 @@ function buildAuthorizeUrl({
   url.searchParams.set("codex_cli_simplified_flow", "true")
   url.searchParams.set("state", state)
   url.searchParams.set("originator", "codex_cli_rs")
+  if (forceLogin) {
+    url.searchParams.set("max_age", "0")
+  }
 
   return url.toString()
+}
+
+function oauthErrorMessage(url: URL) {
+  const error = url.searchParams.get("error")
+  if (!error) return null
+
+  const description = url.searchParams.get("error_description")
+
+  return description
+    ? `ChatGPT sign-in failed: ${description}`
+    : `ChatGPT sign-in failed: ${error}`
 }
 
 async function exchangeCodeForTokens(
@@ -122,14 +148,35 @@ async function exchangeCodeForTokens(
   }
 }
 
-function htmlDocument(message: string) {
-  return `<!doctype html><meta charset="utf-8"><title>Cloudcode Auth</title><body style="font-family:system-ui;padding:2rem">${escapeHtml(message)}</body>`
+function htmlDocument(message: string, options: HtmlDocumentOptions = {}) {
+  const returnUrl = options.returnUrl?.trim()
+  const escapedReturnUrl = returnUrl ? escapeHtml(returnUrl) : undefined
+  const scriptReturnUrl = returnUrl
+    ? JSON.stringify(returnUrl).replace(/</g, "\\u003c")
+    : undefined
+  const refresh =
+    options.autoRedirect && escapedReturnUrl
+      ? `<meta http-equiv="refresh" content="1;url=${escapedReturnUrl}">`
+      : ""
+  const script =
+    options.autoRedirect && scriptReturnUrl
+      ? `<script>window.setTimeout(function(){window.location.assign(${scriptReturnUrl})},100)</script>`
+      : ""
+  const returnLink = escapedReturnUrl
+    ? `<p><a href="${escapedReturnUrl}">Return to Cloudcode</a></p>`
+    : ""
+
+  return `<!doctype html><html><head><meta charset="utf-8">${refresh}<title>Cloudcode Auth</title></head><body style="font-family:system-ui;padding:2rem;line-height:1.5;max-width:42rem"><p>${escapeHtml(message)}</p>${returnLink}${script}</body></html>`
 }
 
 async function handleCallback(
   state: LoginServerState,
   requestUrl: string,
-  respond: (message: string, status?: number) => void
+  respond: (
+    message: string,
+    status?: number,
+    options?: HtmlDocumentOptions
+  ) => void
 ) {
   const url = new URL(requestUrl, `http://localhost:${state.port}`)
 
@@ -138,15 +185,27 @@ async function handleCallback(
     return
   }
 
-  const code = url.searchParams.get("code")
   const stateParam = url.searchParams.get("state")
-
-  if (!code || !stateParam) {
-    respond("Missing OAuth code or state.", 400)
+  const pending = stateParam ? state.pending.get(stateParam) : undefined
+  const returnOptions = pending ? { returnUrl: pending.returnUrl } : undefined
+  const oauthError = oauthErrorMessage(url)
+  if (oauthError) {
+    if (stateParam) {
+      state.pending.delete(stateParam)
+    }
+    respond(oauthError, 400, returnOptions)
     return
   }
 
-  const pending = state.pending.get(stateParam)
+  const code = url.searchParams.get("code")
+
+  if (!code || !stateParam) {
+    if (stateParam) {
+      state.pending.delete(stateParam)
+    }
+    respond("Missing OAuth code or state.", 400, returnOptions)
+    return
+  }
 
   if (!pending) {
     respond("OAuth state did not match an active login.", 400)
@@ -161,14 +220,19 @@ async function handleCallback(
       ...tokens,
       convexToken: pending.convexToken,
       profile: pending.profile,
+      useAccountProfile: pending.useAccountProfile,
     })
-    respond(
-      "Signed in with ChatGPT. You can close this tab or return to Cloudcode."
-    )
+    respond("Signed in with ChatGPT. Returning to Cloudcode...", 200, {
+      autoRedirect: true,
+      returnUrl: pending.returnUrl,
+    })
   } catch (error) {
     respond(
       error instanceof Error ? error.message : "ChatGPT sign-in failed.",
-      400
+      400,
+      {
+        returnUrl: pending.returnUrl,
+      }
     )
   }
 }
@@ -176,30 +240,54 @@ async function handleCallback(
 async function listen(port: number) {
   return new Promise<LoginServerState>((resolve, reject) => {
     const pending = new Map<string, PendingLogin>()
+    let loginState: LoginServerState
     const server = createServer((request, response) => {
       void handleCallback(
-        { pending, port, server },
+        loginState,
         request.url ?? "/",
-        (message, status = 200) => {
+        (message, status = 200, options) => {
           response.statusCode = status
           response.setHeader("Content-Type", "text/html; charset=utf-8")
           response.setHeader("Connection", "close")
-          response.end(htmlDocument(message))
+          response.end(htmlDocument(message, options))
         }
       )
     })
+    loginState = {
+      pending,
+      port,
+      server,
+      version: LOGIN_SERVER_VERSION,
+    }
 
     server.once("error", reject)
     server.listen(port, "127.0.0.1", () => {
       server.off("error", reject)
-      resolve({ pending, port, server })
+      resolve(loginState)
     })
   })
 }
 
+async function closeLoginServer(state: LoginServerState) {
+  await new Promise<void>((resolve) => {
+    try {
+      state.server.close(() => resolve())
+    } catch {
+      resolve()
+    }
+  })
+}
+
 async function getLoginServer() {
-  if (globalThis.__cloudcodeCodexLoginServer) {
+  if (
+    globalThis.__cloudcodeCodexLoginServer?.version === LOGIN_SERVER_VERSION
+  ) {
     return globalThis.__cloudcodeCodexLoginServer
+  }
+
+  if (globalThis.__cloudcodeCodexLoginServer) {
+    await closeLoginServer(globalThis.__cloudcodeCodexLoginServer)
+    globalThis.__cloudcodeCodexLoginServer = undefined
   }
 
   try {
@@ -214,11 +302,17 @@ async function getLoginServer() {
 export async function createCodexLoginUrl({
   appOrigin,
   convexToken,
+  forceLogin,
   profile,
+  returnUrl,
+  useAccountProfile,
 }: {
   appOrigin: string
   convexToken: string
+  forceLogin?: boolean
   profile?: string
+  returnUrl?: string
+  useAccountProfile?: boolean
 }) {
   const server = await getLoginServer()
   const { codeChallenge, codeVerifier } = createPkcePair()
@@ -228,12 +322,16 @@ export async function createCodexLoginUrl({
     appOrigin,
     codeVerifier,
     convexToken,
+    forceLogin,
     profile,
+    returnUrl: returnUrl ?? appOrigin,
     state,
+    useAccountProfile,
   })
 
   return buildAuthorizeUrl({
     codeChallenge,
+    forceLogin,
     port: server.port,
     state,
   })

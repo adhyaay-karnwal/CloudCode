@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server"
 
-import { getCodexAuthStatus, saveCodexAuthJson } from "@/lib/codex-auth"
+import {
+  disconnectCodexAuthProfile,
+  getCodexAuthStatus,
+  renameCodexAuthProfile,
+  saveCodexAuthJson,
+  setActiveCodexAuthProfile,
+} from "@/lib/codex-auth"
 import { requireSameOrigin } from "@/lib/request-security"
 
 export const runtime = "nodejs"
@@ -54,6 +60,80 @@ export async function POST(request: Request) {
       {
         error:
           error instanceof Error ? error.message : "Unable to store auth.json.",
+      },
+      { status: 400 }
+    )
+  }
+}
+
+export async function PATCH(request: Request) {
+  const blocked = requireSameOrigin(request)
+  if (blocked) return blocked
+
+  try {
+    const body = (await request.json()) as {
+      displayName?: unknown
+      profile?: unknown
+    }
+
+    if (typeof body.profile !== "string") {
+      return NextResponse.json(
+        { error: "profile must be a string." },
+        { status: 400 }
+      )
+    }
+
+    if ("displayName" in body) {
+      if (typeof body.displayName !== "string") {
+        return NextResponse.json(
+          { error: "displayName must be a string." },
+          { status: 400 }
+        )
+      }
+
+      return NextResponse.json(
+        await renameCodexAuthProfile(body.profile, body.displayName)
+      )
+    }
+
+    return NextResponse.json(await setActiveCodexAuthProfile(body.profile))
+  } catch (error) {
+    return NextResponse.json(
+      {
+        error:
+          error instanceof Error
+            ? error.message
+            : "Unable to switch ChatGPT account.",
+      },
+      { status: 400 }
+    )
+  }
+}
+
+export async function DELETE(request: Request) {
+  const blocked = requireSameOrigin(request)
+  if (blocked) return blocked
+
+  try {
+    const body = (await request.json().catch(() => ({}))) as {
+      profile?: unknown
+    }
+
+    if (typeof body.profile !== "string") {
+      return NextResponse.json(
+        { error: "profile must be a string." },
+        { status: 400 }
+      )
+    }
+
+    return NextResponse.json(await disconnectCodexAuthProfile(body.profile))
+  } catch (error) {
+    return NextResponse.json(
+      {
+        error:
+          error instanceof Error
+            ? error.message
+            : "Unable to disconnect ChatGPT account.",
       },
       { status: 400 }
     )

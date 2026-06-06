@@ -7,6 +7,12 @@ export type ParsedCodexAuthJson = {
   refreshToken: string
 }
 
+export type CodexIdTokenProfile = {
+  accountEmail?: string
+  accountId: string | null
+  accountName?: string
+}
+
 function decodeJwtPayload(token: string) {
   const [, payload] = token.split(".")
 
@@ -26,7 +32,9 @@ function decodeJwtPayload(token: string) {
   >
 }
 
-export function getAccountIdFromIdToken(idToken: string) {
+export function getCodexProfileFromIdToken(
+  idToken: string
+): CodexIdTokenProfile {
   const payload = decodeJwtPayload(idToken)
   const authClaims = payload["https://api.openai.com/auth"]
 
@@ -38,11 +46,35 @@ export function getAccountIdFromIdToken(idToken: string) {
     const accountId = (authClaims as Record<string, unknown>).chatgpt_account_id
 
     if (typeof accountId === "string" && accountId.length > 0) {
-      return accountId
+      return {
+        accountEmail:
+          typeof payload.email === "string" && payload.email.length > 0
+            ? payload.email
+            : undefined,
+        accountId,
+        accountName:
+          typeof payload.name === "string" && payload.name.length > 0
+            ? payload.name
+            : undefined,
+      }
     }
   }
 
-  return null
+  return {
+    accountEmail:
+      typeof payload.email === "string" && payload.email.length > 0
+        ? payload.email
+        : undefined,
+    accountId: null,
+    accountName:
+      typeof payload.name === "string" && payload.name.length > 0
+        ? payload.name
+        : undefined,
+  }
+}
+
+export function getAccountIdFromIdToken(idToken: string) {
+  return getCodexProfileFromIdToken(idToken).accountId
 }
 
 export function parseCodexAuthJson(authJson: string): ParsedCodexAuthJson {

@@ -2,22 +2,31 @@
 
 import { useMutation, useQuery } from "convex/react"
 import {
+  Check,
+  CheckCircle2,
   ChevronRight,
+  Circle,
   ClipboardPaste,
   CornerDownRight,
   KeyRound,
   Layers3,
+  Pencil,
   Plus,
+  RefreshCw,
   Terminal,
   Trash2,
   X,
 } from "lucide-react"
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 
 import { Switch } from "@/components/ui/switch"
-import { cardSurfaceClass } from "@/components/ui/surface"
+import { cardSurfaceClass, popoverSurfaceClass } from "@/components/ui/surface"
 import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
+import type {
+  CodexAuthAccountStatus,
+  CodexAuthOverview,
+} from "@/lib/codex-auth-types"
 import { dedupeEnvVars, parseDotenv } from "@/lib/dotenv-parse"
 import { cn } from "@/lib/utils"
 
@@ -61,10 +70,6 @@ const statusBadge =
 const statusOk = "text-success"
 
 const statusIdle = "text-muted-foreground"
-
-type AuthStatus = {
-  exists: boolean
-}
 
 type GitHubAuthStatus = {
   app?: {
@@ -142,19 +147,20 @@ export function SettingsScreen({
   authError,
   githubStatus,
   githubAuthError,
+  onCodexAuthChanged,
   onGitHubAuthChanged,
   sandboxPresets,
 }: {
-  authStatus: AuthStatus | null
+  authStatus: CodexAuthOverview | null
   authError: string
   githubStatus: GitHubAuthStatus | null
   githubAuthError: string
+  onCodexAuthChanged: () => void | Promise<void>
   onGitHubAuthChanged: () => void | Promise<void>
   sandboxPresets: SandboxPresetRecord[]
 }) {
   const detailedPresets = useQuery(api.sandboxPresets.listWithEnvironments)
   const presets = (detailedPresets ?? sandboxPresets) as SandboxPresetRecord[]
-  const connected = Boolean(authStatus?.exists)
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -171,8 +177,9 @@ export function SettingsScreen({
             <h2 className={cn(sectionLabel, "px-1")}>Connections</h2>
             <div className={card}>
               <ChatGPTConnectionRow
-                connected={connected}
+                status={authStatus}
                 authError={authError}
+                onCodexAuthChanged={onCodexAuthChanged}
               />
               <GitHubConnectionRow
                 status={githubStatus}
@@ -190,41 +197,449 @@ export function SettingsScreen({
 }
 
 function ChatGPTConnectionRow({
-  connected,
+  status,
   authError,
+  onCodexAuthChanged,
 }: {
-  connected: boolean
+  status: CodexAuthOverview | null
   authError: string
+  onCodexAuthChanged: () => void | Promise<void>
 }) {
+  const [switchingProfile, setSwitchingProfile] = useState<string | null>(null)
+  const [editingProfile, setEditingProfile] = useState<string | null>(null)
+  const [draftDisplayName, setDraftDisplayName] = useState("")
+  const [renamingProfile, setRenamingProfile] = useState<string | null>(null)
+  const [disconnectingProfile, setDisconnectingProfile] = useState<
+    string | null
+  >(null)
+  const [pendingDisconnectAccount, setPendingDisconnectAccount] =
+    useState<CodexAuthAccountStatus | null>(null)
+  const [switchError, setSwitchError] = useState("")
+  const accounts = status?.accounts ?? []
+  const activeProfile = status?.activeProfile ?? status?.profile ?? "default"
+  const connected = Boolean(status?.exists || accounts.length > 0)
+  const activeAccount = accounts.find(
+    (account) => account.profile === activeProfile
+  )
+  const detail = connected
+    ? activeAccount
+      ? `Using ${codexAccountTitle(activeAccount)}`
+      : "Connected. Codex runs are authorized with ChatGPT."
+    : "Sign in with ChatGPT to authorize Codex runs."
+  const visibleError = switchError || authError
+
+  async function selectProfile(profile: string) {
+    if (profile === activeProfile || switchingProfile || editingProfile) return
+
+    setSwitchingProfile(profile)
+    setSwitchError("")
+
+    try {
+      const res = await fetch("/api/codex-auth", {
+        body: JSON.stringify({ profile }),
+        headers: { "Content-Type": "application/json" },
+        method: "PATCH",
+      })
+      const data = (await res.json().catch(() => ({}))) as { error?: string }
+
+      if (!res.ok) {
+        throw new Error(data.error ?? "Unable to switch ChatGPT account.")
+      }
+
+      await onCodexAuthChanged()
+    } catch (error) {
+      setSwitchError(
+        error instanceof Error
+          ? error.message
+          : "Unable to switch ChatGPT account."
+      )
+    } finally {
+      setSwitchingProfile(null)
+    }
+  }
+
+  function startRename(account: CodexAuthAccountStatus) {
+    setEditingProfile(account.profile)
+    setDraftDisplayName(account.displayName ?? "")
+    setSwitchError("")
+  }
+
+  async function renameProfile(profile: string) {
+    if (renamingProfile) return
+
+    setRenamingProfile(profile)
+    setSwitchError("")
+
+    try {
+      const res = await fetch("/api/codex-auth", {
+        body: JSON.stringify({
+          displayName: draftDisplayName,
+          profile,
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "PATCH",
+      })
+      const data = (await res.json().catch(() => ({}))) as { error?: string }
+
+      if (!res.ok) {
+        throw new Error(data.error ?? "Unable to rename ChatGPT account.")
+      }
+
+      await onCodexAuthChanged()
+      setEditingProfile(null)
+      setDraftDisplayName("")
+    } catch (error) {
+      setSwitchError(
+        error instanceof Error
+          ? error.message
+          : "Unable to rename ChatGPT account."
+      )
+    } finally {
+      setRenamingProfile(null)
+    }
+  }
+
+  async function disconnectProfile(account: CodexAuthAccountStatus) {
+    if (disconnectingProfile) return
+
+    setPendingDisconnectAccount(null)
+    setDisconnectingProfile(account.profile)
+    setSwitchError("")
+
+    try {
+      const res = await fetch("/api/codex-auth", {
+        body: JSON.stringify({ profile: account.profile }),
+        headers: { "Content-Type": "application/json" },
+        method: "DELETE",
+      })
+      const data = (await res.json().catch(() => ({}))) as { error?: string }
+
+      if (!res.ok) {
+        throw new Error(data.error ?? "Unable to disconnect ChatGPT account.")
+      }
+
+      if (editingProfile === account.profile) {
+        setEditingProfile(null)
+        setDraftDisplayName("")
+      }
+      await onCodexAuthChanged()
+    } catch (error) {
+      setSwitchError(
+        error instanceof Error
+          ? error.message
+          : "Unable to disconnect ChatGPT account."
+      )
+    } finally {
+      setDisconnectingProfile(null)
+    }
+  }
+
   return (
-    <div className={cardRow}>
-      <svg
-        viewBox="0 0 256 260"
-        preserveAspectRatio="xMidYMid"
-        aria-hidden
-        className="size-6 shrink-0 fill-current text-foreground/80"
-      >
-        <path d="M239.184 106.203a64.716 64.716 0 0 0-5.576-53.103C219.452 28.459 191 15.784 163.213 21.74A65.586 65.586 0 0 0 52.096 45.22a64.716 64.716 0 0 0-43.23 31.36c-14.31 24.602-11.061 55.634 8.033 76.74a64.665 64.665 0 0 0 5.525 53.102c14.174 24.65 42.644 37.324 70.446 31.36a64.72 64.72 0 0 0 48.754 21.744c28.481.025 53.714-18.361 62.414-45.481a64.767 64.767 0 0 0 43.229-31.36c14.137-24.558 10.875-55.423-8.083-76.483Zm-97.56 136.338a48.397 48.397 0 0 1-31.105-11.255l1.535-.87 51.67-29.825a8.595 8.595 0 0 0 4.247-7.367v-72.85l21.845 12.636c.218.111.37.32.409.563v60.367c-.056 26.818-21.783 48.545-48.601 48.601Zm-104.466-44.61a48.345 48.345 0 0 1-5.781-32.589l1.534.921 51.722 29.826a8.339 8.339 0 0 0 8.441 0l63.181-36.425v25.221a.87.87 0 0 1-.358.665l-52.335 30.184c-23.257 13.398-52.97 5.431-66.404-17.803ZM23.549 85.38a48.499 48.499 0 0 1 25.58-21.333v61.39a8.288 8.288 0 0 0 4.195 7.316l62.874 36.272-21.845 12.636a.819.819 0 0 1-.767 0L41.353 151.53c-23.211-13.454-31.171-43.144-17.804-66.405v.256Zm179.466 41.695-63.08-36.63L161.73 77.86a.819.819 0 0 1 .768 0l52.233 30.184a48.6 48.6 0 0 1-7.316 87.635v-61.391a8.544 8.544 0 0 0-4.4-7.213Zm21.742-32.69-1.535-.922-51.619-30.081a8.39 8.39 0 0 0-8.492 0L99.98 99.808V74.587a.716.716 0 0 1 .307-.665l52.233-30.133a48.652 48.652 0 0 1 72.236 50.391v.205ZM88.061 139.097l-21.845-12.585a.87.87 0 0 1-.41-.614V65.685a48.652 48.652 0 0 1 79.757-37.346l-1.535.87-51.67 29.825a8.595 8.595 0 0 0-4.246 7.367l-.051 72.697Zm11.868-25.58 28.138-16.217 28.188 16.218v32.434l-28.086 16.218-28.188-16.218-.052-32.434Z" />
-      </svg>
-      <div className="min-w-0 flex-1">
-        <div className="text-sm font-medium text-foreground/85">ChatGPT</div>
-        <div className="text-xs text-muted-foreground">
-          {connected
-            ? "Connected. Codex runs are authorized with your ChatGPT account."
-            : "Sign in with your ChatGPT account to authorize Codex runs."}
+    <div>
+      <div className={cardRow}>
+        <svg
+          viewBox="0 0 256 260"
+          preserveAspectRatio="xMidYMid"
+          aria-hidden
+          className="size-6 shrink-0 fill-current text-foreground/80"
+        >
+          <path d="M239.184 106.203a64.716 64.716 0 0 0-5.576-53.103C219.452 28.459 191 15.784 163.213 21.74A65.586 65.586 0 0 0 52.096 45.22a64.716 64.716 0 0 0-43.23 31.36c-14.31 24.602-11.061 55.634 8.033 76.74a64.665 64.665 0 0 0 5.525 53.102c14.174 24.65 42.644 37.324 70.446 31.36a64.72 64.72 0 0 0 48.754 21.744c28.481.025 53.714-18.361 62.414-45.481a64.767 64.767 0 0 0 43.229-31.36c14.137-24.558 10.875-55.423-8.083-76.483Zm-97.56 136.338a48.397 48.397 0 0 1-31.105-11.255l1.535-.87 51.67-29.825a8.595 8.595 0 0 0 4.247-7.367v-72.85l21.845 12.636c.218.111.37.32.409.563v60.367c-.056 26.818-21.783 48.545-48.601 48.601Zm-104.466-44.61a48.345 48.345 0 0 1-5.781-32.589l1.534.921 51.722 29.826a8.339 8.339 0 0 0 8.441 0l63.181-36.425v25.221a.87.87 0 0 1-.358.665l-52.335 30.184c-23.257 13.398-52.97 5.431-66.404-17.803ZM23.549 85.38a48.499 48.499 0 0 1 25.58-21.333v61.39a8.288 8.288 0 0 0 4.195 7.316l62.874 36.272-21.845 12.636a.819.819 0 0 1-.767 0L41.353 151.53c-23.211-13.454-31.171-43.144-17.804-66.405v.256Zm179.466 41.695-63.08-36.63L161.73 77.86a.819.819 0 0 1 .768 0l52.233 30.184a48.6 48.6 0 0 1-7.316 87.635v-61.391a8.544 8.544 0 0 0-4.4-7.213Zm21.742-32.69-1.535-.922-51.619-30.081a8.39 8.39 0 0 0-8.492 0L99.98 99.808V74.587a.716.716 0 0 1 .307-.665l52.233-30.133a48.652 48.652 0 0 1 72.236 50.391v.205ZM88.061 139.097l-21.845-12.585a.87.87 0 0 1-.41-.614V65.685a48.652 48.652 0 0 1 79.757-37.346l-1.535.87-51.67 29.825a8.595 8.595 0 0 0-4.246 7.367l-.051 72.697Zm11.868-25.58 28.138-16.217 28.188 16.218v32.434l-28.086 16.218-28.188-16.218-.052-32.434Z" />
+        </svg>
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium text-foreground/85">ChatGPT</div>
+          <div className="text-xs text-muted-foreground">{detail}</div>
+          {visibleError ? (
+            <div className="mt-1 text-[11px] leading-4 text-destructive">
+              {visibleError}
+            </div>
+          ) : null}
         </div>
-        {authError ? (
-          <div className="mt-1 text-[11px] leading-4 text-destructive">
-            {authError}
-          </div>
+        {connected ? (
+          <form action="/api/codex-auth/login" method="get">
+            <input type="hidden" name="profile" value={activeProfile} />
+            <button type="submit" className={navAction}>
+              <RefreshCw className="size-3.5" />
+              Reconnect
+            </button>
+          </form>
         ) : null}
+        <form action="/api/codex-auth/login" method="get">
+          {connected ? <input type="hidden" name="add" value="1" /> : null}
+          <button type="submit" className={connected ? navAction : navPrimary}>
+            {connected ? <Plus className="size-3.5" /> : null}
+            {connected ? "Add account" : "Connect"}
+          </button>
+        </form>
       </div>
-      <form action="/api/codex-auth/login" method="get">
-        <button type="submit" className={connected ? navAction : navPrimary}>
-          {connected ? "Reconnect" : "Connect"}
-        </button>
-      </form>
+      {accounts.length > 0 ? (
+        <div className="border-t border-border/60 px-3.5 py-2">
+          <div className="grid gap-1.5">
+            {accounts.map((account) => {
+              const active = account.profile === activeProfile
+              const editing = editingProfile === account.profile
+              const busy = Boolean(
+                switchingProfile || renamingProfile || disconnectingProfile
+              )
+              const disconnecting = disconnectingProfile === account.profile
+              const renaming = renamingProfile === account.profile
+              const switching = switchingProfile === account.profile
+
+              if (editing) {
+                return (
+                  <form
+                    key={account.profile}
+                    onSubmit={(event) => {
+                      event.preventDefault()
+                      void renameProfile(account.profile)
+                    }}
+                    className="grid min-h-12 w-full grid-cols-[1rem_minmax(0,1fr)_auto_auto] items-center gap-2 rounded-lg bg-muted px-2.5 py-2 text-left text-foreground"
+                  >
+                    {active ? (
+                      <CheckCircle2 className="size-4 text-success" />
+                    ) : (
+                      <Circle className="size-4 text-muted-foreground" />
+                    )}
+                    <input
+                      className={cn(inputClass, "h-8")}
+                      value={draftDisplayName}
+                      maxLength={80}
+                      placeholder={codexAccountTitle(account)}
+                      disabled={renaming}
+                      aria-label="ChatGPT account name"
+                      onChange={(event) =>
+                        setDraftDisplayName(event.target.value)
+                      }
+                    />
+                    <button
+                      type="submit"
+                      className={iconBtn}
+                      disabled={renaming}
+                      title="Save name"
+                      aria-label="Save ChatGPT account name"
+                    >
+                      <Check className="size-4" />
+                    </button>
+                    <button
+                      type="button"
+                      className={iconBtn}
+                      disabled={renaming}
+                      title="Cancel rename"
+                      aria-label="Cancel ChatGPT account rename"
+                      onClick={() => {
+                        setEditingProfile(null)
+                        setDraftDisplayName("")
+                      }}
+                    >
+                      <X className="size-4" />
+                    </button>
+                  </form>
+                )
+              }
+
+              return (
+                <div
+                  key={account.profile}
+                  className={cn(
+                    "grid min-h-12 w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-lg transition-colors",
+                    active
+                      ? "bg-muted text-foreground"
+                      : "text-muted-foreground hover:bg-muted/70 hover:text-foreground",
+                    busy && "opacity-80"
+                  )}
+                >
+                  <button
+                    type="button"
+                    aria-pressed={active}
+                    disabled={active || busy || Boolean(editingProfile)}
+                    onClick={() => void selectProfile(account.profile)}
+                    className="grid min-w-0 grid-cols-[1rem_minmax(0,1fr)] items-center gap-2 px-2.5 py-2 text-left disabled:pointer-events-none"
+                  >
+                    {active ? (
+                      <CheckCircle2 className="size-4 text-success" />
+                    ) : (
+                      <Circle className="size-4" />
+                    )}
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-medium">
+                        {codexAccountTitle(account)}
+                      </span>
+                      <span className="block truncate text-xs">
+                        {codexAccountSubtitle(account)}
+                      </span>
+                    </span>
+                  </button>
+                  <div className="mr-1 flex items-center gap-1">
+                    <button
+                      type="button"
+                      className={iconBtn}
+                      disabled={busy || Boolean(editingProfile)}
+                      title="Rename account"
+                      aria-label={`Rename ${codexAccountTitle(account)}`}
+                      onClick={() => startRename(account)}
+                    >
+                      <Pencil className="size-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      className={cn(iconBtn, "hover:text-destructive")}
+                      disabled={busy || Boolean(editingProfile)}
+                      title="Disconnect account"
+                      aria-label={`Disconnect ${codexAccountTitle(account)}`}
+                      onClick={() => setPendingDisconnectAccount(account)}
+                    >
+                      <Trash2 className="size-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      aria-pressed={active}
+                      disabled={active || busy || Boolean(editingProfile)}
+                      onClick={() => void selectProfile(account.profile)}
+                      className={cn(
+                        metaPill,
+                        "h-7 transition-colors disabled:pointer-events-none disabled:opacity-80",
+                        active
+                          ? "text-foreground/70"
+                          : "text-muted-foreground hover:bg-muted-foreground/10 hover:text-foreground"
+                      )}
+                    >
+                      {disconnecting
+                        ? "Disconnecting"
+                        : switching
+                          ? "Switching"
+                          : active
+                            ? "Active"
+                            : "Use"}
+                    </button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      ) : null}
+      {pendingDisconnectAccount ? (
+        <SettingsConfirmDialog
+          title={`Disconnect ${codexAccountTitle(pendingDisconnectAccount)}?`}
+          description="Codex runs will stop using this ChatGPT account."
+          confirmLabel="Disconnect"
+          destructive
+          onCancel={() => setPendingDisconnectAccount(null)}
+          onConfirm={() => void disconnectProfile(pendingDisconnectAccount)}
+        />
+      ) : null}
     </div>
+  )
+}
+
+function codexAccountTitle(account: CodexAuthAccountStatus) {
+  return (
+    account.displayName ||
+    account.accountEmail ||
+    account.accountName ||
+    (account.accountId
+      ? `Account ${shortAccountId(account.accountId)}`
+      : null) ||
+    account.profile
+  )
+}
+
+function codexAccountSubtitle(account: CodexAuthAccountStatus) {
+  const label =
+    account.accountEmail && account.accountName
+      ? account.accountName
+      : account.profile === "default"
+        ? "Default profile"
+        : account.profile
+
+  return account.accountId
+    ? `${label} - ${shortAccountId(account.accountId)}`
+    : label
+}
+
+function shortAccountId(accountId: string) {
+  return accountId.length <= 12
+    ? accountId
+    : `${accountId.slice(0, 4)}...${accountId.slice(-6)}`
+}
+
+function SettingsConfirmDialog({
+  title,
+  description,
+  confirmLabel = "Confirm",
+  cancelLabel = "Cancel",
+  destructive,
+  onConfirm,
+  onCancel,
+}: {
+  title: string
+  description?: string
+  confirmLabel?: string
+  cancelLabel?: string
+  destructive?: boolean
+  onConfirm: () => void
+  onCancel: () => void
+}) {
+  useEffect(() => {
+    function handleKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key === "Escape") onCancel()
+    }
+
+    window.addEventListener("keydown", handleKeyDown)
+    return () => window.removeEventListener("keydown", handleKeyDown)
+  }, [onCancel])
+
+  return (
+    <dialog
+      open
+      className="fixed inset-0 z-50 m-0 flex h-dvh max-h-none w-screen max-w-none items-center justify-center border-0 bg-black/40 p-4 backdrop-blur-sm"
+      onCancel={(event) => {
+        event.preventDefault()
+        onCancel()
+      }}
+      aria-modal="true"
+      aria-label={title}
+      tabIndex={-1}
+    >
+      <button
+        type="button"
+        aria-label="Cancel dialog"
+        tabIndex={-1}
+        className="absolute inset-0 cursor-default border-0 bg-transparent p-0"
+        onClick={onCancel}
+      />
+      <div
+        className={cn(
+          "relative z-10 w-full max-w-sm overflow-hidden p-5",
+          popoverSurfaceClass
+        )}
+      >
+        <div className="text-base font-medium text-foreground">{title}</div>
+        {description ? (
+          <p className="mt-1.5 text-sm text-muted-foreground">{description}</p>
+        ) : null}
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-lg border border-border px-3 py-2 text-sm text-foreground/80 transition-colors hover:bg-muted"
+          >
+            {cancelLabel}
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            className={cn(
+              "rounded-lg px-3 py-2 text-sm transition-colors",
+              destructive
+                ? "text-destructive-foreground bg-destructive hover:bg-destructive/90"
+                : "bg-foreground text-background hover:bg-foreground/90"
+            )}
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </dialog>
   )
 }
 

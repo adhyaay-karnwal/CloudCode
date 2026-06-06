@@ -18,14 +18,30 @@ function html(message: string) {
   )
 }
 
+function returnUrlForRequest(url: URL) {
+  const next = url.searchParams.get("next")
+
+  return new URL(
+    next === "chat" ? "/" : "/?view=settings",
+    url.origin
+  ).toString()
+}
+
 export async function GET(request: Request) {
   try {
     const url = new URL(request.url)
     const convexToken = await getConvexAuthToken()
+    const addAccount =
+      url.searchParams.get("add") === "1" ||
+      url.searchParams.get("mode") === "add"
+    const profile = url.searchParams.get("profile") ?? undefined
     const loginUrl = await createCodexLoginUrl({
       appOrigin: url.origin,
       convexToken,
-      profile: url.searchParams.get("profile") ?? undefined,
+      forceLogin: addAccount,
+      profile,
+      returnUrl: returnUrlForRequest(url),
+      useAccountProfile: addAccount && !profile,
     })
 
     return NextResponse.redirect(loginUrl)

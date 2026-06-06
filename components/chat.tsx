@@ -90,6 +90,7 @@ import {
   type Speed,
   type Thinking,
 } from "@/lib/chat-options"
+import type { CodexAuthOverview } from "@/lib/codex-auth-types"
 import { cn } from "@/lib/utils"
 
 const FileBrowser = dynamic(
@@ -158,13 +159,7 @@ type CachedRunState = {
 type SandboxState = "running" | "stopped" | "deleted" | "error"
 type SandboxAction = "pause" | "resume" | "delete"
 
-type AuthStatus = {
-  accountId?: string | null
-  authMode?: "chatgpt"
-  exists: boolean
-  lastRefresh?: string
-  profile: string
-}
+type AuthStatus = CodexAuthOverview
 
 type GitHubAuthStatus = {
   app?: {
@@ -1038,36 +1033,36 @@ function ChatInner() {
     }
   }, [])
 
+  const refreshCodexAuth = useCallback(async () => {
+    try {
+      const res = await fetch("/api/codex-auth", { cache: "no-store" })
+      const data = await res.json()
+
+      if (!res.ok) {
+        throw new Error(data?.error ?? "Unable to read auth status.")
+      }
+
+      setAuthStatus(data)
+      setAuthError("")
+    } catch (err) {
+      setAuthStatus(null)
+      setAuthError(
+        err instanceof Error ? err.message : "Unable to read auth status."
+      )
+    }
+  }, [])
+
   useEffect(() => {
     if (userLoading) return
 
-    async function refreshAuth() {
-      try {
-        const res = await fetch("/api/codex-auth", { cache: "no-store" })
-        const data = await res.json()
-
-        if (!res.ok) {
-          throw new Error(data?.error ?? "Unable to read auth status.")
-        }
-
-        setAuthStatus(data)
-        setAuthError("")
-      } catch (err) {
-        setAuthStatus(null)
-        setAuthError(
-          err instanceof Error ? err.message : "Unable to read auth status."
-        )
-      }
-    }
-
     function refreshConnections() {
-      void Promise.all([refreshAuth(), refreshGitHubAuth()])
+      void Promise.all([refreshCodexAuth(), refreshGitHubAuth()])
     }
 
     refreshConnections()
     window.addEventListener("focus", refreshConnections)
     return () => window.removeEventListener("focus", refreshConnections)
-  }, [refreshGitHubAuth, userLoading])
+  }, [refreshCodexAuth, refreshGitHubAuth, userLoading])
 
   useEffect(() => {
     if (userLoading) return
@@ -1543,6 +1538,7 @@ function ChatInner() {
       window.location.href = "/api/codex-auth/login"
       return
     }
+    const codexProfile = authStatus.activeProfile || authStatus.profile
 
     let chatId = active?.id ?? null
     let assistantMessageId: Id<"messages"> | null = null
@@ -1640,6 +1636,7 @@ function ChatInner() {
           codexThreadId: cachedRunState?.codexThreadId ?? active?.codexThreadId,
           assistantMessageId,
           previousDiff,
+          profile: codexProfile,
           prompt: trimmed,
           reasoningEffort: thinking,
           repoUrl: repoUrl.trim(),
@@ -2182,6 +2179,7 @@ function ChatInner() {
             authError={authError}
             githubStatus={githubStatus}
             githubAuthError={githubAuthError}
+            onCodexAuthChanged={refreshCodexAuth}
             onGitHubAuthChanged={refreshGitHubAuth}
             sandboxPresets={sandboxPresets}
           />

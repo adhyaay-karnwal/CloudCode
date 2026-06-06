@@ -85,6 +85,33 @@ async function sandboxAccessForUser(
   return null
 }
 
+async function requireCodexAuth(
+  ctx: MutationCtx | QueryCtx,
+  userId: Id<"users">,
+  profile: string | undefined,
+  options?: { fallbackToActive?: boolean }
+) {
+  const user = options?.fallbackToActive ? await ctx.db.get(userId) : null
+  const authProfile =
+    profile ??
+    (options?.fallbackToActive ? user?.activeCodexProfile : undefined) ??
+    "default"
+  const auth = await ctx.db
+    .query("codexAuth")
+    .withIndex("by_user_profile", (q) =>
+      q.eq("userId", userId).eq("profile", authProfile)
+    )
+    .unique()
+
+  if (!auth) {
+    throw new Error(
+      `No Codex ChatGPT OAuth credentials are stored for profile "${authProfile}".`
+    )
+  }
+
+  return auth
+}
+
 function truncate(value: string | undefined, max: number) {
   if (!value) return undefined
   return value.length > max ? `${value.slice(0, max - 3)}...` : value
@@ -412,6 +439,9 @@ export const create = mutation({
       args.sandboxPresetId,
       userId
     )
+    const auth = await requireCodexAuth(ctx, userId, args.profile, {
+      fallbackToActive: true,
+    })
     const now = Date.now()
     const queuedLog = {
       kind: "setup" as const,
@@ -436,7 +466,7 @@ export const create = mutation({
       model: args.model,
       notesAccessToken: args.notesAccessToken,
       ...(args.previousDiff ? { previousDiff: args.previousDiff } : {}),
-      ...(args.profile ? { profile: args.profile } : {}),
+      profile: auth.profile,
       prompt: args.prompt,
       reasoningEffort: args.reasoningEffort,
       repoUrl: args.repoUrl,
@@ -629,18 +659,7 @@ async function workerInputForRun(
   ctx: MutationCtx | QueryCtx,
   run: Doc<"codexRuns">
 ) {
-  const auth = await ctx.db
-    .query("codexAuth")
-    .withIndex("by_user_profile", (q) =>
-      q.eq("userId", run.userId).eq("profile", run.profile ?? "default")
-    )
-    .unique()
-
-  if (!auth) {
-    throw new Error(
-      `No Codex ChatGPT OAuth credentials are stored for profile "${run.profile ?? "default"}".`
-    )
-  }
+  const auth = await requireCodexAuth(ctx, run.userId, run.profile)
 
   let sandboxPreset:
     | {
