@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 
 export type SandboxInfo = {
   autoStopInterval: number | null
@@ -42,10 +42,31 @@ function parseSandboxInfo(data: Record<string, unknown>): SandboxInfo {
   }
 }
 
+async function fetchSandboxInfo(sandboxId: string, signal?: AbortSignal) {
+  const res = await fetch(
+    `/api/sandbox/info?sandboxId=${encodeURIComponent(sandboxId)}`,
+    { cache: "no-store", signal }
+  )
+  const data = (await res.json()) as Record<string, unknown>
+
+  if (!res.ok) {
+    return {
+      info: null,
+      notFound: Boolean(data?.notFound),
+    }
+  }
+
+  return {
+    info: parseSandboxInfo(data),
+    notFound: false,
+  }
+}
+
 export type UseSandboxInfoResult = {
   info: SandboxInfo | null
   loading: boolean
   missing: boolean
+  refresh: () => Promise<void>
 }
 
 export function useSandboxInfo({
@@ -66,17 +87,89 @@ export function useSandboxInfo({
   const [loading, setLoading] = useState(true)
   const onMissingRef = useRef(onMissing)
   const onStateChangeRef = useRef(onStateChange)
+  const manualRefreshControllerRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
     onMissingRef.current = onMissing
     onStateChangeRef.current = onStateChange
   }, [onMissing, onStateChange])
 
+  const applyInfo = useCallback((nextInfo: SandboxInfo) => {
+    setMissing(false)
+    setInfo(nextInfo)
+    setLoading(false)
+    if (nextInfo.sandboxId) {
+      onStateChangeRef.current?.(nextInfo.state, nextInfo.sandboxId, nextInfo)
+    }
+  }, [])
+
+  const applyMissing = useCallback((missingSandboxId: string) => {
+    setInfo(null)
+    setMissing(true)
+    setLoading(false)
+    onMissingRef.current?.(missingSandboxId)
+  }, [])
+
+  const load = useCallback(
+    async (
+      nextSandboxId: string,
+      options?: {
+        signal?: AbortSignal
+        showLoading?: boolean
+      }
+    ) => {
+      if (options?.showLoading) setLoading(true)
+
+      try {
+        const result = await fetchSandboxInfo(nextSandboxId, options?.signal)
+        if (options?.signal?.aborted) return
+
+        if (result.notFound) {
+          applyMissing(nextSandboxId)
+          return
+        }
+
+        if (result.info) applyInfo(result.info)
+      } catch {
+        if (!options?.signal?.aborted) setMissing(false)
+      } finally {
+        if (!options?.signal?.aborted) setLoading(false)
+      }
+    },
+    [applyInfo, applyMissing]
+  )
+
+  const refresh = useCallback(async () => {
+    if (!sandboxId) return
+
+    manualRefreshControllerRef.current?.abort()
+    const controller = new AbortController()
+    manualRefreshControllerRef.current = controller
+
+    try {
+      await load(sandboxId, {
+        signal: controller.signal,
+        showLoading: true,
+      })
+    } finally {
+      if (manualRefreshControllerRef.current === controller) {
+        manualRefreshControllerRef.current = null
+      }
+    }
+  }, [load, sandboxId])
+
   useEffect(() => {
-    let cancelled = false
+    return () => {
+      manualRefreshControllerRef.current?.abort()
+      manualRefreshControllerRef.current = null
+    }
+  }, [sandboxId])
+
+  useEffect(() => {
+    const controller = new AbortController()
     let fallbackInterval: number | undefined
 
-    function applyInfo(nextInfo: SandboxInfo) {
+    function applyStreamInfo(nextInfo: SandboxInfo) {
       setMissing(false)
       setInfo(nextInfo)
       setLoading(false)
@@ -85,36 +178,10 @@ export function useSandboxInfo({
       }
     }
 
-    async function load() {
-      if (!sandboxId) {
-        setInfo(null)
-        setMissing(false)
-        setLoading(false)
-        return
-      }
-
-      try {
-        const res = await fetch(
-          `/api/sandbox/info?sandboxId=${encodeURIComponent(sandboxId)}`,
-          { cache: "no-store" }
-        )
-        const data = await res.json()
-        if (cancelled) return
-        if (!res.ok) {
-          const notFound = Boolean(data?.notFound)
-          setMissing(notFound)
-          if (notFound) onMissingRef.current?.(sandboxId)
-          return
-        }
-        applyInfo(parseSandboxInfo(data))
-      } catch {
-        if (!cancelled) setMissing(false)
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    }
-
     if (!sandboxId) {
+      setInfo(null)
+      setMissing(false)
+      setLoading(false)
       return
     }
 
@@ -123,36 +190,35 @@ export function useSandboxInfo({
     )
 
     source.onmessage = (event) => {
-      if (cancelled) return
+      if (controller.signal.aborted) return
       try {
         const data = JSON.parse(event.data) as Record<string, unknown>
         if (data.notFound) {
-          setInfo(null)
-          setMissing(true)
-          setLoading(false)
-          onMissingRef.current?.(sandboxId)
+          applyMissing(sandboxId)
           source.close()
           return
         }
-        applyInfo(parseSandboxInfo(data))
+        applyStreamInfo(parseSandboxInfo(data))
       } catch {
         // Ignore malformed stream events and let the next status event repair it.
       }
     }
 
     source.onerror = () => {
-      if (cancelled || fallbackInterval) return
+      if (controller.signal.aborted || fallbackInterval) return
       source.close()
-      void load()
-      fallbackInterval = window.setInterval(load, 2_000)
+      void load(sandboxId, { signal: controller.signal })
+      fallbackInterval = window.setInterval(() => {
+        void load(sandboxId, { signal: controller.signal })
+      }, 2_000)
     }
 
     return () => {
-      cancelled = true
+      controller.abort()
       source.close()
       if (fallbackInterval) window.clearInterval(fallbackInterval)
     }
-  }, [sandboxId])
+  }, [applyMissing, load, sandboxId])
 
-  return { info, loading, missing }
+  return { info, loading, missing, refresh }
 }

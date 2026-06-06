@@ -2855,7 +2855,7 @@ function SandboxMenu({
   onResumeSandbox: () => void
   onDeleteSandbox: () => void
 }) {
-  const { info, loading, missing } = useSandboxInfo({
+  const { info, loading, missing, refresh } = useSandboxInfo({
     onMissing: onSandboxMissing,
     onStateChange: onSandboxStateChange,
     sandboxId,
@@ -2865,7 +2865,7 @@ function SandboxMenu({
   )
   const open = menuPos !== null
   const triggerRef = useRef<HTMLButtonElement>(null)
-  const busy = sandboxAction !== null
+  const busy = sandboxAction !== null || loading
 
   useEffect(() => {
     if (!open) return
@@ -2898,14 +2898,14 @@ function SandboxMenu({
     display = "running"
   } else if (sandboxPending && !sandboxId) {
     display = "starting"
+  } else if (loading) {
+    display = "checking"
   } else if (info) {
     display = info.state
   } else if (sandboxState === "deleted") {
     display = "deleted"
   } else if (!sandboxId && !sandboxPending) {
     display = "idle"
-  } else if (loading) {
-    display = "checking"
   } else {
     display = "checking"
   }
@@ -2979,6 +2979,17 @@ function SandboxMenu({
                 style={{ top: menuPos.top, right: menuPos.right }}
                 className={cn("fixed z-[61] min-w-44", menuPanelClass)}
               >
+                <MenuItem
+                  role="menuitem"
+                  disabled={busy}
+                  onClick={() =>
+                    handle(() => {
+                      void refresh()
+                    })
+                  }
+                >
+                  Check sandbox state
+                </MenuItem>
                 <MenuItem
                   role="menuitem"
                   disabled={busy}
