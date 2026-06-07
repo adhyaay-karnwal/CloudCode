@@ -10,63 +10,48 @@ import {
   useState,
 } from "react"
 
+import {
+  recordingLabel,
+  recordingRequestUrl,
+  type RecordingVideoArtifact,
+} from "@/components/recording-video-utils"
 import { cn } from "@/lib/utils"
 
-export type RecordingVideoArtifact = {
-  fileName?: string
-  filePath?: string
-  id: string
-  sandboxId?: string
-  status?: string
-}
-
-type RecordingUrlOptions = {
-  attempt?: number
-  inline?: boolean
+type RecordingVideoProps = {
+  className?: string
+  recording: RecordingVideoArtifact
   sandboxId?: string | null
-}
+} & Omit<ComponentPropsWithoutRef<"video">, "children" | "className" | "src">
 
 type VideoLoadState = "error" | "loading" | "ready" | "retrying"
 
 const RECORDING_VIDEO_RETRY_DELAYS_MS = [1500, 3000, 6000, 10_000] as const
 
-export function recordingLabel(recording: RecordingVideoArtifact) {
+export function RecordingVideo({
+  recording,
+  sandboxId,
+  ...props
+}: RecordingVideoProps) {
+  const resolvedSandboxId = sandboxId ?? recording.sandboxId ?? null
   return (
-    recording.fileName || recording.filePath?.split("/").pop() || recording.id
+    <RecordingVideoInner
+      key={`${resolvedSandboxId ?? ""}:${recording.id}`}
+      recording={recording}
+      sandboxId={sandboxId}
+      {...props}
+    />
   )
 }
 
-export function recordingRequestUrl(
-  recording: Pick<RecordingVideoArtifact, "id" | "sandboxId">,
-  options: RecordingUrlOptions = {}
-) {
-  const sandboxId = (options.sandboxId ?? recording.sandboxId)?.trim()
-  if (!sandboxId || !recording.id) return null
-
-  return `/api/sandbox/desktop/recordings?${new URLSearchParams({
-    download: "1",
-    ...(options.attempt ? { retry: String(options.attempt) } : {}),
-    ...(options.inline === false ? {} : { inline: "1" }),
-    recordingId: recording.id,
-    sandboxId,
-  })}`
-}
-
-export function RecordingVideo({
+function RecordingVideoInner({
   className,
   recording,
   sandboxId,
   ...videoProps
-}: {
-  className?: string
-  recording: RecordingVideoArtifact
-  sandboxId?: string | null
-} & Omit<ComponentPropsWithoutRef<"video">, "children" | "className" | "src">) {
+}: RecordingVideoProps) {
   const [attempt, setAttempt] = useState(0)
   const [loadState, setLoadState] = useState<VideoLoadState>("loading")
   const retryTimeoutRef = useRef<number | null>(null)
-  const resolvedSandboxId = sandboxId ?? recording.sandboxId ?? null
-  const sourceKey = `${resolvedSandboxId ?? ""}:${recording.id}`
   const src = useMemo(
     () => recordingRequestUrl(recording, { attempt, sandboxId }),
     [attempt, recording, sandboxId]
@@ -78,12 +63,6 @@ export function RecordingVideo({
     window.clearTimeout(retryTimeoutRef.current)
     retryTimeoutRef.current = null
   }, [])
-
-  useEffect(() => {
-    clearRetryTimer()
-    setAttempt(0)
-    setLoadState("loading")
-  }, [clearRetryTimer, sourceKey])
 
   useEffect(() => clearRetryTimer, [clearRetryTimer])
 

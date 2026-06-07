@@ -73,7 +73,7 @@ export function getCodexProfileFromIdToken(
   }
 }
 
-export function getAccountIdFromIdToken(idToken: string) {
+function getAccountIdFromIdToken(idToken: string) {
   return getCodexProfileFromIdToken(idToken).accountId
 }
 

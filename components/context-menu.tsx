@@ -1,6 +1,7 @@
 "use client"
 
-import { MenuItem, menuPanelClass } from "@/components/ui/menu"
+import { MenuItem } from "@/components/ui/menu"
+import { menuPanelClass } from "@/components/ui/menu-styles"
 import { cn } from "@/lib/utils"
 
 export type ContextMenuItem = {

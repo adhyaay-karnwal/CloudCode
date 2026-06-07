@@ -1,10 +1,6 @@
 import type { ComponentProps } from "react"
 
-import { popoverSurfaceClass } from "@/components/ui/surface"
 import { cn } from "@/lib/utils"
-
-/** Menu/dropdown panel: the floating popover surface plus menu padding. */
-const menuPanelClass = `overflow-hidden p-1.5 ${popoverSurfaceClass}`
 
 function MenuItem({
   className,
@@ -26,4 +22,4 @@ function MenuItem({
   )
 }
 
-export { MenuItem, menuPanelClass }
+export { MenuItem }

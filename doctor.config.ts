@@ -9,9 +9,13 @@ export default {
       "convex/chats.ts",
       "convex/codexAuth.ts",
       "convex/codexRuns.ts",
+      "convex/files.ts",
+      "convex/githubApp.ts",
+      "convex/lib/sandboxAccess.ts",
       "convex/lib/users.ts",
       "convex/lib/workerAuth.ts",
       "convex/sandboxPresets.ts",
+      "convex/sshAccess.ts",
       "convex/users.ts",
     ],
     overrides: [

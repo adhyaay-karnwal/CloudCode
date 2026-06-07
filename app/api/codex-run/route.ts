@@ -7,7 +7,7 @@ import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
 import { parseBranchMode } from "@/lib/codex-branch-names"
 import { getConvexAuthToken } from "@/lib/codex-auth"
-import { findDaytonaSandboxInfoForRun } from "@/lib/daytona-sandbox"
+import { syncDiscoveredSandbox } from "@/lib/codex-run-sandbox-sync"
 import type { CodexSpeed, ReasoningEffort } from "@/lib/daytona-codex-agent"
 import { maybeGetCurrentGitHubRepoCredential } from "@/lib/github-auth"
 import { canClonePublicGitHubRepo } from "@/lib/github-repo-api"
@@ -73,32 +73,6 @@ function getWorkerSecret() {
   return workerSecret
 }
 
-function wait(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-async function syncDiscoveredSandbox(
-  client: ConvexHttpClient,
-  runId: Id<"codexRuns">
-) {
-  for (const delay of [0, 250, 750, 1_500]) {
-    if (delay) await wait(delay)
-    const info = await findDaytonaSandboxInfoForRun(runId as string).catch(
-      () => null
-    )
-    if (!info) continue
-
-    await client.mutation(api.codexRuns.syncRunSandbox, {
-      runId,
-      sandboxId: info.sandboxId,
-      sandboxState: info.state,
-    })
-    return info
-  }
-
-  return undefined
-}
-
 export async function POST(request: Request) {
   const blocked = requireSameOrigin(request)
   if (blocked) return blocked
@@ -149,7 +123,10 @@ export async function POST(request: Request) {
       )
     }
 
-    const githubCredential = await maybeGetCurrentGitHubRepoCredential(repoUrl)
+    const [githubCredential, client] = await Promise.all([
+      maybeGetCurrentGitHubRepoCredential(repoUrl),
+      convexClient(),
+    ])
     const publicRepoCloneAllowed =
       !githubCredential?.token && (await canClonePublicGitHubRepo(repoUrl))
     if (!githubCredential?.token && !publicRepoCloneAllowed) {
@@ -164,7 +141,6 @@ export async function POST(request: Request) {
     const encryptedGitHubToken = githubCredential?.token
       ? encryptSecret(githubCredential.token)
       : undefined
-    const client = await convexClient()
     const created = await client.mutation(api.codexRuns.create, {
       assistantMessageId,
       baseBranch:

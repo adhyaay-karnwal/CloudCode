@@ -38,11 +38,7 @@ import {
 
 import { GeistPixelSquare } from "geist/font/pixel"
 
-import { SandboxTerminalPanel } from "@/components/sandbox-terminal"
-import {
-  closeBrowserTerminalSession,
-  warmBrowserTerminal,
-} from "@/components/sandbox-terminal-session"
+import { closeBrowserTerminalSession } from "@/components/sandbox-terminal-session"
 import { SettingsScreen } from "@/components/settings-screen"
 import { Sidebar } from "@/components/chat-sidebar"
 import {
@@ -65,7 +61,8 @@ import { MessageBlock } from "@/components/chat-message"
 import { NotesEditor } from "@/components/notes-editor"
 import { Button } from "@/components/ui/button"
 import { IconButton as UiIconButton } from "@/components/ui/icon-button"
-import { MenuItem, menuPanelClass } from "@/components/ui/menu"
+import { MenuItem } from "@/components/ui/menu"
+import { menuPanelClass } from "@/components/ui/menu-styles"
 import { popoverSurfaceClass } from "@/components/ui/surface"
 import type { FileBrowserOpenMode } from "@/components/file-browser"
 import { api } from "@/convex/_generated/api"
@@ -98,6 +95,13 @@ const FileBrowser = dynamic(
   () => import("@/components/file-browser").then((mod) => mod.FileBrowser),
   { ssr: false }
 )
+
+const loadSandboxTerminalPanel = () =>
+  import("@/components/sandbox-terminal").then(
+    (mod) => mod.SandboxTerminalPanel
+  )
+
+const SandboxTerminalPanel = dynamic(loadSandboxTerminalPanel, { ssr: false })
 
 const GithubPanel = dynamic(
   () => import("@/components/github-panel").then((mod) => mod.GithubPanel),
@@ -164,6 +168,18 @@ type CachedRunState = {
 
 type SandboxState = "running" | "stopped" | "deleted" | "error"
 type SandboxAction = "pause" | "resume" | "delete"
+
+function normalizeSandboxActionState(
+  value: unknown,
+  fallback: SandboxState
+): SandboxState {
+  return value === "running" ||
+    value === "stopped" ||
+    value === "deleted" ||
+    value === "error"
+    ? value
+    : fallback
+}
 
 type AuthStatus = CodexAuthOverview
 
@@ -323,6 +339,9 @@ const DRAFT_RUN_KEY = "__draft__"
 const DEFAULT_COMPOSER_HEIGHT = 144
 const THREAD_BOTTOM_CLEARANCE = 32
 const DISPLAY_THREAD_TITLE_MAX_CHARS = 48
+const MAX_PREFETCHED_CHANGED_TEXT_FILES = 12
+const TEXT_FILE_PREFETCH_CONCURRENCY = 2
+const TEXT_FILE_PREFETCH_DELAY_MS = 300
 const EMPTY_MESSAGES: Message[] = []
 const STREAM_TOOL_MARKER_REGEX = /<codex-tool>[\s\S]*?<\/codex-tool>/g
 
@@ -517,6 +536,7 @@ function ChatInner() {
       ? false
       : localStorage.getItem(TERMINAL_OPEN_KEY) === "true"
   )
+  const [terminalDockMounted, setTerminalDockMounted] = useState(false)
   const [terminalHeight, setTerminalHeight] = useState(380)
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null)
   const [activeFileMode, setActiveFileMode] =
@@ -531,7 +551,12 @@ function ChatInner() {
       : !window.matchMedia(MOBILE_MEDIA_QUERY).matches
   )
   const isMobile = useIsMobile()
-  const [view, setView] = useState<"chat" | "settings">("chat")
+  const [view, setView] = useState<"chat" | "settings">(() =>
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("view") === "settings"
+      ? "settings"
+      : "chat"
+  )
   const [runningRunKeys, setRunningRunKeys] = useState<Record<string, true>>({})
   const [liveRunStates, setLiveRunStates] = useState<
     Record<string, CachedRunState>
@@ -548,9 +573,9 @@ function ChatInner() {
     null
   )
   const [githubAuthError, setGithubAuthError] = useState("")
-  const cancelRequestedThreadIdsRef = useRef<Set<string>>(new Set())
-  const queueingRunKeysRef = useRef<Set<string>>(new Set())
-  const runningRunKeysRef = useRef<Set<string>>(new Set())
+  const cancelRequestedThreadIds = useMemo(() => new Set<string>(), [])
+  const queueingRunKeys = useMemo(() => new Set<string>(), [])
+  const runningRunKeysSet = useMemo(() => new Set<string>(), [])
   const liveRevealRef = useRef<
     Record<
       string,
@@ -604,21 +629,24 @@ function ChatInner() {
     })
   }, [isMobile, scrollThreadToBottom])
 
+  const cancelPendingThreadScrollRestoreFrame = useCallback(() => {
+    if (pendingThreadScrollRestoreFrameRef.current === null) return
+    cancelAnimationFrame(pendingThreadScrollRestoreFrameRef.current)
+    pendingThreadScrollRestoreFrameRef.current = null
+  }, [])
+
   const captureThreadScrollForPanel = useCallback(() => {
     const el = threadRef.current
     if (!el) return
 
-    if (pendingThreadScrollRestoreFrameRef.current !== null) {
-      cancelAnimationFrame(pendingThreadScrollRestoreFrameRef.current)
-      pendingThreadScrollRestoreFrameRef.current = null
-    }
+    cancelPendingThreadScrollRestoreFrame()
 
     pendingThreadScrollRestoreRef.current = {
       atBottom: isThreadAtBottom(el),
       runKey: activeRunKey,
       scrollTop: el.scrollTop,
     }
-  }, [activeRunKey, isThreadAtBottom])
+  }, [activeRunKey, cancelPendingThreadScrollRestoreFrame, isThreadAtBottom])
 
   const restoreThreadScrollForPanel = useCallback(
     (el: HTMLDivElement) => {
@@ -636,9 +664,7 @@ function ChatInner() {
         isAtBottomRef.current = snapshot.atBottom
       }
 
-      if (pendingThreadScrollRestoreFrameRef.current !== null) {
-        cancelAnimationFrame(pendingThreadScrollRestoreFrameRef.current)
-      }
+      cancelPendingThreadScrollRestoreFrame()
 
       applyScroll()
       pendingThreadScrollRestoreFrameRef.current = requestAnimationFrame(() => {
@@ -656,7 +682,7 @@ function ChatInner() {
 
       return true
     },
-    [activeRunKey]
+    [activeRunKey, cancelPendingThreadScrollRestoreFrame]
   )
 
   function onThreadScroll(event: ReactUIEvent<HTMLDivElement>) {
@@ -740,14 +766,6 @@ function ChatInner() {
 
     return cachedLiveRun
   })()
-
-  useEffect(() => {
-    if (
-      new URLSearchParams(window.location.search).get("view") === "settings"
-    ) {
-      setView("settings")
-    }
-  }, [])
 
   useEffect(() => {
     if (!visibleLiveRun) return
@@ -895,6 +913,10 @@ function ChatInner() {
       ? Math.max(composerHeight, DEFAULT_COMPOSER_HEIGHT) + terminalHeight
       : 0)
 
+  useEffect(() => {
+    if (terminalVisible) setTerminalDockMounted(true)
+  }, [terminalVisible])
+
   const repoUrl = active ? active.repoUrl : draftRepo
   const baseBranch = active ? (active.baseBranch ?? "") : draftBaseBranch
   const model = active ? active.model : draftModel
@@ -936,7 +958,7 @@ function ChatInner() {
     for (const file of getDiffStats(activeDiff ?? undefined).files) {
       if (file.type === "deleted" || !canPrefetchAsText(file.path)) continue
       paths.push(file.path)
-      if (paths.length === 30) break
+      if (paths.length === MAX_PREFETCHED_CHANGED_TEXT_FILES) break
     }
     return paths
   }, [activeDiff])
@@ -1058,18 +1080,28 @@ function ChatInner() {
       )
     }
   }, [])
+  const refreshGitHubAuthRef = useRef(refreshGitHubAuth)
+  const refreshCodexAuthRef = useRef(refreshCodexAuth)
+
+  useEffect(() => {
+    refreshGitHubAuthRef.current = refreshGitHubAuth
+    refreshCodexAuthRef.current = refreshCodexAuth
+  }, [refreshCodexAuth, refreshGitHubAuth])
 
   useEffect(() => {
     if (userLoading) return
 
     function refreshConnections() {
-      void Promise.all([refreshCodexAuth(), refreshGitHubAuth()])
+      void Promise.all([
+        refreshCodexAuthRef.current(),
+        refreshGitHubAuthRef.current(),
+      ])
     }
 
     refreshConnections()
     window.addEventListener("focus", refreshConnections)
     return () => window.removeEventListener("focus", refreshConnections)
-  }, [refreshCodexAuth, refreshGitHubAuth, userLoading])
+  }, [userLoading])
 
   useEffect(() => {
     if (userLoading) return
@@ -1134,22 +1166,29 @@ function ChatInner() {
     for (const chat of chats) {
       const key = chat.id as string
       const stillRunning =
-        queueingRunKeysRef.current.has(key) ||
+        queueingRunKeys.has(key) ||
         key === liveThreadKey ||
         Boolean(chat.pending) ||
         chat.messages.some((message) => message.pending)
 
       if (!stillRunning && nextKeys[key]) {
         delete nextKeys[key]
-        cancelRequestedThreadIdsRef.current.delete(key)
-        queueingRunKeysRef.current.delete(key)
-        runningRunKeysRef.current.delete(key)
+        cancelRequestedThreadIds.delete(key)
+        queueingRunKeys.delete(key)
+        runningRunKeysSet.delete(key)
         changed = true
       }
     }
 
     if (changed) setRunningRunKeys(nextKeys)
-  }, [chats, runningRunKeys, visibleLiveRun?.threadId])
+  }, [
+    cancelRequestedThreadIds,
+    chats,
+    queueingRunKeys,
+    runningRunKeys,
+    runningRunKeysSet,
+    visibleLiveRun?.threadId,
+  ])
 
   useEffect(() => {
     const el = textareaRef.current
@@ -1201,12 +1240,19 @@ function ChatInner() {
       return worker()
     }
 
-    for (let i = 0; i < Math.min(4, queue.length); i += 1) {
-      void worker()
-    }
+    const timeout = window.setTimeout(() => {
+      for (
+        let i = 0;
+        i < Math.min(TEXT_FILE_PREFETCH_CONCURRENCY, queue.length);
+        i += 1
+      ) {
+        void worker()
+      }
+    }, TEXT_FILE_PREFETCH_DELAY_MS)
 
     return () => {
       cancelled = true
+      window.clearTimeout(timeout)
     }
   }, [
     activeChangedTextPaths,
@@ -1217,22 +1263,22 @@ function ChatInner() {
 
   useLayoutEffect(() => {
     if (isMobile && empty) return
-    if (pendingThreadScrollRestoreFrameRef.current !== null) {
-      cancelAnimationFrame(pendingThreadScrollRestoreFrameRef.current)
-      pendingThreadScrollRestoreFrameRef.current = null
-    }
+    cancelPendingThreadScrollRestoreFrame()
     pendingThreadScrollRestoreRef.current = null
     setActiveFileDiff(null)
     settleThreadAtBottom()
-  }, [activeId, empty, isMobile, settleThreadAtBottom])
+  }, [
+    activeId,
+    cancelPendingThreadScrollRestoreFrame,
+    empty,
+    isMobile,
+    settleThreadAtBottom,
+  ])
 
-  useEffect(() => {
-    return () => {
-      if (pendingThreadScrollRestoreFrameRef.current !== null) {
-        cancelAnimationFrame(pendingThreadScrollRestoreFrameRef.current)
-      }
-    }
-  }, [])
+  useEffect(
+    () => cancelPendingThreadScrollRestoreFrame,
+    [cancelPendingThreadScrollRestoreFrame]
+  )
 
   useLayoutEffect(() => {
     if (isMobile && promptFocusedRef.current) return
@@ -1274,7 +1320,7 @@ function ChatInner() {
   }
 
   function markRunActive(runKey: string) {
-    runningRunKeysRef.current.add(runKey)
+    runningRunKeysSet.add(runKey)
     setRunningRunKeys((current) => ({ ...current, [runKey]: true }))
   }
 
@@ -1321,12 +1367,12 @@ function ChatInner() {
   function transferRunKey(previousKey: string, nextKey: string) {
     if (previousKey === nextKey) return nextKey
 
-    if (queueingRunKeysRef.current.has(previousKey)) {
-      queueingRunKeysRef.current.delete(previousKey)
-      queueingRunKeysRef.current.add(nextKey)
+    if (queueingRunKeys.has(previousKey)) {
+      queueingRunKeys.delete(previousKey)
+      queueingRunKeys.add(nextKey)
     }
-    runningRunKeysRef.current.delete(previousKey)
-    runningRunKeysRef.current.add(nextKey)
+    runningRunKeysSet.delete(previousKey)
+    runningRunKeysSet.add(nextKey)
     setRunningRunKeys((current) => {
       const { [previousKey]: _removed, ...rest } = current
       void _removed
@@ -1344,8 +1390,8 @@ function ChatInner() {
   }
 
   function clearRunKey(runKey: string) {
-    queueingRunKeysRef.current.delete(runKey)
-    runningRunKeysRef.current.delete(runKey)
+    queueingRunKeys.delete(runKey)
+    runningRunKeysSet.delete(runKey)
     setRunningRunKeys((current) => {
       if (!current[runKey]) return current
       const { [runKey]: _removed, ...next } = current
@@ -1533,7 +1579,7 @@ function ChatInner() {
     if (
       !trimmed ||
       userLoading ||
-      runningRunKeysRef.current.has(initialRunKey) ||
+      runningRunKeysSet.has(initialRunKey) ||
       (active
         ? Boolean(active.pending) ||
           active.messages.some((message) => message.pending)
@@ -1558,7 +1604,7 @@ function ChatInner() {
 
     setInput("")
 
-    queueingRunKeysRef.current.add(runKey)
+    queueingRunKeys.add(runKey)
     markRunActive(runKey)
     showOptimisticRun(
       runKey,
@@ -1666,7 +1712,7 @@ function ChatInner() {
       }
 
       queued = true
-      if (cancelRequestedThreadIdsRef.current.has(chatId as string)) {
+      if (cancelRequestedThreadIds.has(chatId as string)) {
         await cancelCodexRun(chatId)
       }
     } catch (err) {
@@ -1693,9 +1739,9 @@ function ChatInner() {
         clearOptimisticRun(runKey)
       }
     } finally {
-      queueingRunKeysRef.current.delete(runKey)
+      queueingRunKeys.delete(runKey)
       if (!queued) {
-        cancelRequestedThreadIdsRef.current.delete(runKey)
+        cancelRequestedThreadIds.delete(runKey)
         clearRunKey(runKey)
       }
     }
@@ -1703,7 +1749,7 @@ function ChatInner() {
 
   async function cancelCodexRun(threadId: Id<"threads">) {
     const key = threadId as string
-    cancelRequestedThreadIdsRef.current.add(key)
+    cancelRequestedThreadIds.add(key)
     markRunActive(key)
 
     const res = await fetch("/api/codex-run/cancel", {
@@ -1732,18 +1778,6 @@ function ChatInner() {
       closeBrowserTerminalSession(activeSandboxId)
       setTerminalOpen(false)
     }
-  }
-
-  function normalizeSandboxActionState(
-    value: unknown,
-    fallback: SandboxState
-  ): SandboxState {
-    return value === "running" ||
-      value === "stopped" ||
-      value === "deleted" ||
-      value === "error"
-      ? value
-      : fallback
   }
 
   async function persistSandboxState(
@@ -1935,6 +1969,15 @@ function ChatInner() {
     promptFocusedRef.current = false
   }
 
+  const preloadTerminalPanel = useCallback(() => {
+    void loadSandboxTerminalPanel()
+  }, [])
+
+  const toggleTerminal = useCallback(() => {
+    void loadSandboxTerminalPanel()
+    setTerminalOpen((value) => !value)
+  }, [])
+
   const composerBlock =
     view === "settings" || activeFilePath || notesOpen ? null : (
       <div className="pointer-events-auto w-full max-w-3xl rounded-3xl">
@@ -2118,91 +2161,106 @@ function ChatInner() {
 
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <TopBar
-          title={view === "settings" ? "Settings" : (active?.title ?? null)}
-          repoUrl={view === "settings" ? "" : repoUrl}
-          isNew={view !== "settings" && !active}
-          sandboxId={view === "settings" ? null : activeSandboxId}
-          showSandboxControls={
-            view !== "settings" &&
-            (Boolean(active) || activeRunPending || Boolean(activeSandboxId))
-          }
-          sandboxPending={view !== "settings" && activeRunPending}
-          sandboxState={activeSandboxState}
-          filesOpen={filesOpen}
-          canOpenFiles={view !== "settings" && Boolean(activeFileCacheScope)}
-          onToggleFiles={() =>
-            setFilesOpen((v) => {
-              if (!v) {
-                setGithubOpen(false)
-                setDesktopOpen(false)
-                setSshOpen(false)
-                setContextOpen(false)
-              }
-              return !v
-            })
-          }
-          githubOpen={githubOpen}
-          canOpenGithub={view !== "settings" && Boolean(activeSandboxId)}
-          onToggleGithub={() =>
-            setGithubOpen((v) => {
-              if (!v) {
-                setFilesOpen(false)
-                setDesktopOpen(false)
-                setSshOpen(false)
-                setContextOpen(false)
-              }
-              return !v
-            })
-          }
-          desktopOpen={desktopOpen}
-          canOpenDesktop={view !== "settings" && Boolean(activeSandboxId)}
-          onToggleDesktop={() =>
-            setDesktopOpen((v) => {
-              if (!v) {
-                setFilesOpen(false)
-                setGithubOpen(false)
-                setSshOpen(false)
-                setContextOpen(false)
-              }
-              return !v
-            })
-          }
-          sshOpen={sshOpen}
-          canOpenSsh={view !== "settings" && Boolean(activeSandboxId)}
-          onToggleSsh={() =>
-            setSshOpen((v) => {
-              if (!v) {
-                setFilesOpen(false)
-                setGithubOpen(false)
-                setDesktopOpen(false)
-                setContextOpen(false)
-              }
-              return !v
-            })
-          }
-          contextOpen={contextOpen}
-          canOpenContext={view !== "settings" && Boolean(active)}
-          onToggleContext={() =>
-            setContextOpen((v) => {
-              if (!v) {
-                setFilesOpen(false)
-                setGithubOpen(false)
-                setDesktopOpen(false)
-                setSshOpen(false)
-              }
-              return !v
-            })
-          }
-          terminalOpen={terminalVisible}
-          onToggleTerminal={() => setTerminalOpen((v) => !v)}
-          onSandboxStateChange={handleSandboxStateChange}
-          onSandboxMissing={handleSandboxMissing}
-          sandboxAction={sandboxAction}
-          onDeleteSandbox={requestDeleteActiveSandbox}
-          onPauseSandbox={pauseActiveSandbox}
-          onResumeSandbox={resumeActiveSandbox}
-          sidebarOpen={sidebarOpen}
-          onToggleSidebar={() => setSidebarOpen((v) => !v)}
+          identity={{
+            isNew: view !== "settings" && !active,
+            repoUrl: view === "settings" ? "" : repoUrl,
+            title: view === "settings" ? "Settings" : (active?.title ?? null),
+          }}
+          sandbox={{
+            action: sandboxAction,
+            id: view === "settings" ? null : activeSandboxId,
+            onDelete: requestDeleteActiveSandbox,
+            onMissing: handleSandboxMissing,
+            onPause: pauseActiveSandbox,
+            onResume: resumeActiveSandbox,
+            onStateChange: handleSandboxStateChange,
+            pending: view !== "settings" && activeRunPending,
+            showControls:
+              view !== "settings" &&
+              (Boolean(active) || activeRunPending || Boolean(activeSandboxId)),
+            state: activeSandboxState,
+          }}
+          tools={{
+            context: {
+              canOpen: view !== "settings" && Boolean(active),
+              onToggle: () =>
+                setContextOpen((v) => {
+                  if (!v) {
+                    setFilesOpen(false)
+                    setGithubOpen(false)
+                    setDesktopOpen(false)
+                    setSshOpen(false)
+                  }
+                  return !v
+                }),
+              open: contextOpen,
+            },
+            desktop: {
+              canOpen: view !== "settings" && Boolean(activeSandboxId),
+              onToggle: () =>
+                setDesktopOpen((v) => {
+                  if (!v) {
+                    setFilesOpen(false)
+                    setGithubOpen(false)
+                    setSshOpen(false)
+                    setContextOpen(false)
+                  }
+                  return !v
+                }),
+              open: desktopOpen,
+            },
+            files: {
+              canOpen: view !== "settings" && Boolean(activeFileCacheScope),
+              onToggle: () =>
+                setFilesOpen((v) => {
+                  if (!v) {
+                    setGithubOpen(false)
+                    setDesktopOpen(false)
+                    setSshOpen(false)
+                    setContextOpen(false)
+                  }
+                  return !v
+                }),
+              open: filesOpen,
+            },
+            github: {
+              canOpen: view !== "settings" && Boolean(activeSandboxId),
+              onToggle: () =>
+                setGithubOpen((v) => {
+                  if (!v) {
+                    setFilesOpen(false)
+                    setDesktopOpen(false)
+                    setSshOpen(false)
+                    setContextOpen(false)
+                  }
+                  return !v
+                }),
+              open: githubOpen,
+            },
+            ssh: {
+              canOpen: view !== "settings" && Boolean(activeSandboxId),
+              onToggle: () =>
+                setSshOpen((v) => {
+                  if (!v) {
+                    setFilesOpen(false)
+                    setGithubOpen(false)
+                    setDesktopOpen(false)
+                    setContextOpen(false)
+                  }
+                  return !v
+                }),
+              open: sshOpen,
+            },
+            terminal: {
+              onPreload: preloadTerminalPanel,
+              onToggle: toggleTerminal,
+              open: terminalVisible,
+            },
+          }}
+          sidebar={{
+            onToggle: () => setSidebarOpen((v) => !v),
+            open: sidebarOpen,
+          }}
         />
         {view === "settings" ? (
           <SettingsScreen
@@ -2291,13 +2349,15 @@ function ChatInner() {
               </div>
             )}
 
-            <SandboxTerminalPanel
-              open={terminalVisible}
-              sandboxId={activeSandboxId}
-              onClose={() => setTerminalOpen(false)}
-              height={terminalHeight}
-              onHeightChange={setTerminalHeight}
-            />
+            {terminalDockMounted ? (
+              <SandboxTerminalPanel
+                open={terminalVisible}
+                sandboxId={activeSandboxId}
+                onClose={() => setTerminalOpen(false)}
+                height={terminalHeight}
+                onHeightChange={setTerminalHeight}
+              />
+            ) : null}
 
             {composerBlock && !empty ? (
               terminalVisible ? (
@@ -2368,11 +2428,13 @@ function ChatInner() {
         }}
       />
       <SandboxDesktopPanel
+        key={`desktop:${activeSandboxId ?? "no-sandbox"}`}
         open={desktopOpen && Boolean(activeSandboxId)}
         sandboxId={activeSandboxId}
         onClose={() => setDesktopOpen(false)}
       />
       <SshPanel
+        key={`ssh:${activeSandboxId ?? "no-sandbox"}`}
         open={sshOpen && Boolean(activeSandboxId)}
         sandboxId={activeSandboxId}
         onClose={() => setSshOpen(false)}
@@ -2470,17 +2532,22 @@ function NotesPanel({
   onSave: (value: string) => void
   onClose: () => void
 }) {
+  const toolbarTrailing = useMemo(
+    () => (
+      <UiIconButton onClick={onClose} aria-label="Close notes">
+        <X />
+      </UiIconButton>
+    ),
+    [onClose]
+  )
+
   return (
     <section className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
       <NotesEditor
         bare
         toolbarPlacement="top"
         toolbarClassName="h-[3.25rem] shrink-0 gap-0.5 bg-background/80 px-2.5 backdrop-blur-xl"
-        toolbarTrailing={
-          <UiIconButton onClick={onClose} aria-label="Close notes">
-            <X />
-          </UiIconButton>
-        }
+        toolbarTrailing={toolbarTrailing}
         notes={notes}
         notesThreadId={notesThreadId}
         onSave={onSave}
@@ -2512,73 +2579,93 @@ function SignedOutScreen() {
   )
 }
 
-function TopBar({
-  title,
-  repoUrl,
-  isNew,
-  sandboxId,
-  showSandboxControls,
-  sandboxPending,
-  sandboxState,
-  filesOpen,
-  canOpenFiles,
-  onToggleFiles,
-  githubOpen,
-  canOpenGithub,
-  onToggleGithub,
-  desktopOpen,
-  canOpenDesktop,
-  onToggleDesktop,
-  sshOpen,
-  canOpenSsh,
-  onToggleSsh,
-  contextOpen,
-  canOpenContext,
-  onToggleContext,
-  onSandboxStateChange,
-  onSandboxMissing,
-  sandboxAction,
-  onDeleteSandbox,
-  onPauseSandbox,
-  onResumeSandbox,
-  terminalOpen,
-  onToggleTerminal,
-  sidebarOpen,
-  onToggleSidebar,
-}: {
+type TopBarIdentity = {
   title: string | null
   repoUrl: string
   isNew: boolean
-  sandboxId: string | null
-  showSandboxControls: boolean
-  sandboxPending: boolean
-  sandboxState?: SandboxState
-  filesOpen: boolean
-  canOpenFiles: boolean
-  onToggleFiles: () => void
-  githubOpen: boolean
-  canOpenGithub: boolean
-  onToggleGithub: () => void
-  desktopOpen: boolean
-  canOpenDesktop: boolean
-  onToggleDesktop: () => void
-  sshOpen: boolean
-  canOpenSsh: boolean
-  onToggleSsh: () => void
-  contextOpen: boolean
-  canOpenContext: boolean
-  onToggleContext: () => void
-  onSandboxStateChange: (state: SandboxState, sandboxId: string) => void
-  onSandboxMissing: (sandboxId: string) => void
-  sandboxAction: SandboxAction | null
-  onDeleteSandbox: () => void
-  onPauseSandbox: () => void
-  onResumeSandbox: () => void
-  terminalOpen: boolean
-  onToggleTerminal: () => void
-  sidebarOpen: boolean
-  onToggleSidebar: () => void
+}
+
+type TopBarSandbox = {
+  action: SandboxAction | null
+  id: string | null
+  onDelete: () => void
+  onMissing: (sandboxId: string) => void
+  onPause: () => void
+  onResume: () => void
+  onStateChange: (state: SandboxState, sandboxId: string) => void
+  pending: boolean
+  showControls: boolean
+  state?: SandboxState
+}
+
+type TopBarToolControl = {
+  canOpen: boolean
+  onToggle: () => void
+  open: boolean
+}
+
+type TopBarTools = {
+  context: TopBarToolControl
+  desktop: TopBarToolControl
+  files: TopBarToolControl
+  github: TopBarToolControl
+  ssh: TopBarToolControl
+  terminal: {
+    onPreload: () => void
+    onToggle: () => void
+    open: boolean
+  }
+}
+
+function TopBar({
+  identity,
+  sandbox,
+  sidebar,
+  tools,
+}: {
+  identity: TopBarIdentity
+  sandbox: TopBarSandbox
+  sidebar: {
+    onToggle: () => void
+    open: boolean
+  }
+  tools: TopBarTools
 }) {
+  const { isNew, repoUrl, title } = identity
+  const {
+    action: sandboxAction,
+    id: sandboxId,
+    onDelete: onDeleteSandbox,
+    onMissing: onSandboxMissing,
+    onPause: onPauseSandbox,
+    onResume: onResumeSandbox,
+    onStateChange: onSandboxStateChange,
+    pending: sandboxPending,
+    showControls: showSandboxControls,
+    state: sandboxState,
+  } = sandbox
+  const { context, desktop, files, github, ssh, terminal } = tools
+  const { onToggle: onToggleSidebar, open: sidebarOpen } = sidebar
+
+  const filesOpen = files.open
+  const canOpenFiles = files.canOpen
+  const onToggleFiles = files.onToggle
+  const githubOpen = github.open
+  const canOpenGithub = github.canOpen
+  const onToggleGithub = github.onToggle
+  const desktopOpen = desktop.open
+  const canOpenDesktop = desktop.canOpen
+  const onToggleDesktop = desktop.onToggle
+  const sshOpen = ssh.open
+  const canOpenSsh = ssh.canOpen
+  const onToggleSsh = ssh.onToggle
+  const contextOpen = context.open
+  const canOpenContext = context.canOpen
+  const onToggleContext = context.onToggle
+  const terminalOpen = terminal.open
+  const onPreloadTerminal = terminal.onPreload
+  const onToggleTerminal = terminal.onToggle
+
   const fullTitle = title?.trim() || (isNew ? "New chat" : "Untitled")
   const displayTitle = limitThreadDisplayTitle(fullTitle)
   const repo = repoUrl ? repoLabel(repoUrl) : ""
@@ -2664,6 +2751,7 @@ function TopBar({
               sandboxId={sandboxId}
               sandboxPending={sandboxPending}
               terminalOpen={terminalOpen}
+              onPreloadTerminal={onPreloadTerminal}
               onToggleTerminal={onToggleTerminal}
               githubOpen={githubOpen}
               canOpenGithub={canOpenGithub}
@@ -2687,6 +2775,7 @@ function TopBarToolsMenu({
   sandboxId,
   sandboxPending,
   terminalOpen,
+  onPreloadTerminal,
   onToggleTerminal,
   githubOpen,
   canOpenGithub,
@@ -2702,6 +2791,7 @@ function TopBarToolsMenu({
   sandboxId: string | null
   sandboxPending: boolean
   terminalOpen: boolean
+  onPreloadTerminal: () => void
   onToggleTerminal: () => void
   githubOpen: boolean
   canOpenGithub: boolean
@@ -2745,7 +2835,10 @@ function TopBarToolsMenu({
       icon: <SquareTerminal className="size-4" />,
       active: terminalOpen,
       disabled: !sandboxId && !sandboxPending,
-      onSelect: onToggleTerminal,
+      onSelect: () => {
+        onPreloadTerminal()
+        onToggleTerminal()
+      },
     },
     {
       key: "desktop",
@@ -2782,9 +2875,10 @@ function TopBarToolsMenu({
             setMenuPos(null)
             return
           }
-          warmBrowserTerminal(sandboxId)
           openMenu()
         }}
+        onFocus={onPreloadTerminal}
+        onPointerEnter={onPreloadTerminal}
         aria-label="Sandbox tools"
         aria-haspopup="menu"
         aria-expanded={open}

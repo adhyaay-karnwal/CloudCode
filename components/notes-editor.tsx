@@ -1,12 +1,66 @@
 "use client"
 
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useReducer,
+  useRef,
+} from "react"
 
 import { MarkdownEditor } from "@/components/markdown-editor"
 import { useImageUpload } from "@/hooks/use-image-upload"
 import { cn } from "@/lib/utils"
 
 const SAVE_DELAY_MS = 600
+
+type NotesEditorState = {
+  draft: string
+  saved: string
+  threadId: string | null
+}
+
+type NotesEditorAction =
+  | { type: "change"; draft: string }
+  | { type: "mark-saved"; markdown: string }
+  | { type: "sync"; notes: string; threadId: string | null }
+
+function createNotesEditorState({
+  notes,
+  notesThreadId,
+}: {
+  notes: string
+  notesThreadId: string | null
+}): NotesEditorState {
+  return {
+    draft: notes,
+    saved: notes,
+    threadId: notesThreadId,
+  }
+}
+
+function notesEditorReducer(
+  state: NotesEditorState,
+  action: NotesEditorAction
+): NotesEditorState {
+  switch (action.type) {
+    case "change":
+      return { ...state, draft: action.draft }
+    case "mark-saved":
+      return { ...state, saved: action.markdown }
+    case "sync": {
+      const threadChanged = state.threadId !== action.threadId
+      if (threadChanged || state.draft === state.saved) {
+        return {
+          draft: action.notes,
+          saved: action.notes,
+          threadId: action.threadId,
+        }
+      }
+      return { ...state, threadId: action.threadId }
+    }
+  }
+}
 
 export function NotesEditor({
   notes,
@@ -29,62 +83,57 @@ export function NotesEditor({
   contentClassName?: string
 }) {
   const uploadImage = useImageUpload()
-  const [draft, setDraft] = useState(notes)
-  const draftRef = useRef(draft)
-  const savedRef = useRef(notes)
-  const prevThreadRef = useRef(notesThreadId)
+  const [state, dispatch] = useReducer(
+    notesEditorReducer,
+    { notes, notesThreadId },
+    createNotesEditorState
+  )
+  const draftRef = useRef(state.draft)
+  const savedRef = useRef(state.saved)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  draftRef.current = draft
+  draftRef.current = state.draft
+  savedRef.current = state.saved
+
+  const clearSaveTimer = useCallback(() => {
+    if (!timerRef.current) return
+    clearTimeout(timerRef.current)
+    timerRef.current = null
+  }, [])
 
   // Adopt the server value on thread switch (always) or a reactive update with
   // no unsaved local edits — never clobber in-progress typing.
   useEffect(() => {
-    const threadChanged = prevThreadRef.current !== notesThreadId
-    prevThreadRef.current = notesThreadId
-    setDraft((current) => {
-      if (threadChanged || current === savedRef.current) {
-        savedRef.current = notes
-        return notes
-      }
-      return current
-    })
+    dispatch({ type: "sync", notes, threadId: notesThreadId })
   }, [notes, notesThreadId])
 
   const flush = useCallback(() => {
-    if (timerRef.current) {
-      clearTimeout(timerRef.current)
-      timerRef.current = null
-    }
+    clearSaveTimer()
     const md = draftRef.current
     if (md === savedRef.current) return
-    savedRef.current = md
+    dispatch({ type: "mark-saved", markdown: md })
     onSave(md)
-  }, [onSave])
+  }, [clearSaveTimer, onSave])
 
   const handleChange = useCallback(
     (md: string) => {
-      setDraft(md)
-      if (timerRef.current) clearTimeout(timerRef.current)
+      dispatch({ type: "change", draft: md })
+      clearSaveTimer()
       timerRef.current = setTimeout(() => {
         timerRef.current = null
         if (md === savedRef.current) return
-        savedRef.current = md
+        dispatch({ type: "mark-saved", markdown: md })
         onSave(md)
       }, SAVE_DELAY_MS)
     },
-    [onSave]
+    [clearSaveTimer, onSave]
   )
 
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current)
-    }
-  }, [])
+  useEffect(() => clearSaveTimer, [clearSaveTimer])
 
   return (
     <MarkdownEditor
-      value={draft}
+      value={state.draft}
       onChange={handleChange}
       onBlur={flush}
       onUploadImage={uploadImage}

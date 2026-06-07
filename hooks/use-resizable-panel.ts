@@ -75,6 +75,7 @@ export function useResizablePanel({
 
   const [width, setWidth] = useState(defaultWidth)
   const [resizing, setResizing] = useState(false)
+  const [hydrated, setHydrated] = useState(false)
   const dragRef = useRef<{ startX: number; startWidth: number } | null>(null)
   const hydratedRef = useRef(false)
 
@@ -83,17 +84,21 @@ export function useResizablePanel({
     if (hydratedRef.current) return
     hydratedRef.current = true
     const stored = window.localStorage.getItem(storageKey)
-    if (stored === null) return
+    if (stored === null) {
+      setHydrated(true)
+      return
+    }
     const parsed = Number.parseFloat(stored)
     if (Number.isFinite(parsed)) setWidth(clampToBounds(parsed))
+    setHydrated(true)
   }, [storageKey, clampToBounds])
 
   // Persist whenever the width settles. Skipped while disabled so mobile never
   // overwrites the desktop preference.
   useEffect(() => {
-    if (!enabled) return
+    if (!enabled || !hydrated) return
     window.localStorage.setItem(storageKey, String(Math.round(width)))
-  }, [enabled, storageKey, width])
+  }, [enabled, hydrated, storageKey, width])
 
   // Re-clamp if the viewport shrinks so a wide panel can't trap the content.
   useEffect(() => {

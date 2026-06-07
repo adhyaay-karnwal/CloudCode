@@ -15,11 +15,11 @@ import { memo, useMemo, useState } from "react"
 import { ChangedFiles, DiffList } from "@/components/changed-files"
 import { Markdown } from "@/components/chat-markdown"
 import { CodeBlock } from "@/components/code-block"
+import { RecordingVideo } from "@/components/recording-video"
 import {
-  RecordingVideo,
   recordingLabel,
   type RecordingVideoArtifact,
-} from "@/components/recording-video"
+} from "@/components/recording-video-utils"
 import { cardSurfaceClass } from "@/components/ui/surface"
 import { cn } from "@/lib/utils"
 
@@ -816,11 +816,9 @@ function extractPatchBody(detail: ParsedLogDetail): string | null {
     (s): s is string => typeof s === "string" && s.length > 0
   )
   for (const src of sources) {
-    const begin = src.indexOf("*** Begin Patch")
-    const end = src.indexOf("*** End Patch")
-    if (begin !== -1 && end !== -1 && end > begin) {
-      return src.slice(begin, end + "*** End Patch".length).trim()
-    }
+    const patch = src.match(/\*\*\* Begin Patch[\s\S]*?\*\*\* End Patch/)
+    if (patch) return patch[0].trim()
+
     const start = src.search(/\*\*\* (Add|Update|Delete) File:/)
     if (start !== -1) return src.slice(start).trim()
   }
@@ -970,10 +968,10 @@ function extractRunDiffForFileOps(
 ): string | null {
   if (!runDiff?.trim() || fileOps.length === 0) return null
 
-  const blocks = runDiff
-    .split(/(?=^diff --git\s+)/m)
-    .map((block) => block.trim())
-    .filter(Boolean)
+  const blocks = runDiff.split(/(?=^diff --git\s+)/m).flatMap((block) => {
+    const trimmed = block.trim()
+    return trimmed ? [trimmed] : []
+  })
   const candidates = blocks.length > 0 ? blocks : [runDiff.trim()]
   const matched = candidates.filter((block) => {
     const blockPaths = filePathsFromUnifiedDiffBlock(block)

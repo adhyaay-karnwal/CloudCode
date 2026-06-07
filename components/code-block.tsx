@@ -9,30 +9,11 @@ import {
 import { useTheme } from "next-themes"
 import { memo, type CSSProperties, useMemo } from "react"
 
+import {
+  formatCodeLanguage,
+  getPierreLanguage,
+} from "@/components/code-language"
 import { cardSurfaceClass } from "@/components/ui/surface"
-
-const CODE_LANGUAGE_LABELS: Record<string, string> = {
-  bash: "Bash",
-  css: "CSS",
-  diff: "Diff",
-  html: "HTML",
-  javascript: "JavaScript",
-  js: "JavaScript",
-  json: "JSON",
-  jsx: "JSX",
-  markdown: "Markdown",
-  md: "Markdown",
-  plaintext: "Plain text",
-  python: "Python",
-  py: "Python",
-  sh: "Shell",
-  shell: "Shell",
-  ts: "TypeScript",
-  tsx: "TSX",
-  typescript: "TypeScript",
-  yaml: "YAML",
-  yml: "YAML",
-}
 
 const PIERRE_CODE_THEMES = {
   dark: "pierre-dark",
@@ -45,18 +26,6 @@ const PIERRE_FILE_STYLE = {
   "--diffs-gap-block": "12px",
   "--diffs-line-height": "24px",
 } as CSSProperties
-
-const PIERRE_LANGUAGE_ALIASES: Record<string, string> = {
-  js: "javascript",
-  md: "markdown",
-  plaintext: "text",
-  py: "python",
-  sh: "bash",
-  shell: "bash",
-  text: "text",
-  ts: "typescript",
-  yml: "yaml",
-}
 
 export const CodeBlock = memo(function CodeBlock({
   body,
@@ -103,11 +72,3 @@ export const CodeBlock = memo(function CodeBlock({
     </div>
   )
 })
-
-export function formatCodeLanguage(lang: string) {
-  return CODE_LANGUAGE_LABELS[lang] ?? lang
-}
-
-function getPierreLanguage(lang: string) {
-  return PIERRE_LANGUAGE_ALIASES[lang] ?? lang
-}

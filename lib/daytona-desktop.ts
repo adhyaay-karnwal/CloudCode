@@ -807,7 +807,7 @@ function desktopDependencyCommand() {
   ].join("\n")
 }
 
-export async function ensureDaytonaDesktopDependencies(
+async function ensureDaytonaDesktopDependencies(
   sandbox: Sandbox,
   signal?: AbortSignal
 ) {

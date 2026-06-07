@@ -652,7 +652,7 @@ function shouldRefreshUserToken(expiresAt?: string) {
   return Number.isFinite(expiresAtMs) && expiresAtMs < Date.now() + 120_000
 }
 
-export async function getCurrentGitHubAppUserAuth(): Promise<GitHubAppUserAuth | null> {
+async function getCurrentGitHubAppUserAuth(): Promise<GitHubAppUserAuth | null> {
   const client = await getClient()
   const stored = await client.query(api.githubApp.getUserAuth, {
     workerSecret: getWorkerSecret(),
@@ -1255,7 +1255,7 @@ function gitUserIdentity(userAuth: GitHubAppUserAuth) {
   }
 }
 
-export async function createGitHubAppRepoCredential({
+async function createGitHubAppRepoCredential({
   repoUrl,
 }: {
   repoUrl: string
@@ -1309,8 +1309,4 @@ export async function maybeCreateGitHubAppRepoCredential(repoUrl: string) {
     console.warn("Unable to create GitHub App installation token.", error)
     return null
   }
-}
-
-export function fingerprintGitHubInstallationToken(token: string) {
-  return createHash("sha256").update(token).digest("hex").slice(0, 16)
 }

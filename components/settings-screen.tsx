@@ -386,12 +386,8 @@ function ChatGPTConnectionRow({
 
               if (editing) {
                 return (
-                  <form
+                  <div
                     key={account.profile}
-                    onSubmit={(event) => {
-                      event.preventDefault()
-                      void renameProfile(account.profile)
-                    }}
                     className="grid min-h-12 w-full grid-cols-[1rem_minmax(0,1fr)_auto_auto] items-center gap-2 rounded-lg bg-muted px-2.5 py-2 text-left text-foreground"
                   >
                     {active ? (
@@ -409,13 +405,22 @@ function ChatGPTConnectionRow({
                       onChange={(event) =>
                         setDraftDisplayName(event.target.value)
                       }
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          void renameProfile(account.profile)
+                        } else if (event.key === "Escape") {
+                          setEditingProfile(null)
+                          setDraftDisplayName("")
+                        }
+                      }}
                     />
                     <button
-                      type="submit"
+                      type="button"
                       className={iconBtn}
                       disabled={renaming}
                       title="Save name"
                       aria-label="Save ChatGPT account name"
+                      onClick={() => void renameProfile(account.profile)}
                     >
                       <Check className="size-4" />
                     </button>
@@ -432,7 +437,7 @@ function ChatGPTConnectionRow({
                     >
                       <X className="size-4" />
                     </button>
-                  </form>
+                  </div>
                 )
               }
 

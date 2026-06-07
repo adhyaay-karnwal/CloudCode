@@ -18,13 +18,3 @@ export function forwardedHeaderParts(value: string | null | undefined) {
 
   return result
 }
-
-export function urlHost(value: string | null | undefined) {
-  if (!value) return null
-
-  try {
-    return new URL(value).host
-  } catch {
-    return null
-  }
-}

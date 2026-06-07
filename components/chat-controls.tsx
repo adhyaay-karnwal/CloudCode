@@ -12,12 +12,14 @@ import {
   type ButtonHTMLAttributes,
   useCallback,
   useEffect,
+  useMemo,
+  useReducer,
   useRef,
   useState,
 } from "react"
 
 import { Input } from "@/components/ui/input"
-import { menuPanelClass } from "@/components/ui/menu"
+import { menuPanelClass } from "@/components/ui/menu-styles"
 import type { Id } from "@/convex/_generated/dataModel"
 import {
   BRANCH_MODE_LABEL,
@@ -47,6 +49,69 @@ type GitHubRepoOption = {
   cloneUrl: string
   fullName: string
   private: boolean
+}
+
+type BranchChipState = {
+  branches: string[]
+  defaultBranch?: string
+  draft: string
+  editing: boolean
+  error: string
+  loading: boolean
+}
+
+type BranchChipAction =
+  | { type: "cancel"; value: string }
+  | { type: "close" }
+  | { type: "draft"; value: string }
+  | { type: "load-error"; error: string }
+  | { type: "load-start" }
+  | { type: "load-success"; branches: string[]; defaultBranch?: string }
+  | { type: "open"; value: string }
+  | { type: "select"; value: string }
+
+const initialBranchChipState: BranchChipState = {
+  branches: [],
+  defaultBranch: undefined,
+  draft: "",
+  editing: false,
+  error: "",
+  loading: false,
+}
+
+function branchChipReducer(
+  state: BranchChipState,
+  action: BranchChipAction
+): BranchChipState {
+  switch (action.type) {
+    case "cancel":
+      return { ...state, draft: action.value, editing: false }
+    case "close":
+      return { ...state, editing: false }
+    case "draft":
+      return { ...state, draft: action.value }
+    case "load-error":
+      return {
+        ...state,
+        branches: [],
+        defaultBranch: undefined,
+        error: action.error,
+        loading: false,
+      }
+    case "load-start":
+      return { ...state, error: "", loading: true }
+    case "load-success":
+      return {
+        ...state,
+        branches: action.branches,
+        defaultBranch: action.defaultBranch,
+        loading: false,
+      }
+    case "open":
+      return { ...state, draft: action.value, editing: true }
+    case "select":
+      return { ...state, draft: action.value, editing: false }
+  }
 }
 
 function repoLabel(url: string) {
@@ -95,55 +160,60 @@ export function RepoChip({
   const [reposError, setReposError] = useState("")
   const [reposLoading, setReposLoading] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+  const reposControllerRef = useRef<AbortController | null>(null)
   const setFocusedInputRef = useCallback((node: HTMLInputElement | null) => {
     inputRef.current = node
     node?.focus()
   }, [])
 
-  useEffect(() => {
-    if (!editing) return
+  const abortReposLoad = useCallback(() => {
+    reposControllerRef.current?.abort()
+    reposControllerRef.current = null
+  }, [])
 
-    let cancelled = false
+  const loadRepos = useCallback(async () => {
+    abortReposLoad()
+    const controller = new AbortController()
+    reposControllerRef.current = controller
+    setReposLoading(true)
+    setReposError("")
+    try {
+      const response = await fetch("/api/github/repos", {
+        cache: "no-store",
+        signal: controller.signal,
+      })
+      const data = (await response.json()) as {
+        error?: string
+        repositories?: GitHubRepoOption[]
+      }
 
-    async function loadRepos() {
-      setReposLoading(true)
-      setReposError("")
-      try {
-        const response = await fetch("/api/github/repos", {
-          cache: "no-store",
-        })
-        const data = (await response.json()) as {
-          error?: string
-          repositories?: GitHubRepoOption[]
-        }
+      if (!response.ok) {
+        throw new Error(data.error ?? "Unable to load repositories.")
+      }
 
-        if (!response.ok) {
-          throw new Error(data.error ?? "Unable to load repositories.")
+      if (!controller.signal.aborted) {
+        setRepoOptions(data.repositories ?? [])
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setReposError(
+          error instanceof Error
+            ? error.message
+            : "Unable to load repositories."
+        )
+        setRepoOptions([])
+      }
+    } finally {
+      if (!controller.signal.aborted) {
+        setReposLoading(false)
+        if (reposControllerRef.current === controller) {
+          reposControllerRef.current = null
         }
-
-        if (!cancelled) {
-          setRepoOptions(data.repositories ?? [])
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setReposError(
-            error instanceof Error
-              ? error.message
-              : "Unable to load repositories."
-          )
-          setRepoOptions([])
-        }
-      } finally {
-        if (!cancelled) setReposLoading(false)
       }
     }
+  }, [abortReposLoad])
 
-    void loadRepos()
-
-    return () => {
-      cancelled = true
-    }
-  }, [editing])
+  useEffect(() => abortReposLoad, [abortReposLoad])
 
   function commit() {
     const trimmed = draft.trim()
@@ -241,6 +311,7 @@ export function RepoChip({
         if (!locked) {
           setDraft(value ? repoLabel(value) : "")
           setEditing(true)
+          void loadRepos()
         }
       }}
       disabled={locked}
@@ -268,80 +339,87 @@ export function BranchChip({
   onChange: (v: string) => void
   locked?: boolean
 }) {
-  const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState("")
-  const [branches, setBranches] = useState<string[]>([])
-  const [defaultBranch, setDefaultBranch] = useState<string | undefined>()
-  const [branchesError, setBranchesError] = useState("")
-  const [branchesLoading, setBranchesLoading] = useState(false)
+  const [state, dispatch] = useReducer(
+    branchChipReducer,
+    initialBranchChipState
+  )
   const inputRef = useRef<HTMLInputElement>(null)
+  const branchesControllerRef = useRef<AbortController | null>(null)
   const setFocusedInputRef = useCallback((node: HTMLInputElement | null) => {
     inputRef.current = node
     node?.focus()
   }, [])
 
-  useEffect(() => {
-    if (!editing) return
+  const abortBranchesLoad = useCallback(() => {
+    branchesControllerRef.current?.abort()
+    branchesControllerRef.current = null
+  }, [])
+
+  const loadBranches = useCallback(async () => {
     const repo = repoUrl?.trim()
     if (!repo) return
 
-    let cancelled = false
-
-    async function loadBranches() {
-      setBranchesLoading(true)
-      setBranchesError("")
-      try {
-        const response = await fetch(
-          `/api/github/branches?repoUrl=${encodeURIComponent(repo!)}`,
-          { cache: "no-store" }
-        )
-        const data = (await response.json()) as {
-          error?: string
-          branches?: string[]
-          defaultBranch?: string
+    abortBranchesLoad()
+    const controller = new AbortController()
+    branchesControllerRef.current = controller
+    dispatch({ type: "load-start" })
+    try {
+      const response = await fetch(
+        `/api/github/branches?repoUrl=${encodeURIComponent(repo)}`,
+        { cache: "no-store", signal: controller.signal }
+      )
+      const data = (await response.json()) as {
+        error?: string
+        branches?: string[]
+        defaultBranch?: string
+      }
+      if (!response.ok) {
+        throw new Error(data.error ?? "Unable to load branches.")
+      }
+      if (!controller.signal.aborted) {
+        dispatch({
+          branches: data.branches ?? [],
+          defaultBranch: data.defaultBranch,
+          type: "load-success",
+        })
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        dispatch({
+          error:
+            error instanceof Error ? error.message : "Unable to load branches.",
+          type: "load-error",
+        })
+      }
+    } finally {
+      if (!controller.signal.aborted) {
+        if (branchesControllerRef.current === controller) {
+          branchesControllerRef.current = null
         }
-        if (!response.ok) {
-          throw new Error(data.error ?? "Unable to load branches.")
-        }
-        if (!cancelled) {
-          setBranches(data.branches ?? [])
-          setDefaultBranch(data.defaultBranch)
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setBranchesError(
-            error instanceof Error ? error.message : "Unable to load branches."
-          )
-          setBranches([])
-        }
-      } finally {
-        if (!cancelled) setBranchesLoading(false)
       }
     }
+  }, [abortBranchesLoad, repoUrl])
 
-    void loadBranches()
-
-    return () => {
-      cancelled = true
-    }
-  }, [editing, repoUrl])
+  useEffect(() => abortBranchesLoad, [abortBranchesLoad])
 
   function commit() {
-    onChange(draft.trim())
-    setEditing(false)
+    onChange(state.draft.trim())
+    dispatch({ type: "close" })
   }
 
-  if (editing) {
-    const needle = draft.trim().toLowerCase()
-    const sorted = [...branches].sort((a, b) => {
-      if (a === defaultBranch) return -1
-      if (b === defaultBranch) return 1
+  const visibleBranches = useMemo(() => {
+    const needle = state.draft.trim().toLowerCase()
+    const sorted = state.branches.toSorted((a, b) => {
+      if (a === state.defaultBranch) return -1
+      if (b === state.defaultBranch) return 1
       return a.localeCompare(b)
     })
-    const visibleBranches = sorted
+    return sorted
       .filter((branch) => !needle || branch.toLowerCase().includes(needle))
       .slice(0, 8)
+  }, [state.branches, state.defaultBranch, state.draft])
 
+  if (state.editing) {
     return (
       <div className="relative">
         <div className="flex h-8 items-center gap-1.5 rounded-lg border border-field bg-background pr-1 pl-2.5 text-xs focus-within:ring-3 focus-within:ring-ring/30">
@@ -350,8 +428,8 @@ export function BranchChip({
             ref={setFocusedInputRef}
             variant="bare"
             aria-label="Branch name"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            value={state.draft}
+            onChange={(e) => dispatch({ type: "draft", value: e.target.value })}
             onBlur={commit}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
@@ -359,19 +437,18 @@ export function BranchChip({
                 commit()
               }
               if (e.key === "Escape") {
-                setDraft(value)
-                setEditing(false)
+                dispatch({ type: "cancel", value })
               }
             }}
-            placeholder={defaultBranch ?? "default branch"}
+            placeholder={state.defaultBranch ?? "default branch"}
             className="w-32 text-xs"
             spellCheck={false}
           />
-          {branchesLoading ? (
+          {state.loading ? (
             <LoaderCircle className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
           ) : null}
         </div>
-        {visibleBranches.length || branchesError ? (
+        {visibleBranches.length || state.error ? (
           <div
             className={cn(
               popoverPanel,
@@ -385,22 +462,21 @@ export function BranchChip({
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => {
                   onChange(branch)
-                  setDraft(branch)
-                  setEditing(false)
+                  dispatch({ type: "select", value: branch })
                 }}
                 className={popoverItem}
               >
                 <span className="min-w-0 truncate">{branch}</span>
-                {branch === defaultBranch ? (
+                {branch === state.defaultBranch ? (
                   <span className="shrink-0 text-xs text-muted-foreground">
                     default
                   </span>
                 ) : null}
               </button>
             ))}
-            {branchesError ? (
+            {state.error ? (
               <div className="px-3 py-2 text-xs leading-4 text-destructive">
-                {branchesError}
+                {state.error}
               </div>
             ) : null}
           </div>
@@ -416,8 +492,8 @@ export function BranchChip({
       type="button"
       onClick={() => {
         if (!locked) {
-          setDraft(value)
-          setEditing(true)
+          dispatch({ type: "open", value })
+          void loadBranches()
         }
       }}
       disabled={locked}

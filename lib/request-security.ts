@@ -35,7 +35,7 @@ function requestOrigins(request: Request) {
   return origins
 }
 
-export function sameOriginRequest(request: Request) {
+function sameOriginRequest(request: Request) {
   const origin = normalizeOrigin(request.headers.get("origin"))
   if (origin) return requestOrigins(request).has(origin)
 

@@ -19,6 +19,19 @@ export type DiffStats = {
   files: DiffFileStat[]
 }
 
+export type ParsedDiffMetadata = {
+  files: FileDiffMetadata[]
+  stats: DiffStats
+}
+
+const EMPTY_DIFF_STATS: DiffStats = { additions: 0, deletions: 0, files: [] }
+const EMPTY_PARSED_DIFF: ParsedDiffMetadata = {
+  files: [],
+  stats: EMPTY_DIFF_STATS,
+}
+const PARSED_DIFF_CACHE_LIMIT = 12
+const parsedDiffCache = new Map<string, ParsedDiffMetadata>()
+
 function countChangedLines(file: FileDiffMetadata) {
   let additions = 0
   let deletions = 0
@@ -29,41 +42,62 @@ function countChangedLines(file: FileDiffMetadata) {
   return { additions, deletions }
 }
 
-export function parsePatchDiff(diff?: string): FileDiffMetadata[] {
-  if (!diff?.trim()) return []
+function setParsedDiffCache(diff: string, parsed: ParsedDiffMetadata) {
+  parsedDiffCache.set(diff, parsed)
+  if (parsedDiffCache.size <= PARSED_DIFF_CACHE_LIMIT) return
+
+  const oldestKey = parsedDiffCache.keys().next().value
+  if (oldestKey !== undefined) parsedDiffCache.delete(oldestKey)
+}
+
+export function getParsedDiffMetadata(diff?: string): ParsedDiffMetadata {
+  if (!diff?.trim()) return EMPTY_PARSED_DIFF
+
+  const cached = parsedDiffCache.get(diff)
+  if (cached) {
+    parsedDiffCache.delete(diff)
+    parsedDiffCache.set(diff, cached)
+    return cached
+  }
+
   try {
-    return parsePatchFiles(diff, "cloudcode-diff", false).flatMap(
+    const files = parsePatchFiles(diff, "cloudcode-diff", false).flatMap(
       (patch) => patch.files
     )
+    const statsFiles = files.map((file) => {
+      const counts = countChangedLines(file)
+      return {
+        ...counts,
+        path: file.name,
+        prevPath: file.prevName,
+        type: file.type,
+      }
+    })
+
+    const totals = statsFiles.reduce(
+      (acc, file) => ({
+        additions: acc.additions + file.additions,
+        deletions: acc.deletions + file.deletions,
+      }),
+      { additions: 0, deletions: 0 }
+    )
+    const parsed = {
+      files,
+      stats: { ...totals, files: statsFiles },
+    }
+    setParsedDiffCache(diff, parsed)
+    return parsed
   } catch {
-    return []
+    return EMPTY_PARSED_DIFF
   }
 }
 
 export function getDiffStats(diff?: string): DiffStats {
-  const files = parsePatchDiff(diff).map((file) => {
-    const counts = countChangedLines(file)
-    return {
-      ...counts,
-      path: file.name,
-      prevPath: file.prevName,
-      type: file.type,
-    }
-  })
-
-  const totals = files.reduce(
-    (acc, file) => ({
-      additions: acc.additions + file.additions,
-      deletions: acc.deletions + file.deletions,
-    }),
-    { additions: 0, deletions: 0 }
-  )
-
-  return { ...totals, files }
+  return getParsedDiffMetadata(diff).stats
 }
 
 export function findDiffForPath(diff: string | undefined, path: string) {
-  return parsePatchDiff(diff).find(
+  return getParsedDiffMetadata(diff).files.find(
     (file) => file.name === path || file.prevName === path
   )
 }

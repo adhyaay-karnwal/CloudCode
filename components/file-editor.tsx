@@ -312,7 +312,7 @@ export function FileEditorPanel({
         </span>
         {sandboxId && mode === "file" && isImagePath(activePath) ? (
           <ImageDimensionsLabel
-            key={`${sandboxId}:${activePath}`}
+            key={`${sandboxId}:${activePath}:${refreshNonce}`}
             sandboxId={sandboxId}
             path={activePath}
             refreshNonce={refreshNonce}
@@ -378,16 +378,7 @@ export function FileEditorPanel({
   )
 }
 
-function FileViewer({
-  fileDiff,
-  cacheScope,
-  diffKey,
-  mode,
-  onOpenFile,
-  refreshNonce,
-  sandboxId,
-  path,
-}: {
+type FileViewerProps = {
   fileDiff?: FileDiffMetadata
   cacheScope: string | null
   diffKey: string
@@ -396,16 +387,22 @@ function FileViewer({
   refreshNonce: number
   sandboxId: string | null
   path: string
-}) {
-  const imagePreview = useMemo(() => isImagePath(path), [path])
-  const markdownPreview = useMemo(() => isMarkdownPath(path), [path])
+}
+
+function useTextFileContent({
+  cacheScope,
+  diffKey,
+  fileDiff,
+  imagePreview,
+  mode,
+  path,
+  refreshNonce,
+  sandboxId,
+}: FileViewerProps & { imagePreview: boolean }) {
   const [content, setContent] = useState<string | null>(null)
   const [loading, setLoading] = useState(!imagePreview)
   const [error, setError] = useState<string | null>(null)
   const handledRefreshNonceRef = useRef(refreshNonce)
-
-  const { resolvedTheme } = useTheme()
-  const themeType: ThemeTypes = resolvedTheme === "dark" ? "dark" : "light"
 
   useEffect(() => {
     if (mode === "diff" || imagePreview) {
@@ -513,6 +510,35 @@ function FileViewer({
     path,
   ])
 
+  return { content, error, loading }
+}
+
+function FileViewer({
+  fileDiff,
+  cacheScope,
+  diffKey,
+  mode,
+  onOpenFile,
+  refreshNonce,
+  sandboxId,
+  path,
+}: FileViewerProps) {
+  const imagePreview = useMemo(() => isImagePath(path), [path])
+  const markdownPreview = useMemo(() => isMarkdownPath(path), [path])
+  const { content, error, loading } = useTextFileContent({
+    cacheScope,
+    diffKey,
+    fileDiff,
+    imagePreview,
+    mode,
+    onOpenFile,
+    path,
+    refreshNonce,
+    sandboxId,
+  })
+  const { resolvedTheme } = useTheme()
+  const themeType: ThemeTypes = resolvedTheme === "dark" ? "dark" : "light"
+
   const language = useMemo(() => getPierreLanguageFromPath(path), [path])
 
   const file = useMemo<FileContents | null>(() => {
@@ -599,6 +625,7 @@ function FileViewer({
 
     return (
       <ImageViewer
+        key={`${sandboxId}:${path}:${refreshNonce}`}
         sandboxId={sandboxId}
         path={path}
         refreshNonce={refreshNonce}
@@ -712,7 +739,6 @@ function ImageDimensionsLabel({
 
   useEffect(() => {
     let cancelled = false
-    setDimensions(null)
     const image = new window.Image()
     image.onload = () => {
       if (cancelled) return
@@ -769,11 +795,6 @@ function ImageViewer({
     })
     return `/api/sandbox/files/read?${params}`
   }, [path, refreshNonce, sandboxId])
-
-  useEffect(() => {
-    setLoaded(false)
-    setError(false)
-  }, [src])
 
   if (error) {
     return (

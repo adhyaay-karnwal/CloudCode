@@ -1,4 +1,4 @@
-export const DEFAULT_CODEX_CLI_VERSION = "0.136.0"
+const DEFAULT_CODEX_CLI_VERSION = "0.136.0"
 
 export function desiredCodexCliVersion() {
   return (

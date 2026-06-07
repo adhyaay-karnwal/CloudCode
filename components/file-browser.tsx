@@ -248,7 +248,7 @@ export function FileBrowser({
 
   // Keep the selection handler referentially stable while letting it observe
   // the latest entry list and `onOpenFile` callback through refs.
-  const fileEntryPathsRef = useRef<Set<string>>(new Set())
+  const fileEntryPathsRef = useRef<Set<string> | null>(null)
   useEffect(() => {
     const set = new Set<string>()
     if (view === "diffs") {
@@ -271,7 +271,7 @@ export function FileBrowser({
     if (syncingSelectionRef.current) return
     const path = paths[0]
     if (!path || path === "__empty__") return
-    if (!fileEntryPathsRef.current.has(path)) return
+    if (!fileEntryPathsRef.current?.has(path)) return
     onOpenFileRef.current(path, viewRef.current === "diffs" ? "diff" : "file")
   }, [])
 
@@ -355,12 +355,19 @@ export function FileBrowser({
   }, [activeMode, activePath, model, view])
 
   const fetchList = useCallback(
-    async ({ force = false } = {}) => {
+    async ({
+      force = false,
+      signal,
+    }: {
+      force?: boolean
+      signal?: AbortSignal
+    } = {}) => {
       if (!sandboxId) return
       const sourceKey = cacheScope ?? `sandbox:${sandboxId}`
       let cached = force ? undefined : fileListCache.get(sourceKey)
       if (!force && !cached && cacheScope) {
         const stored = await readCachedFileList(cacheScope)
+        if (signal?.aborted) return
         if (stored) {
           cached = {
             entries: stored.entries,
@@ -381,9 +388,10 @@ export function FileBrowser({
           `/api/sandbox/files/list?${new URLSearchParams({
             sandboxId,
           })}`,
-          { cache: "no-store" }
+          { cache: "no-store", signal }
         )
         const data: ListResponse = await res.json()
+        if (signal?.aborted) return
         if (!res.ok) {
           throw new Error(data.error ?? `Request failed (${res.status})`)
         }
@@ -404,13 +412,14 @@ export function FileBrowser({
         setEntriesAuthoritative(true)
         setTruncated(nextTruncated)
       } catch (err) {
+        if (signal?.aborted) return
         if (!cached) {
           setError(err instanceof Error ? err.message : "Failed to load files")
           if (!force) setEntriesAuthoritative(false)
           setEntries((current) => (force && current.length > 0 ? current : []))
         }
       } finally {
-        setLoading(false)
+        if (!signal?.aborted) setLoading(false)
       }
     },
     [cacheScope, sandboxId]
@@ -437,8 +446,15 @@ export function FileBrowser({
 
   useEffect(() => {
     if (!open || !sandboxId) return
-    const id = window.setTimeout(() => void fetchList(), 0)
-    return () => window.clearTimeout(id)
+    const controller = new AbortController()
+    const id = window.setTimeout(
+      () => void fetchList({ signal: controller.signal }),
+      0
+    )
+    return () => {
+      window.clearTimeout(id)
+      controller.abort()
+    }
   }, [open, sandboxId, fetchList])
 
   if (!open) return null
@@ -531,7 +547,10 @@ export function FileBrowser({
 
       <div className="relative min-h-0 flex-1 overflow-hidden">
         {view === "env" ? (
-          <EnvironmentPanel sandboxId={sandboxId} />
+          <EnvironmentPanel
+            key={sandboxId ?? "no-sandbox"}
+            sandboxId={sandboxId}
+          />
         ) : !sandboxId && filePaths.length === 0 ? (
           <EmptyState message="No cached files yet." />
         ) : error ? (

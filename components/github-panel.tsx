@@ -22,6 +22,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
 } from "react"
@@ -30,7 +31,8 @@ import type { FileBrowserOpenMode } from "@/components/file-browser"
 import { MarkdownEditor } from "@/components/markdown-editor"
 import { Button } from "@/components/ui/button"
 import { Checkbox as UiCheckbox } from "@/components/ui/checkbox"
-import { IconButton, iconButtonVariants } from "@/components/ui/icon-button"
+import { IconButton } from "@/components/ui/icon-button"
+import { iconButtonVariants } from "@/components/ui/icon-button-variants"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { cardSurfaceClass } from "@/components/ui/surface"
@@ -60,26 +62,112 @@ type PrResponse = {
 
 type BusyKind = "commit" | "commit-push" | "create" | "push" | null
 
+type GithubPanelState = {
+  actionError: string | null
+  busy: BusyKind
+  commitMessage: string
+  compareUrl: string | null
+  loading: boolean
+  prBody: string
+  prData: PrResponse | null
+  prDraft: boolean
+  prTitle: string
+  showCreateForm: boolean
+  status: SandboxGitStatus | null
+  statusError: string | null
+}
+
+type GithubPanelAction =
+  | { type: "action-error"; error: string }
+  | { type: "action-finish" }
+  | { type: "action-start"; busy: Exclude<BusyKind, null> }
+  | { type: "close-create-form" }
+  | { type: "commit-message"; value: string }
+  | { type: "compare-url"; url: string | null }
+  | { type: "loading"; value: boolean }
+  | { type: "open-create-form"; title: string }
+  | { type: "pr-body"; value: string }
+  | { type: "pr-data"; data: PrResponse }
+  | { type: "pr-draft"; value: boolean }
+  | { type: "pr-title"; value: string }
+  | { type: "reset-commit-message" }
+  | { type: "status-error"; error: string }
+  | { type: "status-success"; status: SandboxGitStatus }
+
+const initialGithubPanelState: GithubPanelState = {
+  actionError: null,
+  busy: null,
+  commitMessage: "",
+  compareUrl: null,
+  loading: false,
+  prBody: "",
+  prData: null,
+  prDraft: false,
+  prTitle: "",
+  showCreateForm: false,
+  status: null,
+  statusError: null,
+}
+
+function githubPanelReducer(
+  state: GithubPanelState,
+  action: GithubPanelAction
+): GithubPanelState {
+  switch (action.type) {
+    case "action-error":
+      return { ...state, actionError: action.error }
+    case "action-finish":
+      return { ...state, busy: null }
+    case "action-start":
+      return { ...state, actionError: null, busy: action.busy }
+    case "close-create-form":
+      return { ...state, showCreateForm: false }
+    case "commit-message":
+      return { ...state, commitMessage: action.value }
+    case "compare-url":
+      return { ...state, compareUrl: action.url }
+    case "loading":
+      return { ...state, loading: action.value }
+    case "open-create-form":
+      return {
+        ...state,
+        compareUrl: null,
+        prBody: "",
+        prDraft: false,
+        prTitle: action.title,
+        showCreateForm: true,
+      }
+    case "pr-body":
+      return { ...state, prBody: action.value }
+    case "pr-data":
+      return { ...state, prData: action.data }
+    case "pr-draft":
+      return { ...state, prDraft: action.value }
+    case "pr-title":
+      return { ...state, prTitle: action.value }
+    case "reset-commit-message":
+      return { ...state, commitMessage: "" }
+    case "status-error":
+      return { ...state, statusError: action.error }
+    case "status-success":
+      return { ...state, status: action.status, statusError: null }
+  }
+}
+
 const POLL_INTERVAL_MS = 8000
 
-export function GithubPanel({
-  open,
-  sandboxId,
-  repoUrl,
+function useGithubPanelController({
   baseBranch,
   diff,
   githubConnected,
-  onClose,
-  onOpenFile,
+  open,
+  sandboxId,
 }: {
-  open: boolean
-  sandboxId: string | null
-  repoUrl: string
   baseBranch: string
   diff?: string
   githubConnected: boolean
-  onClose: () => void
-  onOpenFile: (path: string, mode: FileBrowserOpenMode) => void
+  open: boolean
+  sandboxId: string | null
 }) {
   const isMobile = useIsMobile()
   const { width, resizing, onResizeStart, resetWidth } = useResizablePanel({
@@ -90,18 +178,24 @@ export function GithubPanel({
     edge: "left",
     enabled: !isMobile,
   })
-  const [status, setStatus] = useState<SandboxGitStatus | null>(null)
-  const [statusError, setStatusError] = useState<string | null>(null)
-  const [prData, setPrData] = useState<PrResponse | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [busy, setBusy] = useState<BusyKind>(null)
-  const [actionError, setActionError] = useState<string | null>(null)
-  const [commitMessage, setCommitMessage] = useState("")
-  const [showCreateForm, setShowCreateForm] = useState(false)
-  const [prTitle, setPrTitle] = useState("")
-  const [prBody, setPrBody] = useState("")
-  const [prDraft, setPrDraft] = useState(false)
-  const [compareUrl, setCompareUrl] = useState<string | null>(null)
+  const [state, dispatch] = useReducer(
+    githubPanelReducer,
+    initialGithubPanelState
+  )
+  const {
+    actionError,
+    busy,
+    commitMessage,
+    compareUrl,
+    loading,
+    prBody,
+    prData,
+    prDraft,
+    prTitle,
+    showCreateForm,
+    status,
+    statusError,
+  } = state
 
   const busyRef = useRef<BusyKind>(null)
   busyRef.current = busy
@@ -125,13 +219,16 @@ export function GithubPanel({
         )
         const data = await res.json()
         if (!res.ok) throw new Error(data.error ?? "Failed to load git status.")
-        setStatus(data as SandboxGitStatus)
-        setStatusError(null)
+        dispatch({ type: "status-success", status: data as SandboxGitStatus })
       } catch (error) {
         if (signal?.aborted) return
-        setStatusError(
-          error instanceof Error ? error.message : "Failed to load git status."
-        )
+        dispatch({
+          type: "status-error",
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to load git status.",
+        })
       }
     },
     [sandboxId]
@@ -148,7 +245,7 @@ export function GithubPanel({
         const data = await res.json()
         if (!res.ok)
           throw new Error(data.error ?? "Failed to load pull request.")
-        setPrData(data as PrResponse)
+        dispatch({ type: "pr-data", data: data as PrResponse })
       } catch {
         if (signal?.aborted) return
         // PR/check info is best-effort; keep the panel usable on failure.
@@ -159,9 +256,9 @@ export function GithubPanel({
 
   const refresh = useCallback(
     async (signal?: AbortSignal) => {
-      setLoading(true)
+      dispatch({ type: "loading", value: true })
       await Promise.all([loadStatus(signal), loadPr(signal)])
-      if (!signal?.aborted) setLoading(false)
+      if (!signal?.aborted) dispatch({ type: "loading", value: false })
     },
     [loadPr, loadStatus]
   )
@@ -209,17 +306,18 @@ export function GithubPanel({
 
   const runAction = useCallback(
     async (kind: Exclude<BusyKind, null>, fn: () => Promise<void>) => {
-      setBusy(kind)
-      setActionError(null)
+      dispatch({ type: "action-start", busy: kind })
       try {
         await fn()
         await refresh()
       } catch (error) {
-        setActionError(
-          error instanceof Error ? error.message : "Something went wrong."
-        )
+        dispatch({
+          type: "action-error",
+          error:
+            error instanceof Error ? error.message : "Something went wrong.",
+        })
       } finally {
-        setBusy(null)
+        dispatch({ type: "action-finish" })
       }
     },
     [refresh]
@@ -250,7 +348,7 @@ export function GithubPanel({
         if (kind === "commit-push") {
           await postJson("/api/sandbox/git/push", { sandboxId })
         }
-        setCommitMessage("")
+        dispatch({ type: "reset-commit-message" })
       }),
     [commitMessage, postJson, runAction, sandboxId]
   )
@@ -265,11 +363,7 @@ export function GithubPanel({
   )
 
   const openCreateForm = useCallback(() => {
-    setCompareUrl(null)
-    setPrTitle(defaultPrTitle(branch))
-    setPrBody("")
-    setPrDraft(false)
-    setShowCreateForm(true)
+    dispatch({ type: "open-create-form", title: defaultPrTitle(branch) })
   }, [branch])
 
   const createPr = useCallback(
@@ -286,13 +380,117 @@ export function GithubPanel({
           title: prTitle.trim(),
         })) as CreatePullRequestResult
         if (result.kind === "manual") {
-          setCompareUrl(result.compareUrl)
+          dispatch({ type: "compare-url", url: result.compareUrl })
         } else {
-          setShowCreateForm(false)
+          dispatch({ type: "close-create-form" })
         }
       }),
     [baseBranch, postJson, prBody, prDraft, prTitle, runAction, sandboxId]
   )
+
+  return {
+    actionError,
+    ahead,
+    branch,
+    busy,
+    canCommit,
+    commit,
+    commitMessage,
+    compareUrl,
+    connected,
+    createPr,
+    diffStatByPath,
+    files,
+    hasChanges,
+    loading,
+    onCancelCreateForm: () => dispatch({ type: "close-create-form" }),
+    onChangeBody: (value: string) => dispatch({ type: "pr-body", value }),
+    onChangeCommitMessage: (value: string) =>
+      dispatch({ type: "commit-message", value }),
+    onChangeDraft: (value: boolean) => dispatch({ type: "pr-draft", value }),
+    onChangeTitle: (value: string) => dispatch({ type: "pr-title", value }),
+    onResizeStart,
+    openCreateForm,
+    prBody,
+    prData,
+    prDraft,
+    prs,
+    prTitle,
+    push,
+    pushLabel,
+    refresh,
+    resetWidth,
+    resizing,
+    showCreateForm,
+    status,
+    statusError,
+    upstream,
+    width,
+  }
+}
+
+export function GithubPanel({
+  open,
+  sandboxId,
+  repoUrl,
+  baseBranch,
+  diff,
+  githubConnected,
+  onClose,
+  onOpenFile,
+}: {
+  open: boolean
+  sandboxId: string | null
+  repoUrl: string
+  baseBranch: string
+  diff?: string
+  githubConnected: boolean
+  onClose: () => void
+  onOpenFile: (path: string, mode: FileBrowserOpenMode) => void
+}) {
+  const {
+    actionError,
+    ahead,
+    branch,
+    busy,
+    canCommit,
+    commit,
+    commitMessage,
+    compareUrl,
+    connected,
+    createPr,
+    diffStatByPath,
+    files,
+    hasChanges,
+    loading,
+    onCancelCreateForm,
+    onChangeBody,
+    onChangeCommitMessage,
+    onChangeDraft,
+    onChangeTitle,
+    onResizeStart,
+    openCreateForm,
+    prBody,
+    prDraft,
+    prs,
+    prTitle,
+    push,
+    pushLabel,
+    refresh,
+    resetWidth,
+    resizing,
+    showCreateForm,
+    status,
+    statusError,
+    upstream,
+    width,
+  } = useGithubPanelController({
+    baseBranch,
+    diff,
+    githubConnected,
+    open,
+    sandboxId,
+  })
 
   if (!open) return null
 
@@ -360,7 +558,7 @@ export function GithubPanel({
 
             <CommitSection
               value={commitMessage}
-              onChange={setCommitMessage}
+              onChange={onChangeCommitMessage}
               canCommit={canCommit}
               hasChanges={hasChanges}
               busy={busy}
@@ -384,10 +582,10 @@ export function GithubPanel({
               baseBranch={baseBranch}
               branch={branch}
               onOpenCreateForm={openCreateForm}
-              onCancelCreateForm={() => setShowCreateForm(false)}
-              onChangeTitle={setPrTitle}
-              onChangeBody={setPrBody}
-              onChangeDraft={setPrDraft}
+              onCancelCreateForm={onCancelCreateForm}
+              onChangeTitle={onChangeTitle}
+              onChangeBody={onChangeBody}
+              onChangeDraft={onChangeDraft}
               onCreate={createPr}
             />
           </div>
@@ -973,11 +1171,13 @@ function CopyLinkButton({ url }: { url: string }) {
   const [copied, setCopied] = useState(false)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current)
-    }
+  const clearCopiedTimer = useCallback(() => {
+    if (!timerRef.current) return
+    clearTimeout(timerRef.current)
+    timerRef.current = null
   }, [])
+
+  useEffect(() => clearCopiedTimer, [clearCopiedTimer])
 
   return (
     <IconButton
@@ -989,7 +1189,7 @@ function CopyLinkButton({ url }: { url: string }) {
           ?.writeText(url)
           .then(() => {
             setCopied(true)
-            if (timerRef.current) clearTimeout(timerRef.current)
+            clearCopiedTimer()
             timerRef.current = setTimeout(() => setCopied(false), 1500)
           })
           .catch(() => undefined)

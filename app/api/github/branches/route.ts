@@ -69,52 +69,75 @@ export async function GET(request: Request) {
 
     const branches: string[] = []
     const defaultBranch = repoMetadata.metadata.defaultBranch
+    const branchPageUrl = (page: number) =>
+      `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/branches?per_page=100&page=${page}`
 
-    const branchResponses = await Promise.all(
-      Array.from({ length: 5 }, (_, index) =>
-        fetch(
-          `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/branches?per_page=100&page=${index + 1}`,
-          { headers, cache: "no-store" }
+    async function readBranchPage(page: number) {
+      const response = await fetch(branchPageUrl(page), {
+        headers,
+        cache: "no-store",
+      })
+      if (!response.ok) {
+        if (response.status === 409) return []
+
+        const remaining = response.headers.get("x-ratelimit-remaining")
+        const isRateLimited =
+          (response.status === 403 || response.status === 429) &&
+          remaining === "0"
+        throw new Response(
+          JSON.stringify({
+            error: isRateLimited
+              ? "GitHub rate limit hit. Connect GitHub or try again later."
+              : `GitHub API error: ${response.status}`,
+          }),
+          {
+            headers: { "Content-Type": "application/json" },
+            status: response.status,
+          }
         )
-      )
-    )
-    const failedBranchResponse = branchResponses.find((res) => !res.ok)
-    if (failedBranchResponse) {
-      if (failedBranchResponse.status === 409) {
-        return NextResponse.json({ branches, defaultBranch })
       }
 
-      const remaining = failedBranchResponse.headers.get(
-        "x-ratelimit-remaining"
-      )
-      const isRateLimited =
-        (failedBranchResponse.status === 403 ||
-          failedBranchResponse.status === 429) &&
-        remaining === "0"
-      return NextResponse.json(
-        {
-          error: isRateLimited
-            ? "GitHub rate limit hit. Connect GitHub or try again later."
-            : `GitHub API error: ${failedBranchResponse.status}`,
-        },
-        { status: failedBranchResponse.status }
-      )
+      const items = (await response.json()) as Array<{ name: string }>
+      return Array.isArray(items) ? items : []
     }
 
-    const branchPages = await Promise.all(
-      branchResponses.map(
-        (res) => res.json() as Promise<Array<{ name: string }>>
-      )
-    )
-    for (const items of branchPages) {
+    function collectBranchNames(items: Array<{ name: string }>) {
       for (const item of items) {
         if (typeof item.name === "string") branches.push(item.name)
       }
+    }
+
+    const firstPage = await readBranchPage(1)
+    collectBranchNames(firstPage)
+    if (firstPage.length === 0) {
+      return NextResponse.json({ branches, defaultBranch })
+    }
+    if (firstPage.length < 100) {
+      return NextResponse.json({ branches, defaultBranch })
+    }
+
+    for (let page = 2; page <= 5; page += 1) {
+      const items = await readBranchPage(page)
+      collectBranchNames(items)
       if (items.length < 100) break
     }
 
     return NextResponse.json({ branches, defaultBranch })
   } catch (error) {
+    if (error instanceof Response) {
+      const body = (await error.json().catch(() => null)) as {
+        error?: unknown
+      } | null
+      return NextResponse.json(
+        {
+          error:
+            typeof body?.error === "string"
+              ? body.error
+              : "Failed to fetch branches.",
+        },
+        { status: error.status }
+      )
+    }
     return NextResponse.json(
       {
         error:

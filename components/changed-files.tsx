@@ -12,7 +12,7 @@ import { cardSurfaceClass } from "@/components/ui/surface"
 import { useIsMobile } from "@/hooks/use-is-mobile"
 import {
   getDiffStats,
-  parsePatchDiff,
+  getParsedDiffMetadata,
   type DiffFileStat,
 } from "@/lib/diff-metadata"
 import { cn } from "@/lib/utils"
@@ -33,7 +33,14 @@ const PIERRE_FILE_STYLE: CSSProperties = {
 } as CSSProperties
 
 type TreeNode =
-  | { kind: "dir"; name: string; path: string; children: TreeNode[] }
+  | {
+      kind: "dir"
+      name: string
+      path: string
+      additions: number
+      deletions: number
+      children: TreeNode[]
+    }
   | { kind: "file"; name: string; path: string; stat: DiffFileStat }
 
 type DirNode = Extract<TreeNode, { kind: "dir" }>
@@ -68,10 +75,19 @@ function buildFileTree(files: DiffFileStat[]): TreeNode[] {
       const levelIndex = indexFor(level)
       let dir = levelIndex.get(segment)
       if (!dir) {
-        dir = { kind: "dir", name: segment, path: acc, children: [] }
+        dir = {
+          kind: "dir",
+          name: segment,
+          path: acc,
+          additions: 0,
+          deletions: 0,
+          children: [],
+        }
         level.push(dir)
         levelIndex.set(segment, dir)
       }
+      dir.additions += file.additions
+      dir.deletions += file.deletions
       level = dir.children
     })
   }
@@ -88,25 +104,6 @@ function buildFileTree(files: DiffFileStat[]): TreeNode[] {
   sortLevel(roots)
 
   return roots
-}
-
-function aggregateNode(node: TreeNode): {
-  additions: number
-  deletions: number
-} {
-  if (node.kind === "file") {
-    return { additions: node.stat.additions, deletions: node.stat.deletions }
-  }
-  return node.children.reduce(
-    (acc, child) => {
-      const sum = aggregateNode(child)
-      return {
-        additions: acc.additions + sum.additions,
-        deletions: acc.deletions + sum.deletions,
-      }
-    },
-    { additions: 0, deletions: 0 }
-  )
 }
 
 function collectDirPaths(nodes: TreeNode[], acc: string[] = []): string[] {
@@ -155,7 +152,6 @@ function FileTreeRows({
   return (
     <>
       {nodes.map((node) => {
-        const sum = aggregateNode(node)
         const indentStyle = { paddingLeft: `${depth * 16 + 8}px` }
 
         if (node.kind === "dir") {
@@ -188,8 +184,8 @@ function FileTreeRows({
                   {node.name}
                 </span>
                 <DiffStatBadge
-                  additions={sum.additions}
-                  deletions={sum.deletions}
+                  additions={node.additions}
+                  deletions={node.deletions}
                 />
               </button>
               {isOpen ? (
@@ -301,17 +297,18 @@ export function DiffList({
   // Side-by-side diffs don't fit a phone's width; collapse to a single column.
   const isMobile = useIsMobile()
   const effectiveDiffStyle: DiffStyle = isMobile ? "unified" : diffStyle
-  const files = useMemo(() => parsePatchDiff(diff), [diff])
+  const parsedDiff = useMemo(() => getParsedDiffMetadata(diff), [diff])
+  const files = parsedDiff.files
   const fileStats = useMemo(() => {
     const map = new Map<string, { additions: number; deletions: number }>()
-    for (const file of getDiffStats(diff).files) {
+    for (const file of parsedDiff.stats.files) {
       map.set(file.path, {
         additions: file.additions,
         deletions: file.deletions,
       })
     }
     return map
-  }, [diff])
+  }, [parsedDiff.stats.files])
 
   const [expanded, setExpanded] = useState<Set<string>>(
     () => new Set(files.map((f) => f.name))

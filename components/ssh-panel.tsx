@@ -6,6 +6,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
 } from "react"
@@ -33,11 +34,73 @@ type SshConnection = {
 
 type ExpiresValue = "15" | "60" | "480"
 
+type SshPanelState = {
+  connections: SshConnection[] | null
+  creating: boolean
+  error: string | null
+  expires: ExpiresValue
+  pendingId: string | null
+}
+
+type SshPanelAction =
+  | { type: "create-finish" }
+  | { type: "create-start" }
+  | { type: "load-error"; error: string }
+  | { type: "load-success"; connections: SshConnection[] }
+  | { type: "rename-local"; id: string; label: string }
+  | { type: "remove-finish" }
+  | { type: "remove-start"; id: string }
+  | { type: "set-error"; error: string | null }
+  | { type: "set-expires"; expires: ExpiresValue }
+
+const initialSshPanelState: SshPanelState = {
+  connections: null,
+  creating: false,
+  error: null,
+  expires: "60",
+  pendingId: null,
+}
+
+function sshPanelReducer(
+  state: SshPanelState,
+  action: SshPanelAction
+): SshPanelState {
+  switch (action.type) {
+    case "create-finish":
+      return { ...state, creating: false }
+    case "create-start":
+      return { ...state, creating: true, error: null }
+    case "load-error":
+      return { ...state, connections: [], error: action.error }
+    case "load-success":
+      return { ...state, connections: action.connections, error: null }
+    case "rename-local":
+      return {
+        ...state,
+        connections:
+          state.connections?.map((connection) =>
+            connection.id === action.id
+              ? { ...connection, label: action.label }
+              : connection
+          ) ?? state.connections,
+      }
+    case "remove-finish":
+      return { ...state, pendingId: null }
+    case "remove-start":
+      return { ...state, error: null, pendingId: action.id }
+    case "set-error":
+      return { ...state, error: action.error }
+    case "set-expires":
+      return { ...state, expires: action.expires }
+  }
+}
+
 const EXPIRES_OPTIONS: SegmentedOption<ExpiresValue>[] = [
   { value: "15", label: "15 min" },
   { value: "60", label: "1 hr" },
   { value: "480", label: "8 hr" },
 ]
+const SSH_TARGET_SEPARATOR = /@/
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -94,7 +157,11 @@ function parseSshCommand(command: string): ParsedSshCommand | null {
       if (eq > 0) {
         options.push({ key: raw.slice(0, eq), value: raw.slice(eq + 1) })
       }
-    } else if (!token.startsWith("-") && token.includes("@") && !target) {
+    } else if (
+      !token.startsWith("-") &&
+      SSH_TARGET_SEPARATOR.test(token) &&
+      !target
+    ) {
       target = token
     }
   }
@@ -153,22 +220,27 @@ function useCopy() {
   const [copied, setCopied] = useState(false)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current)
-    }
+  const clearCopyTimer = useCallback(() => {
+    if (!timerRef.current) return
+    clearTimeout(timerRef.current)
+    timerRef.current = null
   }, [])
 
-  const copy = useCallback((value: string) => {
-    void navigator.clipboard
-      ?.writeText(value)
-      .then(() => {
-        setCopied(true)
-        if (timerRef.current) clearTimeout(timerRef.current)
-        timerRef.current = setTimeout(() => setCopied(false), 1500)
-      })
-      .catch(() => undefined)
-  }, [])
+  useEffect(() => clearCopyTimer, [clearCopyTimer])
+
+  const copy = useCallback(
+    (value: string) => {
+      void navigator.clipboard
+        ?.writeText(value)
+        .then(() => {
+          setCopied(true)
+          clearCopyTimer()
+          timerRef.current = setTimeout(() => setCopied(false), 1500)
+        })
+        .catch(() => undefined)
+    },
+    [clearCopyTimer]
+  )
 
   return { copied, copy }
 }
@@ -191,11 +263,7 @@ export function SshPanel({
     edge: "left",
     enabled: !isMobile,
   })
-  const [expires, setExpires] = useState<ExpiresValue>("60")
-  const [connections, setConnections] = useState<SshConnection[] | null>(null)
-  const [creating, setCreating] = useState(false)
-  const [pendingId, setPendingId] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [state, dispatch] = useReducer(sshPanelReducer, initialSshPanelState)
   const [now, setNow] = useState(() => Date.now())
 
   const refresh = useCallback(
@@ -207,25 +275,20 @@ export function SshPanel({
           { signal }
         )
         if (!signal?.aborted) {
-          setConnections(data.connections)
-          setError(null)
+          dispatch({ type: "load-success", connections: data.connections })
         }
       } catch (err) {
         if (!signal?.aborted) {
-          setError(
-            err instanceof Error ? err.message : "Failed to load SSH access."
-          )
-          setConnections([])
+          dispatch({
+            type: "load-error",
+            error:
+              err instanceof Error ? err.message : "Failed to load SSH access.",
+          })
         }
       }
     },
     [sandboxId]
   )
-
-  useEffect(() => {
-    setConnections(null)
-    setError(null)
-  }, [sandboxId])
 
   useEffect(() => {
     if (!open || !sandboxId) return
@@ -235,48 +298,55 @@ export function SshPanel({
   }, [open, refresh, sandboxId])
 
   useEffect(() => {
-    if (!open || !connections?.length) return
+    if (!open || !state.connections?.length) return
     const interval = window.setInterval(() => setNow(Date.now()), 1000)
     return () => window.clearInterval(interval)
-  }, [connections?.length, open])
+  }, [state.connections?.length, open])
 
   const create = useCallback(async () => {
-    if (!sandboxId || creating) return
-    setCreating(true)
-    setError(null)
+    if (!sandboxId || state.creating) return
+    dispatch({ type: "create-start" })
     try {
-      const count = connections?.length ?? 0
+      const count = state.connections?.length ?? 0
       await fetchJson("/api/sandbox/ssh", {
         method: "POST",
         body: JSON.stringify({
           sandboxId,
-          expiresInMinutes: Number(expires),
+          expiresInMinutes: Number(state.expires),
           label: `Key ${count + 1}`,
         }),
       })
       await refresh()
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Failed to create SSH access."
-      )
+      dispatch({
+        type: "set-error",
+        error:
+          err instanceof Error ? err.message : "Failed to create SSH access.",
+      })
     } finally {
-      setCreating(false)
+      dispatch({ type: "create-finish" })
     }
-  }, [connections?.length, creating, expires, refresh, sandboxId])
+  }, [
+    refresh,
+    sandboxId,
+    state.connections?.length,
+    state.creating,
+    state.expires,
+  ])
 
   const rename = useCallback(
     async (id: string, label: string) => {
-      setConnections(
-        (current) =>
-          current?.map((c) => (c.id === id ? { ...c, label } : c)) ?? current
-      )
+      dispatch({ type: "rename-local", id, label })
       try {
         await fetchJson("/api/sandbox/ssh", {
           method: "PATCH",
           body: JSON.stringify({ id, label }),
         })
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to rename key.")
+        dispatch({
+          type: "set-error",
+          error: err instanceof Error ? err.message : "Failed to rename key.",
+        })
         void refresh()
       }
     },
@@ -285,9 +355,8 @@ export function SshPanel({
 
   const remove = useCallback(
     async (id: string) => {
-      if (!sandboxId || pendingId) return
-      setPendingId(id)
-      setError(null)
+      if (!sandboxId || state.pendingId) return
+      dispatch({ type: "remove-start", id })
       try {
         await fetchJson("/api/sandbox/ssh", {
           method: "DELETE",
@@ -295,16 +364,20 @@ export function SshPanel({
         })
         await refresh()
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to revoke key.")
+        dispatch({
+          type: "set-error",
+          error: err instanceof Error ? err.message : "Failed to revoke key.",
+        })
       } finally {
-        setPendingId(null)
+        dispatch({ type: "remove-finish" })
       }
     },
-    [pendingId, refresh, sandboxId]
+    [refresh, sandboxId, state.pendingId]
   )
 
   if (!open) return null
 
+  const { connections, creating, error, expires, pendingId } = state
   const busy = creating || pendingId !== null
   const hasConnections = Boolean(connections && connections.length > 0)
 
@@ -364,7 +437,9 @@ export function SshPanel({
 
             <NewConnection
               expires={expires}
-              onExpiresChange={setExpires}
+              onExpiresChange={(nextExpires) =>
+                dispatch({ type: "set-expires", expires: nextExpires })
+              }
               creating={creating}
               disabled={!sandboxId}
               onGenerate={() => void create()}
@@ -378,7 +453,9 @@ export function SshPanel({
         ) : (
           <EmptyState
             expires={expires}
-            onExpiresChange={setExpires}
+            onExpiresChange={(nextExpires) =>
+              dispatch({ type: "set-expires", expires: nextExpires })
+            }
             creating={creating}
             disabled={!sandboxId}
             onGenerate={() => void create()}
@@ -620,19 +697,11 @@ function NameEditor({
   className?: string
 }) {
   const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState(value)
-  const inputRef = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    if (!editing) setDraft(value)
-  }, [editing, value])
-
-  useEffect(() => {
-    if (editing) {
-      inputRef.current?.focus()
-      inputRef.current?.select()
-    }
-  }, [editing])
+  const [draft, setDraft] = useState("")
+  const setInputRef = useCallback((node: HTMLInputElement | null) => {
+    node?.focus()
+    node?.select()
+  }, [])
 
   const commit = useCallback(() => {
     setEditing(false)
@@ -643,10 +712,11 @@ function NameEditor({
   if (editing) {
     return (
       <Input
-        ref={inputRef}
+        ref={setInputRef}
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
+        onFocus={(e) => e.currentTarget.select()}
         onKeyDown={(e) => {
           if (e.key === "Enter") {
             e.preventDefault()
@@ -665,7 +735,10 @@ function NameEditor({
   return (
     <button
       type="button"
-      onClick={() => setEditing(true)}
+      onClick={() => {
+        setDraft(value)
+        setEditing(true)
+      }}
       className={cn(
         "group/name flex items-center gap-1.5 rounded-md py-0.5 text-left",
         className

@@ -31,4 +31,4 @@ function Input({ className, variant, ...props }: InputProps) {
   )
 }
 
-export { Input, inputVariants }
+export { Input }

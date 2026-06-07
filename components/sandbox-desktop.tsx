@@ -16,21 +16,19 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useEffectEvent,
   useMemo,
+  useReducer,
   useRef,
   useState,
 } from "react"
 
-import {
-  RecordingVideo,
-  recordingRequestUrl,
-} from "@/components/recording-video"
+import { RecordingVideo } from "@/components/recording-video"
+import { recordingRequestUrl } from "@/components/recording-video-utils"
 import { ResizeHandle } from "@/components/resize-handle"
 import { Button } from "@/components/ui/button"
-import {
-  IconButton as UiIconButton,
-  iconButtonVariants,
-} from "@/components/ui/icon-button"
+import { IconButton as UiIconButton } from "@/components/ui/icon-button"
+import { iconButtonVariants } from "@/components/ui/icon-button-variants"
 import { cardSurfaceClass } from "@/components/ui/surface"
 import { useIsMobile } from "@/hooks/use-is-mobile"
 import { useResizablePanel } from "@/hooks/use-resizable-panel"
@@ -59,6 +57,100 @@ type RecordingsResponse = {
 type DesktopView = "desktop" | "recordings"
 
 type BusyKind = "refresh" | "start" | "stop"
+
+type DesktopPanelState = {
+  busy: BusyKind | null
+  connectRequested: boolean
+  error: string | null
+  recordings: DesktopRecording[]
+  status: DesktopStatus | null
+  view: DesktopView
+}
+
+type DesktopPanelAction =
+  | { type: "connect" }
+  | { type: "disconnect" }
+  | { type: "load-recordings"; recordings: DesktopRecording[] }
+  | { type: "load-status"; status: DesktopStatus }
+  | { type: "refresh-error"; error: string }
+  | { type: "refresh-finish" }
+  | { type: "refresh-start" }
+  | { type: "refresh-success" }
+  | { type: "set-view"; view: DesktopView }
+  | { type: "start-error"; error: string }
+  | { type: "start-start" }
+  | { type: "start-success"; status: DesktopStatus }
+  | { type: "stop-error"; error: string }
+  | { type: "stop-start" }
+  | { type: "stop-success"; status: DesktopStatus }
+
+const initialDesktopPanelState: DesktopPanelState = {
+  busy: null,
+  connectRequested: false,
+  error: null,
+  recordings: [],
+  status: null,
+  view: "desktop",
+}
+
+function desktopPanelReducer(
+  state: DesktopPanelState,
+  action: DesktopPanelAction
+): DesktopPanelState {
+  switch (action.type) {
+    case "connect":
+      return state.busy ? state : { ...state, connectRequested: true }
+    case "disconnect":
+      return { ...state, connectRequested: false }
+    case "load-recordings":
+      return { ...state, recordings: action.recordings }
+    case "load-status":
+      return {
+        ...state,
+        connectRequested: action.status.previewUrl
+          ? state.connectRequested
+          : false,
+        status: action.status,
+      }
+    case "refresh-error":
+      return { ...state, error: action.error }
+    case "refresh-finish":
+      return {
+        ...state,
+        busy: state.busy === "refresh" ? null : state.busy,
+      }
+    case "refresh-start":
+      return { ...state, busy: state.busy ?? "refresh" }
+    case "refresh-success":
+      return { ...state, error: null }
+    case "set-view":
+      return { ...state, view: action.view }
+    case "start-error":
+      return { ...state, busy: null, error: action.error }
+    case "start-start":
+      return { ...state, busy: "start", error: null }
+    case "start-success":
+      return {
+        ...state,
+        busy: null,
+        connectRequested: Boolean(action.status.previewUrl),
+        error: null,
+        status: action.status,
+      }
+    case "stop-error":
+      return { ...state, busy: null, error: action.error }
+    case "stop-start":
+      return { ...state, busy: "stop", connectRequested: false, error: null }
+    case "stop-success":
+      return {
+        ...state,
+        busy: null,
+        connectRequested: false,
+        error: null,
+        status: action.status,
+      }
+  }
+}
 
 const RECORDINGS_POLL_MS = 8000
 
@@ -169,12 +261,10 @@ export function SandboxDesktopPanel({
     edge: "left",
     enabled: !isMobile,
   })
-  const [view, setView] = useState<DesktopView>("desktop")
-  const [status, setStatus] = useState<DesktopStatus | null>(null)
-  const [recordings, setRecordings] = useState<DesktopRecording[]>([])
-  const [busy, setBusy] = useState<BusyKind | null>(null)
-  const [connectRequested, setConnectRequested] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [state, dispatch] = useReducer(
+    desktopPanelReducer,
+    initialDesktopPanelState
+  )
 
   const loadStatus = useCallback(
     async (signal?: AbortSignal) => {
@@ -184,7 +274,7 @@ export function SandboxDesktopPanel({
         `/api/sandbox/desktop?${params}`,
         { signal }
       )
-      setStatus(next)
+      dispatch({ type: "load-status", status: next })
       return next
     },
     [sandboxId]
@@ -198,7 +288,7 @@ export function SandboxDesktopPanel({
         `/api/sandbox/desktop/recordings?${params}`,
         { signal }
       )
-      setRecordings(next.recordings)
+      dispatch({ type: "load-recordings", recordings: next.recordings })
       return next.recordings
     },
     [sandboxId]
@@ -207,19 +297,21 @@ export function SandboxDesktopPanel({
   const refresh = useCallback(
     async (signal?: AbortSignal) => {
       if (!sandboxId) return
-      setBusy((current) => current ?? "refresh")
+      dispatch({ type: "refresh-start" })
       try {
         await Promise.all([loadStatus(signal), loadRecordings(signal)])
-        setError(null)
+        dispatch({ type: "refresh-success" })
       } catch (err) {
         if (!signal?.aborted) {
-          setError(
-            err instanceof Error ? err.message : "Desktop refresh failed."
-          )
+          dispatch({
+            type: "refresh-error",
+            error:
+              err instanceof Error ? err.message : "Desktop refresh failed.",
+          })
         }
       } finally {
         if (!signal?.aborted) {
-          setBusy((current) => (current === "refresh" ? null : current))
+          dispatch({ type: "refresh-finish" })
         }
       }
     },
@@ -234,16 +326,6 @@ export function SandboxDesktopPanel({
   }, [open, refresh, sandboxId])
 
   useEffect(() => {
-    setConnectRequested(false)
-  }, [open, sandboxId])
-
-  useEffect(() => {
-    if (!status?.previewUrl) {
-      setConnectRequested(false)
-    }
-  }, [status?.previewUrl])
-
-  useEffect(() => {
     if (!open || !sandboxId) return
     const interval = window.setInterval(() => {
       void loadRecordings().catch(() => undefined)
@@ -252,61 +334,53 @@ export function SandboxDesktopPanel({
   }, [loadRecordings, open, sandboxId])
 
   const activeRecording = useMemo(
-    () => recordings.find(isActiveRecording) ?? null,
-    [recordings]
+    () => state.recordings.find(isActiveRecording) ?? null,
+    [state.recordings]
   )
-  const requestConnect = useCallback(() => {
-    if (!busy) {
-      setConnectRequested(true)
-    }
-  }, [busy])
-  const disconnect = useCallback(() => setConnectRequested(false), [])
+  const requestConnect = useCallback(() => dispatch({ type: "connect" }), [])
+  const disconnect = useCallback(() => dispatch({ type: "disconnect" }), [])
   const handleConnectionLost = useCallback(() => {
-    setConnectRequested(false)
+    dispatch({ type: "disconnect" })
     void refresh()
   }, [refresh])
 
   async function startDesktop() {
-    if (!sandboxId || busy) return
-    setBusy("start")
-    setError(null)
+    if (!sandboxId || state.busy) return
+    dispatch({ type: "start-start" })
     try {
       const next = await postJson<DesktopStatus>("/api/sandbox/desktop", {
         action: "start",
         sandboxId,
       })
-      setStatus(next)
-      setConnectRequested(Boolean(next.previewUrl))
-      setError(null)
+      dispatch({ type: "start-success", status: next })
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Desktop start failed.")
-    } finally {
-      setBusy(null)
+      dispatch({
+        type: "start-error",
+        error: err instanceof Error ? err.message : "Desktop start failed.",
+      })
     }
   }
 
   async function stopDesktop() {
-    if (!sandboxId || busy) return
-    setBusy("stop")
-    setError(null)
-    setConnectRequested(false)
+    if (!sandboxId || state.busy) return
+    dispatch({ type: "stop-start" })
     try {
       const next = await postJson<DesktopStatus>("/api/sandbox/desktop", {
         action: "stop",
         sandboxId,
       })
-      setStatus(next)
-      setConnectRequested(false)
-      setError(null)
+      dispatch({ type: "stop-success", status: next })
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Desktop stop failed.")
-    } finally {
-      setBusy(null)
+      dispatch({
+        type: "stop-error",
+        error: err instanceof Error ? err.message : "Desktop stop failed.",
+      })
     }
   }
 
   if (!open) return null
 
+  const { busy, connectRequested, error, recordings, status, view } = state
   const previewUrl = status?.previewUrl ?? null
   const hasActiveRecording = Boolean(activeRecording)
   const viewerActive = Boolean(previewUrl && connectRequested)
@@ -347,14 +421,14 @@ export function SandboxDesktopPanel({
         <ViewButton
           active={view === "desktop"}
           label="Desktop"
-          onClick={() => setView("desktop")}
+          onClick={() => dispatch({ type: "set-view", view: "desktop" })}
         />
         <div aria-hidden className="w-px self-stretch bg-border/60" />
         <ViewButton
           active={view === "recordings"}
           label="Recordings"
           count={recordings.length}
-          onClick={() => setView("recordings")}
+          onClick={() => dispatch({ type: "set-view", view: "recordings" })}
         />
       </div>
 
@@ -556,6 +630,7 @@ function NoVncDesktop({
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [message, setMessage] = useState("Connecting desktop...")
+  const onDisconnectedEvent = useEffectEvent(onDisconnected)
 
   useEffect(() => {
     let disposed = false
@@ -597,7 +672,7 @@ function NoVncDesktop({
           "clean" in event.detail &&
           event.detail.clean === true
         setMessage(clean ? "Desktop disconnected." : "Desktop connection lost.")
-        onDisconnected()
+        onDisconnectedEvent()
       })
       rfb.addEventListener("securityfailure", () => {
         if (!disposed) setMessage("Desktop security negotiation failed.")
@@ -623,7 +698,7 @@ function NoVncDesktop({
         // terminal disconnected state.
       }
     }
-  }, [onDisconnected, webSocketUrl])
+  }, [webSocketUrl])
 
   return (
     <div className="relative h-full w-full overflow-hidden bg-black">

@@ -16,6 +16,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   useCallback,
   useEffect,
+  useReducer,
   useRef,
   useState,
 } from "react"
@@ -26,7 +27,6 @@ import { Input } from "@/components/ui/input"
 import {
   killBrowserTerminalSession,
   registerTerminalCloser,
-  WARM_BROWSER_TERMINAL_EVENT,
 } from "@/components/sandbox-terminal-session"
 import { cn } from "@/lib/utils"
 
@@ -67,6 +67,18 @@ type TerminalDockState = {
   activeBySandbox: Record<string, string>
   sessionsBySandbox: Record<string, TerminalWindow[]>
 }
+
+type TerminalDockAction =
+  | {
+      type: "connect-sandbox"
+      createTerminal: (sandboxId: string) => TerminalWindow
+      sandboxId: string
+    }
+  | { type: "add"; sandboxId: string; terminal: TerminalWindow }
+  | { type: "close"; sandboxId: string; terminalId: string }
+  | { type: "rename"; label: string; sandboxId: string; terminalId: string }
+  | { type: "restart"; sandboxId: string; terminalId: string }
+  | { type: "select"; sandboxId: string; terminalId: string }
 
 type MountedTerminalState = Record<string, Record<string, true>>
 
@@ -215,14 +227,19 @@ function persistTerminalDock(dock: TerminalDockState) {
   if (typeof window === "undefined") return
 
   try {
-    const sessionsBySandbox = Object.fromEntries(
-      Object.entries(dock.sessionsBySandbox)
-        .map(([sandboxId, sessions]) => [
-          sandboxId,
-          sessions.map(({ id, label }) => ({ id, label })),
-        ])
-        .filter(([, sessions]) => sessions.length > 0)
-    )
+    const sessionsBySandbox: Record<
+      string,
+      Array<{ id: string; label: string }>
+    > = {}
+    for (const [sandboxId, sessions] of Object.entries(
+      dock.sessionsBySandbox
+    )) {
+      if (sessions.length === 0) continue
+      sessionsBySandbox[sandboxId] = sessions.map(({ id, label }) => ({
+        id,
+        label,
+      }))
+    }
 
     if (Object.keys(sessionsBySandbox).length === 0) {
       localStorage.removeItem(TERMINAL_DOCK_KEY)
@@ -238,6 +255,126 @@ function persistTerminalDock(dock: TerminalDockState) {
     )
   } catch {
     // Losing persisted dock metadata should not interrupt live terminal input.
+  }
+}
+
+function terminalDockReducer(
+  state: TerminalDockState,
+  action: TerminalDockAction
+): TerminalDockState {
+  switch (action.type) {
+    case "add":
+      return {
+        activeBySandbox: {
+          ...state.activeBySandbox,
+          [action.sandboxId]: action.terminal.id,
+        },
+        sessionsBySandbox: {
+          ...state.sessionsBySandbox,
+          [action.sandboxId]: [
+            ...(state.sessionsBySandbox[action.sandboxId] ?? []),
+            action.terminal,
+          ],
+        },
+      }
+    case "close": {
+      const currentSessions = state.sessionsBySandbox[action.sandboxId] ?? []
+      const removedIndex = currentSessions.findIndex(
+        (session) => session.id === action.terminalId
+      )
+      const nextSessions = currentSessions.filter(
+        (session) => session.id !== action.terminalId
+      )
+      const nextActiveId =
+        state.activeBySandbox[action.sandboxId] === action.terminalId
+          ? (nextSessions[Math.max(0, removedIndex - 1)] ?? nextSessions[0])?.id
+          : state.activeBySandbox[action.sandboxId]
+
+      return {
+        activeBySandbox: {
+          ...state.activeBySandbox,
+          ...(nextActiveId ? { [action.sandboxId]: nextActiveId } : {}),
+        },
+        sessionsBySandbox: {
+          ...state.sessionsBySandbox,
+          [action.sandboxId]: nextSessions,
+        },
+      }
+    }
+    case "connect-sandbox": {
+      const sessions = state.sessionsBySandbox[action.sandboxId] ?? []
+      if (sessions.length > 0) {
+        const activeId = state.activeBySandbox[action.sandboxId]
+        if (activeId && sessions.some((session) => session.id === activeId)) {
+          return state
+        }
+
+        return {
+          activeBySandbox: {
+            ...state.activeBySandbox,
+            [action.sandboxId]: sessions[0].id,
+          },
+          sessionsBySandbox: state.sessionsBySandbox,
+        }
+      }
+
+      const terminal = action.createTerminal(action.sandboxId)
+      return {
+        activeBySandbox: {
+          ...state.activeBySandbox,
+          [action.sandboxId]: terminal.id,
+        },
+        sessionsBySandbox: {
+          ...state.sessionsBySandbox,
+          [action.sandboxId]: [terminal],
+        },
+      }
+    }
+    case "rename": {
+      const currentSessions = state.sessionsBySandbox[action.sandboxId] ?? []
+      if (
+        !currentSessions.some(
+          (session) =>
+            session.id === action.terminalId && session.label !== action.label
+        )
+      ) {
+        return state
+      }
+
+      return {
+        activeBySandbox: state.activeBySandbox,
+        sessionsBySandbox: {
+          ...state.sessionsBySandbox,
+          [action.sandboxId]: currentSessions.map((session) =>
+            session.id === action.terminalId
+              ? { ...session, label: action.label }
+              : session
+          ),
+        },
+      }
+    }
+    case "restart": {
+      const currentSessions = state.sessionsBySandbox[action.sandboxId] ?? []
+      return {
+        activeBySandbox: state.activeBySandbox,
+        sessionsBySandbox: {
+          ...state.sessionsBySandbox,
+          [action.sandboxId]: currentSessions.map((session) =>
+            session.id === action.terminalId
+              ? { ...session, restartKey: session.restartKey + 1 }
+              : session
+          ),
+        },
+      }
+    }
+    case "select":
+      return {
+        activeBySandbox: {
+          ...state.activeBySandbox,
+          [action.sandboxId]: action.terminalId,
+        },
+        sessionsBySandbox: state.sessionsBySandbox,
+      }
   }
 }
 
@@ -271,6 +408,14 @@ function isEditableElement(element: Element | null) {
   )
 }
 
+function bytesFromBinary(binary: string) {
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i)
+  }
+  return bytes
+}
+
 export function SandboxTerminalPanel({
   open,
   sandboxId,
@@ -284,33 +429,45 @@ export function SandboxTerminalPanel({
   height: number
   onHeightChange: (height: number) => void
 }) {
-  const [startedSandboxId, setStartedSandboxId] = useState<string | null>(null)
-  const [dock, setDock] = useState<TerminalDockState>(loadPersistedTerminalDock)
+  const [dock, dispatchDock] = useReducer(
+    terminalDockReducer,
+    undefined,
+    loadPersistedTerminalDock
+  )
   const [sessionStates, setSessionStates] = useState<
     Record<string, TerminalSessionState>
   >({})
-  const [mountedBySandbox, setMountedBySandbox] =
-    useState<MountedTerminalState>({})
-  const [editingId, setEditingId] = useState<string | null>(null)
+  const mountedBySandboxRef = useRef<MountedTerminalState>({})
+  const [renaming, setRenaming] = useState<{
+    draft: string
+    terminalId: string
+  } | null>(null)
   const [menu, setMenu] = useState<{
     terminalId: string
     x: number
     y: number
   } | null>(null)
   const dragStartRef = useRef<{ h: number; y: number } | null>(null)
-  const nextTerminalNumberRef = useRef<Record<string, number>>(
-    terminalNumbersFromDock(dock)
-  )
+  const nextTerminalNumberRef = useRef<Record<string, number> | null>(null)
+  if (nextTerminalNumberRef.current === null) {
+    nextTerminalNumberRef.current = terminalNumbersFromDock(dock)
+  }
 
   const { resolvedTheme } = useTheme()
   const isDark = resolvedTheme !== "light"
   const palette = isDark ? darkPalette : lightPalette
+  const lastConnectedSandboxIdRef = useRef<string | null>(null)
+  if (open && sandboxId) lastConnectedSandboxIdRef.current = sandboxId
+  else if (!sandboxId) lastConnectedSandboxIdRef.current = null
   const connectedSandboxId =
-    startedSandboxId === sandboxId ? startedSandboxId : open ? sandboxId : null
+    sandboxId && (open || lastConnectedSandboxIdRef.current === sandboxId)
+      ? sandboxId
+      : null
 
   const createTerminalWindow = useCallback((targetSandboxId: string) => {
-    const nextNumber = (nextTerminalNumberRef.current[targetSandboxId] ?? 0) + 1
-    nextTerminalNumberRef.current[targetSandboxId] = nextNumber
+    const nextTerminalNumber = nextTerminalNumberRef.current!
+    const nextNumber = (nextTerminalNumber[targetSandboxId] ?? 0) + 1
+    nextTerminalNumber[targetSandboxId] = nextNumber
 
     return {
       id: createTerminalId(),
@@ -320,85 +477,16 @@ export function SandboxTerminalPanel({
   }, [])
 
   useEffect(() => {
-    if (!sandboxId) {
-      setStartedSandboxId(null)
-      return
-    }
-
-    if (open && startedSandboxId !== sandboxId) {
-      setStartedSandboxId(sandboxId)
-    }
-  }, [open, sandboxId, startedSandboxId])
-
-  useEffect(() => {
-    if (!sandboxId || startedSandboxId === sandboxId) return
-
-    const timeout = window.setTimeout(() => {
-      setStartedSandboxId((current) =>
-        current === sandboxId ? current : sandboxId
-      )
-    }, 250)
-
-    return () => window.clearTimeout(timeout)
-  }, [sandboxId, startedSandboxId])
-
-  useEffect(() => {
-    if (!sandboxId) return
-
-    function handleWarmTerminal(event: Event) {
-      const warmSandboxId = (event as CustomEvent<{ sandboxId?: unknown }>)
-        .detail?.sandboxId
-      if (warmSandboxId !== sandboxId) return
-
-      setStartedSandboxId((current) =>
-        current === sandboxId ? current : sandboxId
-      )
-    }
-
-    window.addEventListener(WARM_BROWSER_TERMINAL_EVENT, handleWarmTerminal)
-    return () => {
-      window.removeEventListener(
-        WARM_BROWSER_TERMINAL_EVENT,
-        handleWarmTerminal
-      )
-    }
-  }, [sandboxId])
-
-  useEffect(() => {
     persistTerminalDock(dock)
   }, [dock])
 
   useEffect(() => {
     if (!connectedSandboxId) return
 
-    setDock((current) => {
-      const sessions = current.sessionsBySandbox[connectedSandboxId] ?? []
-      if (sessions.length > 0) {
-        const activeId = current.activeBySandbox[connectedSandboxId]
-        if (activeId && sessions.some((session) => session.id === activeId)) {
-          return current
-        }
-
-        return {
-          activeBySandbox: {
-            ...current.activeBySandbox,
-            [connectedSandboxId]: sessions[0].id,
-          },
-          sessionsBySandbox: current.sessionsBySandbox,
-        }
-      }
-
-      const terminal = createTerminalWindow(connectedSandboxId)
-      return {
-        activeBySandbox: {
-          ...current.activeBySandbox,
-          [connectedSandboxId]: terminal.id,
-        },
-        sessionsBySandbox: {
-          ...current.sessionsBySandbox,
-          [connectedSandboxId]: [terminal],
-        },
-      }
+    dispatchDock({
+      type: "connect-sandbox",
+      createTerminal: createTerminalWindow,
+      sandboxId: connectedSandboxId,
     })
   }, [connectedSandboxId, createTerminalWindow])
 
@@ -431,81 +519,45 @@ export function SandboxTerminalPanel({
   const activeState = activeSession
     ? sessionStates[activeSession.id]
     : undefined
+  if (connectedSandboxId && activeSession) {
+    const currentMounted = mountedBySandboxRef.current[connectedSandboxId]
+    if (!currentMounted?.[activeSession.id]) {
+      mountedBySandboxRef.current = {
+        ...mountedBySandboxRef.current,
+        [connectedSandboxId]: {
+          ...currentMounted,
+          [activeSession.id]: true,
+        },
+      }
+    }
+  }
   const mountedSessions = connectedSandboxId
-    ? (mountedBySandbox[connectedSandboxId] ?? {})
+    ? (mountedBySandboxRef.current[connectedSandboxId] ?? {})
     : {}
   const renderSessions = sessions.filter(
     (session) => mountedSessions[session.id] || session.id === activeSession?.id
   )
 
-  useEffect(() => {
-    if (!connectedSandboxId || !activeSession) return
-
-    setMountedBySandbox((current) => {
-      if (current[connectedSandboxId]?.[activeSession.id]) return current
-
-      return {
-        ...current,
-        [connectedSandboxId]: {
-          ...current[connectedSandboxId],
-          [activeSession.id]: true,
-        },
-      }
-    })
-  }, [activeSession, connectedSandboxId])
-
   function addTerminalWindow() {
     if (!connectedSandboxId) return
     const terminal = createTerminalWindow(connectedSandboxId)
-    setDock((current) => ({
-      activeBySandbox: {
-        ...current.activeBySandbox,
-        [connectedSandboxId]: terminal.id,
-      },
-      sessionsBySandbox: {
-        ...current.sessionsBySandbox,
-        [connectedSandboxId]: [
-          ...(current.sessionsBySandbox[connectedSandboxId] ?? []),
-          terminal,
-        ],
-      },
-    }))
+    dispatchDock({ type: "add", sandboxId: connectedSandboxId, terminal })
   }
 
   function selectTerminalWindow(terminalId: string) {
     if (!connectedSandboxId) return
-    setDock((current) => ({
-      activeBySandbox: {
-        ...current.activeBySandbox,
-        [connectedSandboxId]: terminalId,
-      },
-      sessionsBySandbox: current.sessionsBySandbox,
-    }))
+    dispatchDock({ type: "select", sandboxId: connectedSandboxId, terminalId })
   }
 
   function renameTerminalWindow(terminalId: string, nextLabel: string) {
     if (!connectedSandboxId) return
     const trimmed = nextLabel.trim()
     if (!trimmed) return
-    setDock((current) => {
-      const currentSessions =
-        current.sessionsBySandbox[connectedSandboxId] ?? []
-      if (
-        !currentSessions.some(
-          (session) => session.id === terminalId && session.label !== trimmed
-        )
-      ) {
-        return current
-      }
-      return {
-        activeBySandbox: current.activeBySandbox,
-        sessionsBySandbox: {
-          ...current.sessionsBySandbox,
-          [connectedSandboxId]: currentSessions.map((session) =>
-            session.id === terminalId ? { ...session, label: trimmed } : session
-          ),
-        },
-      }
+    dispatchDock({
+      type: "rename",
+      label: trimmed,
+      sandboxId: connectedSandboxId,
+      terminalId,
     })
   }
 
@@ -517,42 +569,17 @@ export function SandboxTerminalPanel({
       delete next[terminalId]
       return next
     })
-    setMountedBySandbox((current) => {
-      const currentSessions = current[connectedSandboxId]
-      if (!currentSessions?.[terminalId]) return current
-
-      const { [terminalId]: _removed, ...nextSessions } = currentSessions
+    const currentMountedSessions =
+      mountedBySandboxRef.current[connectedSandboxId]
+    if (currentMountedSessions?.[terminalId]) {
+      const { [terminalId]: _removed, ...nextSessions } = currentMountedSessions
       void _removed
-      return {
-        ...current,
+      mountedBySandboxRef.current = {
+        ...mountedBySandboxRef.current,
         [connectedSandboxId]: nextSessions,
       }
-    })
-    setDock((current) => {
-      const currentSessions =
-        current.sessionsBySandbox[connectedSandboxId] ?? []
-      const removedIndex = currentSessions.findIndex(
-        (session) => session.id === terminalId
-      )
-      const nextSessions = currentSessions.filter(
-        (session) => session.id !== terminalId
-      )
-      const nextActiveId =
-        current.activeBySandbox[connectedSandboxId] === terminalId
-          ? (nextSessions[Math.max(0, removedIndex - 1)] ?? nextSessions[0])?.id
-          : current.activeBySandbox[connectedSandboxId]
-
-      return {
-        activeBySandbox: {
-          ...current.activeBySandbox,
-          ...(nextActiveId ? { [connectedSandboxId]: nextActiveId } : {}),
-        },
-        sessionsBySandbox: {
-          ...current.sessionsBySandbox,
-          [connectedSandboxId]: nextSessions,
-        },
-      }
-    })
+    }
+    dispatchDock({ type: "close", sandboxId: connectedSandboxId, terminalId })
   }
 
   function reconnectActiveTerminal() {
@@ -567,20 +594,7 @@ export function SandboxTerminalPanel({
       await killBrowserTerminalSession(sandboxId, terminalId, {
         forget: false,
       })
-      setDock((current) => {
-        const currentSessions = current.sessionsBySandbox[sandboxId] ?? []
-        return {
-          activeBySandbox: current.activeBySandbox,
-          sessionsBySandbox: {
-            ...current.sessionsBySandbox,
-            [sandboxId]: currentSessions.map((session) =>
-              session.id === terminalId
-                ? { ...session, restartKey: session.restartKey + 1 }
-                : session
-            ),
-          },
-        }
-      })
+      dispatchDock({ type: "restart", sandboxId, terminalId })
     })()
   }
 
@@ -649,16 +663,26 @@ export function SandboxTerminalPanel({
               key={session.id}
               session={session}
               active={session.id === activeSession?.id}
-              editing={editingId === session.id}
+              editing={renaming?.terminalId === session.id}
+              renameDraft={
+                renaming?.terminalId === session.id ? renaming.draft : ""
+              }
               onSelect={() => selectTerminalWindow(session.id)}
               onStartRename={() => {
                 setMenu(null)
-                setEditingId(session.id)
+                setRenaming({ draft: session.label, terminalId: session.id })
               }}
-              onCancelRename={() => setEditingId(null)}
+              onRenameDraftChange={(draft) =>
+                setRenaming((current) =>
+                  current?.terminalId === session.id
+                    ? { ...current, draft }
+                    : current
+                )
+              }
+              onCancelRename={() => setRenaming(null)}
               onCommitRename={(label) => {
                 renameTerminalWindow(session.id, label)
-                setEditingId(null)
+                setRenaming(null)
               }}
               onContextMenu={(event) => {
                 event.preventDefault()
@@ -750,7 +774,14 @@ export function SandboxTerminalPanel({
           items={[
             {
               label: "Rename",
-              onSelect: () => setEditingId(menu.terminalId),
+              onSelect: () => {
+                const session = sessions.find(
+                  (candidate) => candidate.id === menu.terminalId
+                )
+                if (session) {
+                  setRenaming({ draft: session.label, terminalId: session.id })
+                }
+              },
             },
             {
               label: "Delete",
@@ -768,34 +799,30 @@ export function SandboxTerminalPanel({
 function TerminalTab({
   active,
   editing,
+  renameDraft,
   session,
   onSelect,
   onStartRename,
+  onRenameDraftChange,
   onCancelRename,
   onCommitRename,
   onContextMenu,
 }: {
   active: boolean
   editing: boolean
+  renameDraft: string
   session: TerminalWindow
   onSelect: () => void
   onStartRename: () => void
+  onRenameDraftChange: (draft: string) => void
   onCancelRename: () => void
   onCommitRename: (label: string) => void
   onContextMenu: (event: ReactMouseEvent<HTMLElement>) => void
 }) {
-  const [draft, setDraft] = useState(session.label)
-  const inputRef = useRef<HTMLInputElement | null>(null)
-
-  useEffect(() => {
-    if (!editing) return
-    setDraft(session.label)
-    const frame = requestAnimationFrame(() => {
-      inputRef.current?.focus()
-      inputRef.current?.select()
-    })
-    return () => cancelAnimationFrame(frame)
-  }, [editing, session.label])
+  const setRenameInputRef = useCallback((node: HTMLInputElement | null) => {
+    node?.focus()
+    node?.select()
+  }, [])
 
   const containerClass = cn(
     "flex h-7 min-w-0 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-xs transition-colors",
@@ -809,11 +836,11 @@ function TerminalTab({
       <div onContextMenu={onContextMenu} className={containerClass}>
         <SquareTerminal className="size-3.5 shrink-0" />
         <Input
-          ref={inputRef}
+          ref={setRenameInputRef}
           variant="bare"
           aria-label={`Rename ${session.label}`}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          value={renameDraft}
+          onChange={(e) => onRenameDraftChange(e.target.value)}
           onBlur={(e) => onCommitRename(e.currentTarget.value)}
           onFocus={(e) => e.currentTarget.select()}
           onClick={(e) => e.stopPropagation()}
@@ -1151,14 +1178,6 @@ function SandboxTerminalPane({
     // palette is applied via a separate effect; we intentionally don't recreate
     // the terminal when the theme changes.
   }, [onStatusChange, sandboxId, session.id, session.restartKey])
-
-  function bytesFromBinary(binary: string) {
-    const bytes = new Uint8Array(binary.length)
-    for (let i = 0; i < binary.length; i += 1) {
-      bytes[i] = binary.charCodeAt(i)
-    }
-    return bytes
-  }
 
   function shouldFocusTerminal() {
     if (!activeRef.current) return false

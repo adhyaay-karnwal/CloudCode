@@ -1,4 +1,4 @@
-export const DEFAULT_CODEX_PROFILE = "default"
+const DEFAULT_CODEX_PROFILE = "default"
 
 export type CodexAuthAccountStatus = {
   accountEmail?: string

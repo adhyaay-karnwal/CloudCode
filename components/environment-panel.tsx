@@ -14,8 +14,8 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useReducer,
   useRef,
-  useState,
 } from "react"
 
 import { Button } from "@/components/ui/button"
@@ -33,6 +33,191 @@ import { cn } from "@/lib/utils"
 type EnvVar = { name: string; value: string }
 type LocalRow = EnvVar & { id: string }
 type Status = "error" | "idle" | "loading" | "saved" | "saving"
+
+type EnvironmentPanelState = {
+  adding: boolean
+  draftName: string
+  draftValue: string
+  error: string | null
+  original: EnvVar[]
+  pasteText: string
+  pasting: boolean
+  revealed: Set<string>
+  rows: LocalRow[]
+  status: Status
+}
+
+type EnvironmentPanelAction =
+  | { type: "apply-entries"; entries: EnvVar[]; status?: Status }
+  | { type: "cancel-draft" }
+  | { type: "cancel-pasting" }
+  | { type: "draft-name"; value: string }
+  | { type: "draft-value"; value: string }
+  | { type: "import-pasted"; vars: EnvVar[] }
+  | { type: "load-error"; error: string; status: Status }
+  | { type: "paste-text"; value: string }
+  | { type: "remove-row"; id: string }
+  | { type: "save-error"; error: string }
+  | { type: "save-start" }
+  | { type: "saved-idle" }
+  | { type: "set-error"; error: string; status?: Status }
+  | { type: "set-status"; status: Status }
+  | { type: "start-adding" }
+  | { type: "start-pasting" }
+  | { type: "submit-draft"; id: string; name: string; value: string }
+  | { type: "toggle-reveal"; id: string }
+  | { type: "toggle-reveal-all" }
+  | { type: "update-row"; id: string; patch: Partial<EnvVar> }
+
+function createEnvironmentPanelState({
+  initialEntries,
+  sandboxId,
+}: {
+  initialEntries?: EnvVar[]
+  sandboxId: string | null
+}): EnvironmentPanelState {
+  const entries = initialEntries ? cloneEntries(initialEntries) : []
+  return {
+    adding: false,
+    draftName: "",
+    draftValue: "",
+    error: null,
+    original: entries,
+    pasteText: "",
+    pasting: false,
+    revealed: new Set(),
+    rows: rowsFromEntries(entries),
+    status: sandboxId && !initialEntries ? "loading" : "idle",
+  }
+}
+
+function environmentPanelReducer(
+  state: EnvironmentPanelState,
+  action: EnvironmentPanelAction
+): EnvironmentPanelState {
+  switch (action.type) {
+    case "apply-entries": {
+      const next = cloneEntries(action.entries)
+      return {
+        ...state,
+        adding: false,
+        draftName: "",
+        draftValue: "",
+        error: null,
+        original: next,
+        pasteText: "",
+        pasting: false,
+        revealed: new Set(),
+        rows: rowsFromEntries(next),
+        status: action.status ?? state.status,
+      }
+    }
+    case "cancel-draft":
+      return {
+        ...state,
+        adding: false,
+        draftName: "",
+        draftValue: "",
+        error: null,
+      }
+    case "cancel-pasting":
+      return { ...state, error: null, pasteText: "", pasting: false }
+    case "draft-name":
+      return { ...state, draftName: action.value }
+    case "draft-value":
+      return { ...state, draftValue: action.value }
+    case "import-pasted": {
+      const rows = [...state.rows]
+      const indexByName = new Map(
+        rows.map((row, index) => [row.name.trim(), index])
+      )
+
+      for (const entry of action.vars) {
+        const existingIndex = indexByName.get(entry.name)
+        if (existingIndex !== undefined) {
+          rows[existingIndex] = { ...rows[existingIndex], value: entry.value }
+        } else {
+          rows.push({ id: makeId(), name: entry.name, value: entry.value })
+          indexByName.set(entry.name, rows.length - 1)
+        }
+      }
+
+      return { ...state, error: null, pasteText: "", pasting: false, rows }
+    }
+    case "load-error":
+      return { ...state, error: action.error, status: action.status }
+    case "paste-text":
+      return { ...state, pasteText: action.value }
+    case "remove-row": {
+      const revealed = new Set(state.revealed)
+      revealed.delete(action.id)
+      return {
+        ...state,
+        revealed,
+        rows: state.rows.filter((row) => row.id !== action.id),
+      }
+    }
+    case "save-error":
+      return { ...state, error: action.error, status: "error" }
+    case "save-start":
+      return { ...state, error: null, status: "saving" }
+    case "saved-idle":
+      return { ...state, status: "idle" }
+    case "set-error":
+      return {
+        ...state,
+        error: action.error,
+        status: action.status ?? state.status,
+      }
+    case "set-status":
+      return { ...state, status: action.status }
+    case "start-adding":
+      return { ...state, adding: true, error: null }
+    case "start-pasting":
+      return { ...state, error: null, pasting: true }
+    case "submit-draft": {
+      const rows = [
+        ...state.rows,
+        { id: action.id, name: action.name, value: action.value },
+      ]
+      const revealed = new Set(state.revealed)
+      if (action.value) revealed.add(action.id)
+      return {
+        ...state,
+        adding: false,
+        draftName: "",
+        draftValue: "",
+        error: null,
+        revealed,
+        rows,
+      }
+    }
+    case "toggle-reveal": {
+      const revealed = new Set(state.revealed)
+      if (revealed.has(action.id)) revealed.delete(action.id)
+      else revealed.add(action.id)
+      return { ...state, revealed }
+    }
+    case "toggle-reveal-all": {
+      const allRevealed =
+        state.rows.length > 0 &&
+        state.rows.every((row) => state.revealed.has(row.id))
+      return {
+        ...state,
+        revealed: allRevealed
+          ? new Set()
+          : new Set(state.rows.map((row) => row.id)),
+      }
+    }
+    case "update-row":
+      return {
+        ...state,
+        rows: state.rows.map((row) =>
+          row.id === action.id ? { ...row, ...action.patch } : row
+        ),
+      }
+  }
+}
 
 const envCache = new Map<string, EnvVar[]>()
 
@@ -106,19 +291,25 @@ async function fetchEntries(sandboxId: string, signal?: AbortSignal) {
   return data.entries ?? []
 }
 
-export function EnvironmentPanel({ sandboxId }: { sandboxId: string | null }) {
-  const [rows, setRows] = useState<LocalRow[]>([])
-  const [original, setOriginal] = useState<EnvVar[]>([])
-  const [status, setStatus] = useState<Status>("idle")
-  const [error, setError] = useState<string | null>(null)
-  const [revealed, setRevealed] = useState<Set<string>>(new Set())
-  const [adding, setAdding] = useState(false)
-  const [draftName, setDraftName] = useState("")
-  const [draftValue, setDraftValue] = useState("")
-  const [pasting, setPasting] = useState(false)
-  const [pasteText, setPasteText] = useState("")
-  const addNameRef = useRef<HTMLInputElement | null>(null)
-  const pasteRef = useRef<HTMLTextAreaElement | null>(null)
+function useEnvironmentPanelController(sandboxId: string | null) {
+  const initialEntries = sandboxId ? envCache.get(sandboxId) : undefined
+  const [state, dispatch] = useReducer(
+    environmentPanelReducer,
+    { initialEntries, sandboxId },
+    createEnvironmentPanelState
+  )
+  const {
+    adding,
+    draftName,
+    draftValue,
+    error,
+    original,
+    pasteText,
+    pasting,
+    revealed,
+    rows,
+    status,
+  } = state
   const dirtyRef = useRef(false)
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -128,120 +319,84 @@ export function EnvironmentPanel({ sandboxId }: { sandboxId: string | null }) {
     () => dedupeEnvVars(pasteParsed.vars),
     [pasteParsed]
   )
+  const setPasteTextareaRef = useCallback(
+    (node: HTMLTextAreaElement | null) => {
+      node?.focus()
+    },
+    []
+  )
+  const updatePasteText = useCallback((value: string) => {
+    dispatch({ type: "paste-text", value })
+  }, [])
 
   useEffect(() => {
     dirtyRef.current = isDirty
   }, [isDirty])
 
-  const applyEntries = useCallback((entries: EnvVar[]) => {
-    const next = cloneEntries(entries)
-    setOriginal(next)
-    setRows(rowsFromEntries(next))
-    setRevealed(new Set())
-    setAdding(false)
-    setDraftName("")
-    setDraftValue("")
-    setPasting(false)
-    setPasteText("")
+  const clearSavedTimer = useCallback(() => {
+    if (!savedTimer.current) return
+    clearTimeout(savedTimer.current)
+    savedTimer.current = null
   }, [])
 
   useEffect(() => {
-    if (!sandboxId) {
-      setRows([])
-      setOriginal([])
-      setStatus("idle")
-      setError(null)
-      return
-    }
+    if (!sandboxId) return
 
     const controller = new AbortController()
-    const cached = envCache.get(sandboxId)
     dirtyRef.current = false
-
-    if (cached) {
-      applyEntries(cached)
-    } else {
-      setRows([])
-      setOriginal([])
-    }
-
-    setStatus("loading")
-    setError(null)
 
     void fetchEntries(sandboxId, controller.signal)
       .then((entries) => {
         envCache.set(sandboxId, cloneEntries(entries))
         if (!dirtyRef.current) {
-          applyEntries(entries)
+          dispatch({ type: "apply-entries", entries, status: "idle" })
+        } else {
+          dispatch({ type: "set-status", status: "idle" })
         }
-        setStatus("idle")
       })
       .catch((err) => {
         if (controller.signal.aborted) return
-        setStatus(cached ? "idle" : "error")
-        setError(err instanceof Error ? err.message : "Failed to load")
+        dispatch({
+          type: "load-error",
+          error: err instanceof Error ? err.message : "Failed to load",
+          status: initialEntries ? "idle" : "error",
+        })
       })
 
     return () => controller.abort()
-  }, [applyEntries, sandboxId])
+  }, [initialEntries, sandboxId])
 
-  useEffect(() => {
-    if (adding) addNameRef.current?.focus()
-  }, [adding])
-
-  useEffect(() => {
-    if (pasting) pasteRef.current?.focus()
-  }, [pasting])
-
-  useEffect(() => {
-    return () => {
-      if (savedTimer.current) clearTimeout(savedTimer.current)
-    }
-  }, [])
+  useEffect(() => clearSavedTimer, [clearSavedTimer])
 
   const updateRow = useCallback((id: string, patch: Partial<EnvVar>) => {
     dirtyRef.current = true
-    setRows((prev) =>
-      prev.map((row) => (row.id === id ? { ...row, ...patch } : row))
-    )
+    dispatch({ type: "update-row", id, patch })
   }, [])
 
   const toggleReveal = useCallback((id: string) => {
-    setRevealed((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
+    dispatch({ type: "toggle-reveal", id })
   }, [])
 
   const allRevealed =
     rows.length > 0 && rows.every((row) => revealed.has(row.id))
 
   const toggleRevealAll = useCallback(() => {
-    setRevealed((prev) => {
-      if (rows.length > 0 && rows.every((row) => prev.has(row.id))) {
-        return new Set()
-      }
-
-      return new Set(rows.map((row) => row.id))
-    })
-  }, [rows])
+    dispatch({ type: "toggle-reveal-all" })
+  }, [])
 
   const startAdding = useCallback(() => {
     dirtyRef.current = true
-    setAdding(true)
-    setError(null)
+    dispatch({ type: "start-adding" })
   }, [])
 
   const updateDraftName = useCallback((value: string) => {
     dirtyRef.current = true
-    setDraftName(value)
+    dispatch({ type: "draft-name", value })
   }, [])
 
   const updateDraftValue = useCallback((value: string) => {
     dirtyRef.current = true
-    setDraftValue(value)
+    dispatch({ type: "draft-value", value })
   }, [])
 
   const submitDraft = useCallback(() => {
@@ -250,73 +405,37 @@ export function EnvironmentPanel({ sandboxId }: { sandboxId: string | null }) {
     if (!name) return
 
     if (!ENV_NAME_PATTERN.test(name)) {
-      setError(`Invalid name "${name}"`)
+      dispatch({ type: "set-error", error: `Invalid name "${name}"` })
       return
     }
 
     if (rows.some((row) => row.name.trim() === name)) {
-      setError(`Duplicate variable "${name}"`)
+      dispatch({ type: "set-error", error: `Duplicate variable "${name}"` })
       return
     }
 
     const id = makeId()
     dirtyRef.current = true
-    setRows((prev) => [...prev, { id, name, value: draftValue }])
-    setRevealed((prev) => {
-      if (!draftValue) return prev
-      const next = new Set(prev)
-      next.add(id)
-      return next
-    })
-    setDraftName("")
-    setDraftValue("")
-    setAdding(false)
-    setError(null)
+    dispatch({ type: "submit-draft", id, name, value: draftValue })
   }, [draftName, draftValue, rows])
 
   const cancelDraft = useCallback(() => {
-    setDraftName("")
-    setDraftValue("")
-    setAdding(false)
-    setError(null)
+    dispatch({ type: "cancel-draft" })
   }, [])
 
   const startPasting = useCallback(() => {
-    setPasting(true)
-    setError(null)
+    dispatch({ type: "start-pasting" })
   }, [])
 
   const cancelPasting = useCallback(() => {
-    setPasting(false)
-    setPasteText("")
-    setError(null)
+    dispatch({ type: "cancel-pasting" })
   }, [])
 
   const importPasted = useCallback(() => {
     if (pasteVars.length === 0) return
 
     dirtyRef.current = true
-    setRows((prev) => {
-      const next = [...prev]
-      const indexByName = new Map(
-        next.map((row, index) => [row.name.trim(), index])
-      )
-
-      for (const entry of pasteVars) {
-        const existingIndex = indexByName.get(entry.name)
-        if (existingIndex !== undefined) {
-          next[existingIndex] = { ...next[existingIndex], value: entry.value }
-        } else {
-          next.push({ id: makeId(), name: entry.name, value: entry.value })
-          indexByName.set(entry.name, next.length - 1)
-        }
-      }
-
-      return next
-    })
-    setPasteText("")
-    setPasting(false)
-    setError(null)
+    dispatch({ type: "import-pasted", vars: pasteVars })
   }, [pasteVars])
 
   const persistEntries = useCallback(
@@ -326,13 +445,11 @@ export function EnvironmentPanel({ sandboxId }: { sandboxId: string | null }) {
       const validationError = validateEntries(allEntries)
 
       if (validationError) {
-        setError(validationError)
-        setStatus("error")
+        dispatch({ type: "set-error", error: validationError, status: "error" })
         return false
       }
 
-      setStatus("saving")
-      setError(null)
+      dispatch({ type: "save-start" })
 
       try {
         const res = await fetch("/api/sandbox/env", {
@@ -354,19 +471,23 @@ export function EnvironmentPanel({ sandboxId }: { sandboxId: string | null }) {
 
         const next = cloneEntries(data.entries ?? allEntries)
         envCache.set(sandboxId, next)
-        applyEntries(next)
-        setStatus("saved")
+        dispatch({ type: "apply-entries", entries: next, status: "saved" })
 
-        if (savedTimer.current) clearTimeout(savedTimer.current)
-        savedTimer.current = setTimeout(() => setStatus("idle"), 1500)
+        clearSavedTimer()
+        savedTimer.current = setTimeout(
+          () => dispatch({ type: "saved-idle" }),
+          1500
+        )
         return true
       } catch (err) {
-        setStatus("error")
-        setError(err instanceof Error ? err.message : "Failed to save")
+        dispatch({
+          type: "save-error",
+          error: err instanceof Error ? err.message : "Failed to save",
+        })
         return false
       }
     },
-    [applyEntries, sandboxId]
+    [clearSavedTimer, sandboxId]
   )
 
   const removeRow = useCallback(
@@ -375,13 +496,7 @@ export function EnvironmentPanel({ sandboxId }: { sandboxId: string | null }) {
 
       const nextRows = rows.filter((row) => row.id !== id)
       dirtyRef.current = true
-      setRows(nextRows)
-      setRevealed((prev) => {
-        if (!prev.has(id)) return prev
-        const next = new Set(prev)
-        next.delete(id)
-        return next
-      })
+      dispatch({ type: "remove-row", id })
 
       void persistEntries(entriesFromRows(nextRows))
     },
@@ -400,13 +515,90 @@ export function EnvironmentPanel({ sandboxId }: { sandboxId: string | null }) {
     const validationError = validateEntries(allEntries)
 
     if (validationError) {
-      setError(validationError)
-      setStatus("error")
+      dispatch({ type: "set-error", error: validationError, status: "error" })
       return
     }
 
     await persistEntries(allEntries)
   }, [adding, draftName, draftValue, persistEntries, rows, sandboxId, status])
+
+  const isLoadingInitial = status === "loading" && rows.length === 0
+  const isEmpty = rows.length === 0 && !adding && !pasting && !isLoadingInitial
+  const showRevealAll = rows.length > 0
+  const dirty = isDirty || adding
+  const saving = status === "saving"
+
+  return {
+    adding,
+    allRevealed,
+    cancelDraft,
+    cancelPasting,
+    dirty,
+    draftName,
+    draftValue,
+    error,
+    importPasted,
+    isEmpty,
+    isLoadingInitial,
+    pasteParsed,
+    pasteText,
+    pasteVars,
+    pasting,
+    removeRow,
+    revealed,
+    rows,
+    save,
+    saving,
+    setPasteTextareaRef,
+    showRevealAll,
+    startAdding,
+    startPasting,
+    status,
+    submitDraft,
+    toggleReveal,
+    toggleRevealAll,
+    updateDraftName,
+    updateDraftValue,
+    updatePasteText,
+    updateRow,
+  }
+}
+
+export function EnvironmentPanel({ sandboxId }: { sandboxId: string | null }) {
+  const {
+    adding,
+    allRevealed,
+    cancelDraft,
+    cancelPasting,
+    dirty,
+    draftName,
+    draftValue,
+    error,
+    importPasted,
+    isEmpty,
+    isLoadingInitial,
+    pasteParsed,
+    pasteText,
+    pasteVars,
+    pasting,
+    removeRow,
+    revealed,
+    rows,
+    save,
+    saving,
+    setPasteTextareaRef,
+    showRevealAll,
+    startAdding,
+    startPasting,
+    status,
+    submitDraft,
+    toggleReveal,
+    toggleRevealAll,
+    updateDraftName,
+    updateDraftValue,
+    updatePasteText,
+    updateRow,
+  } = useEnvironmentPanelController(sandboxId)
 
   if (!sandboxId) {
     return (
@@ -415,13 +607,6 @@ export function EnvironmentPanel({ sandboxId }: { sandboxId: string | null }) {
       </div>
     )
   }
-
-  const isLoadingInitial = status === "loading" && rows.length === 0
-  const isEmpty = rows.length === 0 && !adding && !pasting && !isLoadingInitial
-  const showRevealAll = rows.length > 0
-
-  const dirty = isDirty || adding
-  const saving = status === "saving"
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-sidebar">
@@ -477,11 +662,11 @@ export function EnvironmentPanel({ sandboxId }: { sandboxId: string | null }) {
         {pasting ? (
           <div className={cn("mb-3 overflow-hidden", cardSurfaceClass)}>
             <Textarea
-              ref={pasteRef}
+              ref={setPasteTextareaRef}
               variant="bare"
               aria-label="Paste .env file contents"
               className="block max-h-72 min-h-32 resize-y px-4 py-3 text-[13px] leading-5 text-foreground"
-              onChange={(event) => setPasteText(event.target.value)}
+              onChange={(event) => updatePasteText(event.target.value)}
               placeholder={
                 "# Paste your .env file\nAPI_KEY=sk-...\nDATABASE_URL=postgres://..."
               }
@@ -549,7 +734,6 @@ export function EnvironmentPanel({ sandboxId }: { sandboxId: string | null }) {
               {adding ? (
                 <DraftRow
                   name={draftName}
-                  nameRef={addNameRef}
                   onCancel={cancelDraft}
                   onChangeName={updateDraftName}
                   onChangeValue={updateDraftValue}
@@ -695,7 +879,6 @@ function EnvRow({
 
 function DraftRow({
   name,
-  nameRef,
   value,
   onCancel,
   onChangeName,
@@ -703,18 +886,21 @@ function DraftRow({
   onSubmit,
 }: {
   name: string
-  nameRef: React.RefObject<HTMLInputElement | null>
   value: string
   onCancel: () => void
   onChangeName: (value: string) => void
   onChangeValue: (value: string) => void
   onSubmit: () => void
 }) {
+  const setNameInputRef = useCallback((node: HTMLInputElement | null) => {
+    node?.focus()
+  }, [])
+
   return (
     <li className="flex items-center gap-3 border-b border-border/50 bg-muted/30 px-4 py-3 last:border-b-0">
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <Input
-          ref={nameRef}
+          ref={setNameInputRef}
           variant="bare"
           aria-label="Variable name"
           autoCapitalize="off"

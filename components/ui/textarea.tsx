@@ -32,4 +32,4 @@ function Textarea({ className, variant, ...props }: TextareaProps) {
   )
 }
 
-export { Textarea, textareaVariants }
+export { Textarea }

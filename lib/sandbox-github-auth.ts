@@ -155,7 +155,7 @@ async function currentRepoGitHubRemote({
   return gitHubRemoteUrl(result.stdout.trim())
 }
 
-export async function cleanupSandboxGitHubAuth({
+async function cleanupSandboxGitHubAuth({
   installGlobal,
   paths,
   sandbox,

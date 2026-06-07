@@ -11,6 +11,7 @@ import {
   Type,
   X,
 } from "lucide-react"
+import NextImage from "next/image"
 import {
   type ClipboardEvent as ReactClipboardEvent,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -19,11 +20,12 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useReducer,
   useRef,
   useState,
 } from "react"
 
-import { formatCodeLanguage } from "@/components/code-block"
+import { formatCodeLanguage } from "@/components/code-language"
 import { InlineMarkdown } from "@/components/inline-markdown"
 import { Checkbox } from "@/components/ui/checkbox"
 import { IconButton } from "@/components/ui/icon-button"
@@ -192,40 +194,70 @@ const TOOLS: { type: BlockType; icon: LucideIcon; label: string }[] = [
   { type: "todo", icon: ListTodo, label: "To-do list" },
 ]
 
-export function MarkdownEditor({
-  value,
-  onChange,
-  onBlur,
-  onUploadImage,
-  placeholder = "Write…",
-  ariaLabel = "Editor",
-  enableImages = false,
-  toolbarPlacement = "bottom",
-  toolbarClassName,
-  toolbarTrailing,
-  className,
-  contentClassName = "max-h-[45vh] min-h-36",
-}: {
-  value: string
-  onChange: (markdown: string) => void
-  onBlur?: () => void
-  onUploadImage?: (file: File) => Promise<string>
-  placeholder?: string
+type MarkdownEditorState = {
+  blocks: Block[]
+  focusedId: string | null
+}
+
+type MarkdownEditorAction =
+  | { type: "external-blocks"; blocks: Block[] }
+  | { type: "focus"; id: string | null }
+  | { type: "set-blocks"; blocks: Block[] }
+
+type MarkdownEditorProps = {
   ariaLabel?: string
-  enableImages?: boolean
-  toolbarPlacement?: "top" | "bottom"
-  toolbarClassName?: string
-  toolbarTrailing?: ReactNode
   className?: string
   contentClassName?: string
-}) {
-  const [blocks, setBlocks] = useState<Block[]>(() => parseMarkdown(value))
-  const [focusedId, setFocusedId] = useState<string | null>(null)
+  enableImages?: boolean
+  onBlur?: () => void
+  onChange: (markdown: string) => void
+  onUploadImage?: (file: File) => Promise<string>
+  placeholder?: string
+  toolbarClassName?: string
+  toolbarPlacement?: "top" | "bottom"
+  toolbarTrailing?: ReactNode
+  value: string
+}
+
+function createMarkdownEditorState(value: string): MarkdownEditorState {
+  return {
+    blocks: parseMarkdown(value),
+    focusedId: null,
+  }
+}
+
+function markdownEditorReducer(
+  state: MarkdownEditorState,
+  action: MarkdownEditorAction
+): MarkdownEditorState {
+  switch (action.type) {
+    case "external-blocks":
+      return { blocks: action.blocks, focusedId: state.focusedId }
+    case "focus":
+      return { ...state, focusedId: action.id }
+    case "set-blocks":
+      return { ...state, blocks: action.blocks }
+  }
+}
+
+function useMarkdownEditorController({
+  value,
+  onChange,
+  onUploadImage,
+}: Pick<MarkdownEditorProps, "onChange" | "onUploadImage" | "value">) {
+  const [state, dispatch] = useReducer(
+    markdownEditorReducer,
+    value,
+    createMarkdownEditorState
+  )
+  const { blocks, focusedId } = state
 
   const blocksRef = useRef(blocks)
   const lastEmittedRef = useRef(value)
   const lastFocusedRef = useRef<string | null>(null)
-  const refs = useRef(new Map<string, EditableField>())
+  const refs = useRef<Map<string, EditableField> | null>(null)
+  if (refs.current === null) refs.current = new Map()
+  const fieldRefs = refs.current
   const pendingFocusRef = useRef<{ id: string; caret: number | "end" } | null>(
     null
   )
@@ -234,10 +266,10 @@ export function MarkdownEditor({
 
   const setRef = useCallback(
     (id: string) => (el: EditableField | null) => {
-      if (el) refs.current.set(id, el)
-      else refs.current.delete(id)
+      if (el) fieldRefs.set(id, el)
+      else fieldRefs.delete(id)
     },
-    []
+    [fieldRefs]
   )
 
   const commit = useCallback(
@@ -245,7 +277,7 @@ export function MarkdownEditor({
       // Keep the ref current synchronously so back-to-back commits (e.g. async
       // image uploads resolving) always read the latest blocks.
       blocksRef.current = next
-      setBlocks(next)
+      dispatch({ type: "set-blocks", blocks: next })
       const md = serialize(next)
       lastEmittedRef.current = md
       onChange(md)
@@ -258,7 +290,9 @@ export function MarkdownEditor({
   useEffect(() => {
     if (value === lastEmittedRef.current) return
     lastEmittedRef.current = value
-    setBlocks(parseMarkdown(value))
+    const next = parseMarkdown(value)
+    blocksRef.current = next
+    dispatch({ type: "external-blocks", blocks: next })
   }, [value])
 
   // Apply queued focus + caret after structural edits.
@@ -266,7 +300,7 @@ export function MarkdownEditor({
     const pending = pendingFocusRef.current
     if (!pending) return
     pendingFocusRef.current = null
-    const el = refs.current.get(pending.id)
+    const el = fieldRefs.get(pending.id)
     if (!el) return
     el.focus()
     const pos = pending.caret === "end" ? el.value.length : pending.caret
@@ -278,7 +312,7 @@ export function MarkdownEditor({
   // it focused first and let the effect above focus the field once it mounts.
   const queueFocus = useCallback((id: string, caret: number | "end") => {
     pendingFocusRef.current = { id, caret }
-    setFocusedId(id)
+    dispatch({ type: "focus", id })
   }, [])
 
   const changeText = useCallback(
@@ -520,7 +554,7 @@ export function MarkdownEditor({
 
   const onRowFocus = useCallback((id: string) => {
     lastFocusedRef.current = id
-    setFocusedId(id)
+    dispatch({ type: "focus", id })
   }, [])
 
   const focusedType = blocks.find((b) => b.id === focusedId)?.type ?? null
@@ -531,6 +565,69 @@ export function MarkdownEditor({
     blocks.length === 1 &&
     blocks[0].type === "paragraph" &&
     blocks[0].text === ""
+
+  const clearFocus = useCallback(() => {
+    dispatch({ type: "focus", id: null })
+  }, [])
+
+  return {
+    blocks,
+    changeText,
+    clearFocus,
+    editing,
+    focusLast,
+    focusedType,
+    handleBackspaceAtStart,
+    handleEnter,
+    handlePaste,
+    insertImage,
+    isSoleEmpty,
+    navigate,
+    onRowFocus,
+    queueFocus,
+    removeBlock,
+    setImageUrl,
+    setRef,
+    setType,
+    toggleTodo,
+  }
+}
+
+export function MarkdownEditor({
+  value,
+  onChange,
+  onBlur,
+  onUploadImage,
+  placeholder = "Write…",
+  ariaLabel = "Editor",
+  enableImages = false,
+  toolbarPlacement = "bottom",
+  toolbarClassName,
+  toolbarTrailing,
+  className,
+  contentClassName = "max-h-[45vh] min-h-36",
+}: MarkdownEditorProps) {
+  const {
+    blocks,
+    changeText,
+    clearFocus,
+    editing,
+    focusLast,
+    focusedType,
+    handleBackspaceAtStart,
+    handleEnter,
+    handlePaste,
+    insertImage,
+    isSoleEmpty,
+    navigate,
+    onRowFocus,
+    queueFocus,
+    removeBlock,
+    setImageUrl,
+    setRef,
+    setType,
+    toggleTodo,
+  } = useMarkdownEditorController({ onChange, onUploadImage, value })
 
   let numberCounter = 0
 
@@ -587,7 +684,7 @@ export function MarkdownEditor({
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
           // Focus left the editor entirely — drop the active row so every block
           // renders as formatted markdown.
-          setFocusedId(null)
+          clearFocus()
           onBlur?.()
         }
       }}
@@ -866,10 +963,9 @@ function TextRow({
       )}
     />
   ) : (
-    // Not a control: a formatted view of the line that drops into the raw
-    // textarea on click. Keyboard users reach the textarea via arrow keys.
-    // eslint-disable-next-line jsx-a11y/no-static-element-interactions
-    <div
+    <button
+      type="button"
+      aria-label="Edit line"
       // Click anywhere on the rendered line to edit its raw markdown, placing
       // the caret where the click landed rather than at the end of the line.
       onMouseDown={(event) => {
@@ -884,13 +980,13 @@ function TextRow({
         onStartEdit(mapRenderedToRawOffset(rendered, block.text, offset))
       }}
       className={cn(
-        "w-full cursor-text whitespace-pre-wrap",
+        "w-full cursor-text border-0 bg-transparent p-0 text-left whitespace-pre-wrap",
         TEXT_CLASS[type],
         done && "text-muted-foreground line-through"
       )}
     >
       <InlineMarkdown text={block.text} />
-    </div>
+    </button>
   )
 
   if (block.type === "heading" || block.type === "paragraph") {
@@ -1061,11 +1157,14 @@ function ImageRow({
 
   return (
     <div className="group/img relative w-fit max-w-full py-1">
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
+      <NextImage
         src={block.url}
         alt={block.text}
+        width={640}
+        height={360}
+        unoptimized
         className="max-h-72 w-auto max-w-full rounded-lg border border-border/60"
+        style={{ height: "auto" }}
       />
       <IconButton
         size="xs"

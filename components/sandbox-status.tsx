@@ -69,6 +69,13 @@ export type UseSandboxInfoResult = {
   refresh: () => Promise<void>
 }
 
+type SandboxInfoSnapshot = {
+  info: SandboxInfo | null
+  loading: boolean
+  missing: boolean
+  sandboxId: string | null
+}
+
 export function useSandboxInfo({
   onMissing,
   onStateChange,
@@ -82,9 +89,12 @@ export function useSandboxInfo({
   ) => void
   sandboxId: string | null
 }): UseSandboxInfoResult {
-  const [info, setInfo] = useState<SandboxInfo | null>(null)
-  const [missing, setMissing] = useState(false)
-  const [loading, setLoading] = useState(true)
+  const [snapshot, setSnapshot] = useState<SandboxInfoSnapshot>({
+    info: null,
+    loading: false,
+    missing: false,
+    sandboxId: null,
+  })
   const onMissingRef = useRef(onMissing)
   const onStateChangeRef = useRef(onStateChange)
   const manualRefreshControllerRef = useRef<AbortController | null>(null)
@@ -95,18 +105,24 @@ export function useSandboxInfo({
   }, [onMissing, onStateChange])
 
   const applyInfo = useCallback((nextInfo: SandboxInfo) => {
-    setMissing(false)
-    setInfo(nextInfo)
-    setLoading(false)
+    setSnapshot({
+      info: nextInfo,
+      loading: false,
+      missing: false,
+      sandboxId: nextInfo.sandboxId ?? null,
+    })
     if (nextInfo.sandboxId) {
       onStateChangeRef.current?.(nextInfo.state, nextInfo.sandboxId, nextInfo)
     }
   }, [])
 
   const applyMissing = useCallback((missingSandboxId: string) => {
-    setInfo(null)
-    setMissing(true)
-    setLoading(false)
+    setSnapshot({
+      info: null,
+      loading: false,
+      missing: true,
+      sandboxId: missingSandboxId,
+    })
     onMissingRef.current?.(missingSandboxId)
   }, [])
 
@@ -118,31 +134,65 @@ export function useSandboxInfo({
         showLoading?: boolean
       }
     ) => {
-      if (options?.showLoading) setLoading(true)
+      if (options?.signal?.aborted) return
+      if (options?.showLoading) {
+        setSnapshot((current) =>
+          current.sandboxId === nextSandboxId
+            ? { ...current, loading: true }
+            : {
+                info: null,
+                loading: true,
+                missing: false,
+                sandboxId: nextSandboxId,
+              }
+        )
+      }
 
       try {
         const result = await fetchSandboxInfo(nextSandboxId, options?.signal)
-        if (options?.signal?.aborted) return
+        if (!options?.signal?.aborted) {
+          if (result.notFound) {
+            applyMissing(nextSandboxId)
+            return
+          }
 
-        if (result.notFound) {
-          applyMissing(nextSandboxId)
-          return
+          if (result.info) applyInfo(result.info)
         }
-
-        if (result.info) applyInfo(result.info)
       } catch {
-        if (!options?.signal?.aborted) setMissing(false)
+        if (!options?.signal?.aborted) {
+          setSnapshot((current) =>
+            current.sandboxId === nextSandboxId
+              ? { ...current, loading: false, missing: false }
+              : {
+                  info: null,
+                  loading: false,
+                  missing: false,
+                  sandboxId: nextSandboxId,
+                }
+          )
+        }
       } finally {
-        if (!options?.signal?.aborted) setLoading(false)
+        if (!options?.signal?.aborted) {
+          setSnapshot((current) =>
+            current.sandboxId === nextSandboxId && current.loading
+              ? { ...current, loading: false }
+              : current
+          )
+        }
       }
     },
     [applyInfo, applyMissing]
   )
 
+  const abortManualRefresh = useCallback(() => {
+    manualRefreshControllerRef.current?.abort()
+    manualRefreshControllerRef.current = null
+  }, [])
+
   const refresh = useCallback(async () => {
     if (!sandboxId) return
 
-    manualRefreshControllerRef.current?.abort()
+    abortManualRefresh()
     const controller = new AbortController()
     manualRefreshControllerRef.current = controller
 
@@ -156,32 +206,15 @@ export function useSandboxInfo({
         manualRefreshControllerRef.current = null
       }
     }
-  }, [load, sandboxId])
+  }, [abortManualRefresh, load, sandboxId])
 
-  useEffect(() => {
-    return () => {
-      manualRefreshControllerRef.current?.abort()
-      manualRefreshControllerRef.current = null
-    }
-  }, [sandboxId])
+  useEffect(() => abortManualRefresh, [abortManualRefresh, sandboxId])
 
   useEffect(() => {
     const controller = new AbortController()
     let fallbackInterval: number | undefined
 
-    function applyStreamInfo(nextInfo: SandboxInfo) {
-      setMissing(false)
-      setInfo(nextInfo)
-      setLoading(false)
-      if (nextInfo.sandboxId) {
-        onStateChangeRef.current?.(nextInfo.state, nextInfo.sandboxId, nextInfo)
-      }
-    }
-
     if (!sandboxId) {
-      setInfo(null)
-      setMissing(false)
-      setLoading(false)
       return
     }
 
@@ -198,7 +231,7 @@ export function useSandboxInfo({
           source.close()
           return
         }
-        applyStreamInfo(parseSandboxInfo(data))
+        applyInfo(parseSandboxInfo(data))
       } catch {
         // Ignore malformed stream events and let the next status event repair it.
       }
@@ -218,7 +251,18 @@ export function useSandboxInfo({
       source.close()
       if (fallbackInterval) window.clearInterval(fallbackInterval)
     }
-  }, [applyMissing, load, sandboxId])
+  }, [applyInfo, applyMissing, load, sandboxId])
 
-  return { info, loading, missing, refresh }
+  if (!sandboxId) {
+    return { info: null, loading: false, missing: false, refresh }
+  }
+  if (snapshot.sandboxId !== sandboxId) {
+    return { info: null, loading: true, missing: false, refresh }
+  }
+  return {
+    info: snapshot.info,
+    loading: snapshot.loading,
+    missing: snapshot.missing,
+    refresh,
+  }
 }
