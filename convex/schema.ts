@@ -28,6 +28,17 @@ const sandboxState = v.union(
   v.literal("error")
 )
 const sandboxPresetMode = v.union(v.literal("manual"), v.literal("auto"))
+const mcpTransport = v.union(v.literal("stdio"), v.literal("http"))
+const mcpToolPolicy = v.union(
+  v.literal("auto"),
+  v.literal("prompt"),
+  v.literal("never")
+)
+const mcpSecretKind = v.union(
+  v.literal("env"),
+  v.literal("httpHeader"),
+  v.literal("envHttpHeader")
+)
 const environmentBuildStatus = v.union(
   v.literal("building"),
   v.literal("ready"),
@@ -221,6 +232,53 @@ export default defineSchema({
   })
     .index("by_user_updated", ["userId", "updatedAt"])
     .index("by_user_mode", ["userId", "mode"]),
+
+  mcpServers: defineTable({
+    args: v.optional(v.array(v.string())),
+    bearerTokenEnvVar: v.optional(v.string()),
+    command: v.optional(v.string()),
+    createdAt: v.number(),
+    cwd: v.optional(v.string()),
+    description: v.optional(v.string()),
+    enabled: v.boolean(),
+    envVars: v.optional(v.array(v.string())),
+    name: v.string(),
+    serverName: v.string(),
+    startupTimeoutSec: v.optional(v.number()),
+    toolTimeoutSec: v.optional(v.number()),
+    transport: mcpTransport,
+    updatedAt: v.number(),
+    url: v.optional(v.string()),
+    userId: v.id("users"),
+  })
+    .index("by_user_updated", ["userId", "updatedAt"])
+    .index("by_user_server_name", ["userId", "serverName"]),
+
+  mcpServerSecrets: defineTable({
+    createdAt: v.number(),
+    kind: mcpSecretKind,
+    name: v.string(),
+    serverId: v.id("mcpServers"),
+    updatedAt: v.number(),
+    userId: v.id("users"),
+    value: v.string(),
+  })
+    .index("by_server", ["serverId"])
+    .index("by_user_server_name", ["userId", "serverId", "name"]),
+
+  mcpServerTools: defineTable({
+    annotations: v.optional(v.string()),
+    createdAt: v.number(),
+    description: v.optional(v.string()),
+    name: v.string(),
+    policy: mcpToolPolicy,
+    serverId: v.id("mcpServers"),
+    title: v.optional(v.string()),
+    updatedAt: v.number(),
+    userId: v.id("users"),
+  })
+    .index("by_server", ["serverId"])
+    .index("by_user_server_name", ["userId", "serverId", "name"]),
 
   sandboxPresetBuilds: defineTable({
     buildNumber: v.number(),

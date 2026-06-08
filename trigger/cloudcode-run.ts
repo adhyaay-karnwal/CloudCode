@@ -12,6 +12,7 @@ import {
   isWorkerRunCanceledError,
   saveWorkerAuthJson,
   startAndLoadWorkerRun,
+  syncWorkerMcpServerTools,
   updateWorkerRunContent,
   workerConvexClient,
   workerRunFinalContent,
@@ -363,6 +364,9 @@ export const cloudcodeRun = task({
         onLog: (log) => {
           contentBuffer.appendToolLog(log)
           logBuffer.emit(log)
+        },
+        onMcpServerToolsDiscovered: async (servers) => {
+          await syncWorkerMcpServerTools(client, payload.runId, servers)
         },
         signal,
       })

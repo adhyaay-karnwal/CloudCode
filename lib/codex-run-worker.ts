@@ -7,6 +7,8 @@ import {
   saveCodexAuthJsonForWorker,
 } from "@/lib/codex-auth"
 import type {
+  McpDiscoveredServer,
+  McpServerInput,
   RunCodexInSandboxInput,
   RunCodexInSandboxResult,
   RunCodexLog,
@@ -53,11 +55,20 @@ type WorkerPresetRecord = Omit<SandboxPresetForRun, "secrets"> & {
   secrets: Array<{ name: string; value: string }>
 }
 
+type WorkerMcpServerRecord = Omit<McpServerInput, "secrets"> & {
+  secrets: Array<{
+    kind: "env" | "httpHeader" | "envHttpHeader"
+    name: string
+    value: string
+  }>
+}
+
 type WorkerRunInputResponse =
   | { canceled: true }
   | {
       auth: WorkerAuthRecord
       canceled: false
+      mcpServers?: WorkerMcpServerRecord[]
       run: WorkerRunRecord
       sandboxPreset?: WorkerPresetRecord
     }
@@ -73,8 +84,9 @@ export type LoadedWorkerRun = {
   authJson: string
   input: Omit<
     RunCodexInSandboxInput,
-    "onContentDelta" | "onLog" | "sandboxPreset" | "signal"
+    "mcpServers" | "onContentDelta" | "onLog" | "sandboxPreset" | "signal"
   > & {
+    mcpServers?: McpServerInput[]
     sandboxPreset?: SandboxPresetForRun
   }
   profile?: string
@@ -136,6 +148,21 @@ function decryptPreset(
   }
 }
 
+function decryptMcpServers(
+  servers: WorkerMcpServerRecord[] | undefined
+): McpServerInput[] | undefined {
+  if (!servers?.length) return undefined
+
+  return servers.map((server) => ({
+    ...server,
+    secrets: server.secrets.map((secret) => ({
+      kind: secret.kind,
+      name: secret.name,
+      value: decryptSecret(secret.value),
+    })),
+  }))
+}
+
 export async function startAndLoadWorkerRun(
   client: ConvexHttpClient,
   runId: Id<"codexRuns">,
@@ -153,6 +180,7 @@ export async function startAndLoadWorkerRun(
   if (response.canceled) return null
 
   const sandboxPreset = decryptPreset(response.sandboxPreset)
+  const mcpServers = decryptMcpServers(response.mcpServers)
   const authJson = buildCodexAuthJson(response.auth)
 
   return {
@@ -171,6 +199,7 @@ export async function startAndLoadWorkerRun(
       githubUsername: response.run.githubUsername,
       model: response.run.model,
       convexUrl: getConvexUrl(),
+      mcpServers,
       notesAccessToken: response.run.notesAccessToken,
       previousDiff: response.run.previousDiff,
       prompt: response.run.prompt,
@@ -214,6 +243,19 @@ export async function updateWorkerRunContent(
   })
   throwIfCanceled(response)
   return response
+}
+
+export async function syncWorkerMcpServerTools(
+  client: ConvexHttpClient,
+  runId: Id<"codexRuns">,
+  servers: McpDiscoveredServer[]
+) {
+  if (!servers.length) return { synced: 0 }
+  return await client.mutation(api.mcpServers.workerSyncDiscoveredTools, {
+    runId,
+    servers,
+    workerSecret: getWorkerSecret(),
+  })
 }
 
 export async function completeWorkerRun(

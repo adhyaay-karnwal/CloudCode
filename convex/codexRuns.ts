@@ -634,11 +634,70 @@ export const cancelActiveForThread = mutation({
   },
 })
 
+async function mcpServersForRun(
+  ctx: MutationCtx | QueryCtx,
+  userId: Id<"users">
+) {
+  const servers = await ctx.db
+    .query("mcpServers")
+    .withIndex("by_user_updated", (q) => q.eq("userId", userId))
+    .collect()
+  const enabledServers = servers.filter((server) => server.enabled)
+
+  const loadedServers = await Promise.all(
+    enabledServers.map(async (server) => {
+      const [serverSecrets, serverTools] = await Promise.all([
+        ctx.db
+          .query("mcpServerSecrets")
+          .withIndex("by_server", (q) => q.eq("serverId", server._id))
+          .collect(),
+        ctx.db
+          .query("mcpServerTools")
+          .withIndex("by_server", (q) => q.eq("serverId", server._id))
+          .collect(),
+      ])
+
+      return {
+        args: server.args,
+        bearerTokenEnvVar: server.bearerTokenEnvVar,
+        command: server.command,
+        cwd: server.cwd,
+        envVars: server.envVars,
+        name: server.serverName,
+        secrets: serverSecrets
+          .map((secret) => ({
+            kind: secret.kind,
+            name: secret.name,
+            value: secret.value,
+          }))
+          .sort((a, b) => a.name.localeCompare(b.name)),
+        startupTimeoutSec: server.startupTimeoutSec,
+        toolTimeoutSec: server.toolTimeoutSec,
+        tools: serverTools
+          .map((tool) => ({
+            description: tool.description,
+            name: tool.name,
+            policy: tool.policy,
+            title: tool.title,
+          }))
+          .sort((a, b) => a.name.localeCompare(b.name)),
+        transport: server.transport,
+        url: server.url,
+      }
+    })
+  )
+
+  return loadedServers.sort((a, b) => a.name.localeCompare(b.name))
+}
+
 async function workerInputForRun(
   ctx: MutationCtx | QueryCtx,
   run: Doc<"codexRuns">
 ) {
-  const auth = await requireCodexAuth(ctx, run.userId, run.profile)
+  const [auth, mcpServers] = await Promise.all([
+    requireCodexAuth(ctx, run.userId, run.profile),
+    mcpServersForRun(ctx, run.userId),
+  ])
 
   let sandboxPreset:
     | {
@@ -682,6 +741,7 @@ async function workerInputForRun(
   return {
     auth,
     canceled: false as const,
+    mcpServers,
     run,
     sandboxPreset,
   }

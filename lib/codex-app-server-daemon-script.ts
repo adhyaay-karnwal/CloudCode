@@ -1,11 +1,11 @@
-export const CODEX_APP_SERVER_DAEMON_VERSION = "2"
+export const CODEX_APP_SERVER_DAEMON_VERSION = "3"
 
 export const CODEX_APP_SERVER_DAEMON_SCRIPT = String.raw`import { createHash } from "node:crypto"
 import { spawn } from "node:child_process"
 import fs from "node:fs"
 import net from "node:net"
 
-const VERSION = "2"
+const VERSION = "3"
 const REQUEST_TIMEOUT_MS = Number(process.env.CLOUDCODE_APP_SERVER_REQUEST_TIMEOUT_MS || "45000")
 const SOCKET_PATH = requiredEnv("CLOUDCODE_DAEMON_SOCKET")
 const STATE_PATH = requiredEnv("CLOUDCODE_DAEMON_STATE")
@@ -232,6 +232,10 @@ function request(method, params, timeoutMs = REQUEST_TIMEOUT_MS) {
 
 function notify(method, params) {
   sendRpc(params === undefined ? { method } : { method, params })
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function emitStderr(line) {
@@ -569,6 +573,44 @@ async function interruptActiveRun(run, reason) {
   }
 }
 
+function statusHasTools(status) {
+  const record = objectRecord(status)
+  const data = Array.isArray(record && record.data) ? record.data : []
+  return data.some((server) => {
+    const serverRecord = objectRecord(server)
+    const tools = objectRecord(serverRecord && serverRecord.tools)
+    return tools && Object.keys(tools).length > 0
+  })
+}
+
+async function emitMcpStatus(socket, threadId) {
+  if (!threadId || socket.destroyed) return
+  try {
+    let status = null
+    for (const delayMs of [0, 250, 750, 1500, 2500]) {
+      if (delayMs) await sleep(delayMs)
+      status = await request(
+        "mcpServerStatus/list",
+        {
+          detail: "toolsAndAuthOnly",
+          limit: 500,
+          threadId,
+        },
+        10000
+      )
+      if (statusHasTools(status)) break
+    }
+    writeLine(socket, { status, type: "mcpStatus" })
+  } catch (error) {
+    writeLine(socket, {
+      message:
+        "Unable to discover MCP tools: " +
+        (error instanceof Error ? compactLine(error.message) : "unknown error"),
+      type: "setup",
+    })
+  }
+}
+
 async function runTurn(payload, socket) {
   if (activeRun) {
     if (activeRun.socket.destroyed) {
@@ -643,12 +685,14 @@ async function runTurn(payload, socket) {
       const thread = objectRecord(resumed && resumed.thread)
       run.threadId = stringValue(thread && thread.id) || run.threadId
       writeLine(socket, { threadId: run.threadId, type: "thread" })
+      await emitMcpStatus(socket, run.threadId)
     } else {
       const started = await request("thread/start", threadParams)
       const thread = objectRecord(started && started.thread)
       run.threadId = stringValue(thread && thread.id)
       if (!run.threadId) throw new Error("Codex app-server did not return a thread id.")
       writeLine(socket, { threadId: run.threadId, type: "thread" })
+      await emitMcpStatus(socket, run.threadId)
     }
 
     const turnParams = {

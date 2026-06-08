@@ -63,6 +63,7 @@ import {
   type SandboxEnvTarget,
   type SandboxPresetEnvVar,
 } from "./sandbox-env"
+import { buildMcpConfig, type McpRuntimeServer } from "./mcp-config"
 import { cloudcodeYamlAgentContext } from "./cloudcode-yaml"
 import {
   configureSandboxGitHubRemote,
@@ -111,6 +112,41 @@ export type SandboxPresetInput = {
   secrets: SandboxPresetEnvVar[]
 }
 
+export type McpServerInput = {
+  args?: string[]
+  bearerTokenEnvVar?: string
+  command?: string
+  cwd?: string
+  envVars?: string[]
+  name: string
+  secrets: Array<{
+    kind: "env" | "httpHeader" | "envHttpHeader"
+    name: string
+    value: string
+  }>
+  startupTimeoutSec?: number
+  toolTimeoutSec?: number
+  tools: Array<{
+    description?: string
+    name: string
+    policy: "auto" | "prompt" | "never"
+    title?: string
+  }>
+  transport: "stdio" | "http"
+  url?: string
+}
+
+export type McpDiscoveredTool = {
+  description?: string
+  name: string
+  title?: string
+}
+
+export type McpDiscoveredServer = {
+  name: string
+  tools: McpDiscoveredTool[]
+}
+
 export type RunCodexInSandboxInput = {
   authJson: string
   baseBranch?: string
@@ -122,10 +158,14 @@ export type RunCodexInSandboxInput = {
   githubUserEmail?: string
   githubUserName?: string
   githubUsername?: string
+  mcpServers?: McpServerInput[]
   model?: string
   notesAccessToken?: string
   onContentDelta?: (delta: string) => void | Promise<void>
   onLog?: (log: RunCodexLog) => void | Promise<void>
+  onMcpServerToolsDiscovered?: (
+    servers: McpDiscoveredServer[]
+  ) => void | Promise<void>
   previousDiff?: string
   prompt: string
   reasoningEffort?: ReasoningEffort
@@ -378,6 +418,10 @@ type CodexAppServerDaemonEvent =
       type: "setup"
     }
   | {
+      status: unknown
+      type: "mcpStatus"
+    }
+  | {
       message: string
       type: "error"
     }
@@ -450,6 +494,7 @@ function codexAppServerDaemonEnv({
     CLOUDCODE_CODEX_LAUNCHER: paths.codexLauncherPath,
     CLOUDCODE_DAEMON_SOCKET: daemonPaths.socketPath,
     CLOUDCODE_DAEMON_STATE: daemonPaths.statePath,
+    CLOUDCODE_MCP_CONFIG_HASH: sha256(userMcpCodexConfig(input.mcpServers)),
     CLOUDCODE_REPO_PATH: paths.repoPath,
   }
   const envHash = sha256(
@@ -547,6 +592,9 @@ export function parseCodexAppServerDaemonEventLine(
       const message = stringValue(record.message)
       return message ? { message, type } : undefined
     }
+    case "mcpStatus": {
+      return { status: record.status, type }
+    }
     case "error": {
       const message = stringValue(record.message)
       return message ? { message, type } : undefined
@@ -587,6 +635,72 @@ export function parseCodexAppServerDaemonEventLine(
     default:
       return undefined
   }
+}
+
+function toolDescription(value: unknown) {
+  const record = objectRecord(value)
+  return stringValue(record?.description)
+}
+
+function toolTitle(value: unknown) {
+  const record = objectRecord(value)
+  return stringValue(record?.title)
+}
+
+function discoveredToolsFromValue(value: unknown): McpDiscoveredTool[] {
+  const tools = objectRecord(value)
+  if (tools) {
+    return Object.entries(tools).flatMap(([name, tool]) => {
+      const trimmed = name.trim()
+      if (!trimmed) return []
+      const description = toolDescription(tool)
+      const title = toolTitle(tool)
+      return [
+        {
+          ...(description ? { description } : {}),
+          name: trimmed,
+          ...(title ? { title } : {}),
+        },
+      ]
+    })
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((tool) => {
+      const record = objectRecord(tool)
+      const name = stringValue(record?.name)
+      if (!name) return []
+      const description = stringValue(record?.description)
+      const title = stringValue(record?.title)
+      return [
+        {
+          ...(description ? { description } : {}),
+          name,
+          ...(title ? { title } : {}),
+        },
+      ]
+    })
+  }
+
+  return []
+}
+
+function discoveredMcpServersFromStatus(
+  status: unknown
+): McpDiscoveredServer[] {
+  const record = objectRecord(status)
+  const data = Array.isArray(record?.data) ? record.data : []
+
+  return data.flatMap((server) => {
+    const serverRecord = objectRecord(server)
+    const name = stringValue(serverRecord?.name)
+    if (!name) return []
+
+    const tools = discoveredToolsFromValue(serverRecord?.tools)
+    if (!tools.length) return []
+
+    return [{ name, tools }]
+  })
 }
 
 function codexAppServerDaemonRequestPath(
@@ -1016,6 +1130,7 @@ async function runCodexViaAppServer({
   let stderr = ""
   let resumeLogged = false
   let bundledBubblewrapWarningLogged = false
+  const discoveryTasks: Promise<void>[] = []
 
   try {
     const daemon = await ensureCodexAppServerDaemon({
@@ -1126,6 +1241,25 @@ async function runCodexViaAppServer({
             }
             void emitLog(input, { kind: "setup", message: event.message })
             return
+          case "mcpStatus": {
+            const discovered = discoveredMcpServersFromStatus(event.status)
+            if (!discovered.length || !input.onMcpServerToolsDiscovered) {
+              return
+            }
+            discoveryTasks.push(
+              Promise.resolve(input.onMcpServerToolsDiscovered(discovered))
+                .then(() => undefined)
+                .catch((error) => {
+                  void emitLog(input, {
+                    detail:
+                      error instanceof Error ? error.message : String(error),
+                    kind: "stderr",
+                    message: "Unable to save discovered MCP tools",
+                  })
+                })
+            )
+            return
+          }
           case "error":
             daemonError = event.message
             return
@@ -1172,6 +1306,7 @@ async function runCodexViaAppServer({
     if (!activeThreadId) {
       throw new Error("Codex app-server did not return a thread id.")
     }
+    await Promise.all(discoveryTasks)
 
     const summary = reducer.summary()
     const status =
@@ -1352,6 +1487,25 @@ function codexShellEnv(
     ...presetSecretEnv(secrets),
     ...extraEnv,
   }
+}
+
+function runtimeMcpServers(servers: McpServerInput[] = []): McpRuntimeServer[] {
+  return servers.map((server) => ({
+    ...server,
+    envHttpHeaders: server.secrets
+      .filter((secret) => secret.kind === "envHttpHeader")
+      .map((secret) => ({ name: secret.name, value: secret.value })),
+    httpHeaders: server.secrets
+      .filter((secret) => secret.kind === "httpHeader")
+      .map((secret) => ({ name: secret.name, value: secret.value })),
+    secrets: server.secrets
+      .filter((secret) => secret.kind === "env")
+      .map((secret) => ({ name: secret.name, value: secret.value })),
+  }))
+}
+
+function userMcpCodexConfig(servers: McpServerInput[] | undefined) {
+  return buildMcpConfig(runtimeMcpServers(servers))
 }
 
 function linkSandboxPathToolsCommand(paths: DaytonaSandboxPaths) {
@@ -2476,6 +2630,9 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
       runId: input.runId,
       threadId: input.threadId,
     })
+    const mcpConfig = [contextConfig, userMcpCodexConfig(input.mcpServers)]
+      .filter(Boolean)
+      .join("\n")
     const needsCodexSetup =
       recoveredSandbox ||
       !(await isCodexLauncherReady(sandbox, paths, input.signal))
@@ -2583,7 +2740,7 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
       )
       .then(() =>
         installDaytonaDesktopTools(sandbox, paths, input.signal, {
-          config: contextConfig,
+          config: mcpConfig,
           instructions: contextConfig
             ? cloudcodeContextAgentInstructions()
             : undefined,

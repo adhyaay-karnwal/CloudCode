@@ -8,17 +8,21 @@ import {
   Circle,
   ClipboardPaste,
   CornerDownRight,
+  ExternalLink,
   KeyRound,
   Layers3,
   Pencil,
   Plus,
   RefreshCw,
+  Server,
+  ShieldCheck,
   Terminal,
   Trash2,
   X,
 } from "lucide-react"
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 
+import { SegmentedControl } from "@/components/ui/segmented-control"
 import { Switch } from "@/components/ui/switch"
 import { cardSurfaceClass, popoverSurfaceClass } from "@/components/ui/surface"
 import { api } from "@/convex/_generated/api"
@@ -142,6 +146,37 @@ type SandboxPresetRecord = {
   updatedAt: number
 }
 
+type McpToolPolicy = "auto" | "prompt" | "never"
+
+type McpServerRecord = {
+  args?: string[]
+  bearerTokenEnvVar?: string
+  command?: string
+  cwd?: string
+  description?: string
+  enabled: boolean
+  envVars?: string[]
+  id: Id<"mcpServers">
+  name: string
+  secrets: Array<{
+    id: Id<"mcpServerSecrets">
+    kind: "env" | "httpHeader" | "envHttpHeader"
+    name: string
+  }>
+  serverName: string
+  startupTimeoutSec?: number
+  toolTimeoutSec?: number
+  tools: Array<{
+    description?: string
+    id: Id<"mcpServerTools">
+    name: string
+    policy: McpToolPolicy
+    title?: string
+  }>
+  transport: "stdio" | "http"
+  url?: string
+}
+
 export function SettingsScreen({
   authStatus,
   authError,
@@ -161,6 +196,37 @@ export function SettingsScreen({
 }) {
   const detailedPresets = useQuery(api.sandboxPresets.listWithEnvironments)
   const presets = (detailedPresets ?? sandboxPresets) as SandboxPresetRecord[]
+  const [mcpServers, setMcpServers] = useState<McpServerRecord[]>([])
+  const [mcpLoading, setMcpLoading] = useState(true)
+  const [mcpError, setMcpError] = useState("")
+
+  const reloadMcpServers = useCallback(async () => {
+    setMcpError("")
+    try {
+      const response = await fetch("/api/mcp/custom", {
+        method: "GET",
+      })
+      const data = (await response.json().catch(() => ({}))) as {
+        error?: string
+        servers?: McpServerRecord[]
+      }
+      if (!response.ok) {
+        throw new Error(data.error ?? "Unable to load MCP servers.")
+      }
+      setMcpServers(data.servers ?? [])
+    } catch (error) {
+      setMcpError(
+        error instanceof Error ? error.message : "Unable to load MCP servers."
+      )
+      setMcpServers([])
+    } finally {
+      setMcpLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void reloadMcpServers()
+  }, [reloadMcpServers])
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -170,7 +236,7 @@ export function SettingsScreen({
             Settings
           </h1>
           <p className="mt-1.5 text-sm text-muted-foreground">
-            Manage connected accounts, Daytona presets, and preset secrets.
+            Manage connected accounts, MCP connections, and Daytona presets.
           </p>
 
           <section className="mt-8 space-y-2">
@@ -189,6 +255,12 @@ export function SettingsScreen({
             </div>
           </section>
 
+          <McpSettings
+            error={mcpError}
+            loading={mcpLoading}
+            onReload={reloadMcpServers}
+            servers={mcpServers}
+          />
           <PresetSettings presets={presets} />
         </div>
       </div>
@@ -838,6 +910,742 @@ function GitHubConnectionRow({
             )
           })
         : null}
+    </div>
+  )
+}
+
+function McpSettings({
+  error: loadError,
+  loading,
+  onReload,
+  servers,
+}: {
+  error: string
+  loading: boolean
+  onReload: () => Promise<void>
+  servers: McpServerRecord[]
+}) {
+  const updateToolPolicy = useMutation(api.mcpServers.updateToolPolicy)
+  const [selectedId, setSelectedId] = useState<Id<"mcpServers"> | null>(null)
+  const [creatingCustom, setCreatingCustom] = useState(false)
+  const [transport, setTransport] = useState<"stdio" | "http">("stdio")
+  const [name, setName] = useState("")
+  const [command, setCommand] = useState("")
+  const [url, setUrl] = useState("")
+  const [bearerTokenEnvVar, setBearerTokenEnvVar] = useState("")
+  const [cwd, setCwd] = useState("")
+  const [argDraft, setArgDraft] = useState("")
+  const [args, setArgs] = useState<string[]>([])
+  const [envDraft, setEnvDraft] = useState({ name: "", value: "" })
+  const [envVars, setEnvVars] = useState<
+    Array<{ name: string; value: string }>
+  >([])
+  const [passthroughDraft, setPassthroughDraft] = useState("")
+  const [passthroughVars, setPassthroughVars] = useState<string[]>([])
+  const [headerDraft, setHeaderDraft] = useState({ name: "", value: "" })
+  const [headers, setHeaders] = useState<
+    Array<{ name: string; value: string }>
+  >([])
+  const [envHeaderDraft, setEnvHeaderDraft] = useState({ name: "", value: "" })
+  const [envHeaders, setEnvHeaders] = useState<
+    Array<{ name: string; value: string }>
+  >([])
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState("")
+  const selected = servers.find((server) => server.id === selectedId) ?? null
+
+  function resetCustomForm() {
+    setCreatingCustom(false)
+    setTransport("stdio")
+    setName("")
+    setCommand("")
+    setUrl("")
+    setBearerTokenEnvVar("")
+    setCwd("")
+    setArgDraft("")
+    setArgs([])
+    setEnvDraft({ name: "", value: "" })
+    setEnvVars([])
+    setPassthroughDraft("")
+    setPassthroughVars([])
+    setHeaderDraft({ name: "", value: "" })
+    setHeaders([])
+    setEnvHeaderDraft({ name: "", value: "" })
+    setEnvHeaders([])
+    setSaving(false)
+    setError("")
+  }
+
+  function addValue(
+    value: string,
+    setter: (values: string[]) => void,
+    values: string[],
+    clear: () => void
+  ) {
+    const trimmed = value.trim()
+    if (!trimmed) return
+    setter([...values, trimmed])
+    clear()
+  }
+
+  function addPair(
+    pair: { name: string; value: string },
+    setter: (values: Array<{ name: string; value: string }>) => void,
+    values: Array<{ name: string; value: string }>,
+    clear: () => void
+  ) {
+    const key = pair.name.trim()
+    const value = pair.value.trim()
+    if (!key || !value) return
+    setter([...values, { name: key, value }])
+    clear()
+  }
+
+  async function saveCustomServer() {
+    setSaving(true)
+    setError("")
+    try {
+      const response = await fetch("/api/mcp/custom", {
+        body: JSON.stringify({
+          args,
+          bearerTokenEnvVar,
+          command,
+          cwd,
+          envHttpHeaders: envHeaders,
+          envVars: passthroughVars,
+          httpHeaders: headers,
+          name,
+          secrets: envVars,
+          transport,
+          url,
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      })
+      const data = (await response.json().catch(() => ({}))) as {
+        error?: string
+        serverId?: Id<"mcpServers">
+      }
+      if (!response.ok || !data.serverId) {
+        throw new Error(data.error ?? "Unable to save MCP server.")
+      }
+      setSelectedId(data.serverId)
+      resetCustomForm()
+      await onReload()
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Unable to save MCP server."
+      )
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function setPolicy(
+    toolId: Id<"mcpServerTools">,
+    policy: McpToolPolicy
+  ) {
+    setError("")
+    try {
+      await updateToolPolicy({ policy, toolId })
+      await onReload()
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Unable to update tool policy."
+      )
+    }
+  }
+
+  async function deleteSelected() {
+    if (!selected) return
+    setSaving(true)
+    setError("")
+    try {
+      const response = await fetch("/api/mcp/custom", {
+        body: JSON.stringify({ serverId: selected.id }),
+        headers: { "content-type": "application/json" },
+        method: "DELETE",
+      })
+      const data = (await response.json().catch(() => ({}))) as {
+        error?: string
+      }
+      if (!response.ok) {
+        throw new Error(data.error ?? "Unable to remove MCP server.")
+      }
+      setSelectedId(null)
+      await onReload()
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Unable to remove MCP server."
+      )
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <section className="mt-8 space-y-2">
+      <div className="flex items-center justify-between px-1">
+        <h2 className={sectionLabel}>MCP Connections</h2>
+        <button
+          type="button"
+          onClick={() => {
+            resetCustomForm()
+            setSelectedId(null)
+            setCreatingCustom(true)
+          }}
+          className={navAction}
+        >
+          <Plus className="size-3.5" />
+          Custom MCP
+        </button>
+      </div>
+
+      <div className={card}>
+        {loading ? (
+          <div className={cardRow}>
+            <Server className="size-5 shrink-0 text-muted-foreground" />
+            <div className="min-w-0 flex-1 text-sm text-muted-foreground">
+              Loading MCP connections...
+            </div>
+          </div>
+        ) : loadError ? (
+          <div className={cardRow}>
+            <Server className="size-5 shrink-0 text-muted-foreground" />
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium text-foreground/85">
+                Unable to load MCP connections
+              </div>
+              <div className="line-clamp-2 text-xs text-muted-foreground">
+                {loadError}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => void onReload()}
+              className={navAction}
+            >
+              <RefreshCw className="size-3.5" />
+              Retry
+            </button>
+          </div>
+        ) : servers.length ? (
+          servers.map((server) => (
+            <button
+              key={server.id}
+              type="button"
+              onClick={() => {
+                setSelectedId(server.id)
+                setCreatingCustom(false)
+              }}
+              className={cn(
+                cardRow,
+                "w-full border-b border-border/60 text-left transition-colors last:border-0 hover:bg-muted",
+                selected?.id === server.id && "bg-muted"
+              )}
+            >
+              <Server className="size-5 shrink-0 text-muted-foreground" />
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium text-foreground/85">
+                  {server.name}
+                </div>
+                <div className="truncate text-xs text-muted-foreground">
+                  {server.transport === "stdio"
+                    ? [server.command, ...(server.args ?? [])]
+                        .filter(Boolean)
+                        .join(" ")
+                    : server.url}
+                </div>
+              </div>
+              <span className={metaPill}>{server.transport}</span>
+              <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
+            </button>
+          ))
+        ) : (
+          <div className={cardRow}>
+            <Server className="size-5 shrink-0 text-muted-foreground" />
+            <div className="min-w-0 flex-1 text-sm text-muted-foreground">
+              No custom MCP servers connected.
+            </div>
+          </div>
+        )}
+      </div>
+
+      {creatingCustom ? (
+        <div className={cn("mt-3", card)}>
+          <div className={cn(cardRow, "border-b border-border/60")}>
+            <Server className="size-5 shrink-0 text-muted-foreground" />
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium text-foreground/85">
+                Connect to a custom MCP
+              </div>
+              <a
+                href="https://developers.openai.com/codex/mcp"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+              >
+                Docs <ExternalLink className="size-3" />
+              </a>
+            </div>
+            <button
+              type="button"
+              onClick={resetCustomForm}
+              aria-label="Close custom MCP editor"
+              className={iconBtn}
+            >
+              <X className="size-3.5" />
+            </button>
+          </div>
+
+          <div className="grid gap-4 p-4">
+            <label className={fieldLabel}>
+              Name
+              <input
+                aria-label="MCP server name"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="MCP server name"
+                className={cn(inputClass, "font-normal")}
+              />
+            </label>
+
+            <SegmentedControl
+              fill
+              label="MCP transport"
+              value={transport}
+              onChange={setTransport}
+              options={[
+                { label: "STDIO", value: "stdio" },
+                { label: "Streamable HTTP", value: "http" },
+              ]}
+              className="h-9"
+              itemClassName="h-8 text-sm"
+            />
+
+            {transport === "stdio" ? (
+              <>
+                <label className={fieldLabel}>
+                  Command to launch
+                  <input
+                    aria-label="MCP command to launch"
+                    value={command}
+                    onChange={(event) => setCommand(event.target.value)}
+                    placeholder="openai-dev-mcp serve-sqlite"
+                    className={cn(inputClass, "font-normal")}
+                  />
+                </label>
+
+                <McpStringListEditor
+                  addLabel="Add argument"
+                  draft={argDraft}
+                  items={args}
+                  label="Arguments"
+                  placeholder="--project"
+                  onAdd={() =>
+                    addValue(argDraft, setArgs, args, () => setArgDraft(""))
+                  }
+                  onDraftChange={setArgDraft}
+                  onRemove={(index) =>
+                    setArgs(args.filter((_, itemIndex) => itemIndex !== index))
+                  }
+                />
+
+                <McpPairListEditor
+                  addLabel="Add environment variable"
+                  draft={envDraft}
+                  items={envVars}
+                  label="Environment variables"
+                  leftPlaceholder="Key"
+                  rightPlaceholder="Value"
+                  onAdd={() =>
+                    addPair(envDraft, setEnvVars, envVars, () =>
+                      setEnvDraft({ name: "", value: "" })
+                    )
+                  }
+                  onDraftChange={setEnvDraft}
+                  onRemove={(index) =>
+                    setEnvVars(
+                      envVars.filter((_, itemIndex) => itemIndex !== index)
+                    )
+                  }
+                />
+
+                <McpStringListEditor
+                  addLabel="Add variable"
+                  draft={passthroughDraft}
+                  items={passthroughVars}
+                  label="Environment variable passthrough"
+                  placeholder="GITHUB_TOKEN"
+                  onAdd={() =>
+                    addValue(
+                      passthroughDraft,
+                      setPassthroughVars,
+                      passthroughVars,
+                      () => setPassthroughDraft("")
+                    )
+                  }
+                  onDraftChange={setPassthroughDraft}
+                  onRemove={(index) =>
+                    setPassthroughVars(
+                      passthroughVars.filter(
+                        (_, itemIndex) => itemIndex !== index
+                      )
+                    )
+                  }
+                />
+
+                <label className={fieldLabel}>
+                  Working directory
+                  <input
+                    aria-label="MCP working directory"
+                    value={cwd}
+                    onChange={(event) => setCwd(event.target.value)}
+                    placeholder="~/code"
+                    className={cn(inputClass, "font-normal")}
+                  />
+                </label>
+              </>
+            ) : (
+              <>
+                <label className={fieldLabel}>
+                  URL
+                  <input
+                    aria-label="MCP server URL"
+                    value={url}
+                    onChange={(event) => setUrl(event.target.value)}
+                    placeholder="https://mcp.example.com/mcp"
+                    className={cn(inputClass, "font-normal")}
+                  />
+                </label>
+                <label className={fieldLabel}>
+                  Bearer token env var
+                  <input
+                    aria-label="MCP bearer token environment variable"
+                    value={bearerTokenEnvVar}
+                    onChange={(event) =>
+                      setBearerTokenEnvVar(event.target.value)
+                    }
+                    placeholder="MCP_BEARER_TOKEN"
+                    className={cn(inputClass, "font-normal")}
+                  />
+                </label>
+                <McpPairListEditor
+                  addLabel="Add header"
+                  draft={headerDraft}
+                  items={headers}
+                  label="Headers"
+                  leftPlaceholder="Key"
+                  rightPlaceholder="Value"
+                  onAdd={() =>
+                    addPair(headerDraft, setHeaders, headers, () =>
+                      setHeaderDraft({ name: "", value: "" })
+                    )
+                  }
+                  onDraftChange={setHeaderDraft}
+                  onRemove={(index) =>
+                    setHeaders(
+                      headers.filter((_, itemIndex) => itemIndex !== index)
+                    )
+                  }
+                />
+                <McpPairListEditor
+                  addLabel="Add variable"
+                  draft={envHeaderDraft}
+                  items={envHeaders}
+                  label="Headers from environment variables"
+                  leftPlaceholder="Header"
+                  rightPlaceholder="Env var"
+                  onAdd={() =>
+                    addPair(envHeaderDraft, setEnvHeaders, envHeaders, () =>
+                      setEnvHeaderDraft({ name: "", value: "" })
+                    )
+                  }
+                  onDraftChange={setEnvHeaderDraft}
+                  onRemove={(index) =>
+                    setEnvHeaders(
+                      envHeaders.filter((_, itemIndex) => itemIndex !== index)
+                    )
+                  }
+                />
+              </>
+            )}
+
+            {error ? (
+              <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                {error}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="flex items-center justify-end gap-2 border-t border-border/60 px-3.5 py-2.5">
+            <button
+              type="button"
+              onClick={resetCustomForm}
+              disabled={saving}
+              className={navAction}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={saveCustomServer}
+              disabled={
+                saving ||
+                !name.trim() ||
+                (transport === "stdio" ? !command.trim() : !url.trim())
+              }
+              className={navPrimary}
+            >
+              {saving ? "Saving" : "Save"}
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {selected ? (
+        <div className={cn("mt-3", card)}>
+          <div className={cn(cardRow, "border-b border-border/60")}>
+            <Server className="size-5 shrink-0 text-muted-foreground" />
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm font-medium text-foreground/85">
+                {selected.name}
+              </div>
+              <div className="truncate text-xs text-muted-foreground">
+                {selected.transport === "http"
+                  ? selected.url
+                  : [selected.command, ...(selected.args ?? [])]
+                      .filter(Boolean)
+                      .join(" ")}
+              </div>
+            </div>
+            <span className={metaPill}>
+              {selected.transport === "http" && selected.bearerTokenEnvVar
+                ? "Bearer env"
+                : selected.transport}
+            </span>
+            <button
+              type="button"
+              onClick={() => setSelectedId(null)}
+              aria-label="Close MCP details"
+              className={iconBtn}
+            >
+              <X className="size-3.5" />
+            </button>
+          </div>
+
+          <div className="grid gap-5 p-4">
+            {selected.tools.length ? (
+              <div>
+                <div className="mb-2 flex items-center gap-2 text-xs font-medium text-foreground/80">
+                  <ShieldCheck className="size-3.5 text-muted-foreground" />
+                  Tool policy
+                </div>
+                <div className="-mx-4 border-y border-border/60">
+                  {selected.tools.map((tool) => (
+                    <div
+                      key={tool.id}
+                      className="grid gap-2 border-b border-border/60 px-4 py-2.5 last:border-0 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+                    >
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium text-foreground/85">
+                          {tool.title || tool.name}
+                        </div>
+                        <div className="truncate font-[family-name:var(--font-mono)] text-[11px] text-muted-foreground">
+                          {tool.name}
+                        </div>
+                      </div>
+                      <SegmentedControl
+                        label={`Policy for ${tool.name}`}
+                        value={tool.policy}
+                        onChange={(policy) => void setPolicy(tool.id, policy)}
+                        options={[
+                          { label: "Auto", value: "auto" },
+                          { label: "Ask", value: "prompt" },
+                          { label: "Never", value: "never" },
+                        ]}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Codex has not reported tools for this MCP server yet.
+              </p>
+            )}
+
+            {error ? (
+              <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                {error}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="flex items-center justify-between gap-2 border-t border-border/60 px-3.5 py-2.5">
+            <button
+              type="button"
+              onClick={deleteSelected}
+              disabled={saving}
+              className={navDestructive}
+            >
+              <Trash2 className="size-3.5" />
+              Remove
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedId(null)}
+              className={navAction}
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
+function McpStringListEditor({
+  addLabel,
+  draft,
+  items,
+  label,
+  placeholder,
+  onAdd,
+  onDraftChange,
+  onRemove,
+}: {
+  addLabel: string
+  draft: string
+  items: string[]
+  label: string
+  placeholder: string
+  onAdd: () => void
+  onDraftChange: (value: string) => void
+  onRemove: (index: number) => void
+}) {
+  return (
+    <div className="grid gap-2">
+      <div className="text-xs font-medium text-foreground/80">{label}</div>
+      {items.map((item, index) => (
+        <div key={`${item}:${index}`} className="flex items-center gap-2">
+          <div className="min-w-0 flex-1 truncate rounded-lg border border-border bg-background px-3 py-2 font-[family-name:var(--font-mono)] text-xs text-foreground/85">
+            {item}
+          </div>
+          <button
+            type="button"
+            onClick={() => onRemove(index)}
+            className={cn(iconBtn, "hover:text-destructive")}
+            aria-label={`Remove ${item}`}
+          >
+            <Trash2 className="size-3.5" />
+          </button>
+        </div>
+      ))}
+      <input
+        aria-label={label}
+        value={draft}
+        onChange={(event) => onDraftChange(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault()
+            onAdd()
+          }
+        }}
+        placeholder={placeholder}
+        className={cn(
+          inputClass,
+          "font-[family-name:var(--font-mono)] text-xs"
+        )}
+      />
+      <button type="button" onClick={onAdd} className={navAction}>
+        <Plus className="size-3.5" />
+        {addLabel}
+      </button>
+    </div>
+  )
+}
+
+function McpPairListEditor({
+  addLabel,
+  draft,
+  items,
+  label,
+  leftPlaceholder,
+  rightPlaceholder,
+  onAdd,
+  onDraftChange,
+  onRemove,
+}: {
+  addLabel: string
+  draft: { name: string; value: string }
+  items: Array<{ name: string; value: string }>
+  label: string
+  leftPlaceholder: string
+  rightPlaceholder: string
+  onAdd: () => void
+  onDraftChange: (value: { name: string; value: string }) => void
+  onRemove: (index: number) => void
+}) {
+  return (
+    <div className="grid gap-2">
+      <div className="text-xs font-medium text-foreground/80">{label}</div>
+      {items.map((item, index) => (
+        <div
+          key={`${item.name}:${index}`}
+          className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-center gap-2"
+        >
+          <div className="truncate rounded-lg border border-border bg-background px-3 py-2 font-[family-name:var(--font-mono)] text-xs text-foreground/85">
+            {item.name}
+          </div>
+          <div className="truncate rounded-lg border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+            Saved
+          </div>
+          <button
+            type="button"
+            onClick={() => onRemove(index)}
+            className={cn(iconBtn, "hover:text-destructive")}
+            aria-label={`Remove ${item.name}`}
+          >
+            <Trash2 className="size-3.5" />
+          </button>
+        </div>
+      ))}
+      <div className="grid gap-2 sm:grid-cols-2">
+        <input
+          aria-label={`${label} name`}
+          value={draft.name}
+          onChange={(event) =>
+            onDraftChange({ ...draft, name: event.target.value })
+          }
+          placeholder={leftPlaceholder}
+          className={cn(
+            inputClass,
+            "font-[family-name:var(--font-mono)] text-xs"
+          )}
+        />
+        <input
+          aria-label={`${label} value`}
+          value={draft.value}
+          onChange={(event) =>
+            onDraftChange({ ...draft, value: event.target.value })
+          }
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault()
+              onAdd()
+            }
+          }}
+          placeholder={rightPlaceholder}
+          type="password"
+          className={cn(inputClass, "text-xs")}
+        />
+      </div>
+      <button type="button" onClick={onAdd} className={navAction}>
+        <Plus className="size-3.5" />
+        {addLabel}
+      </button>
     </div>
   )
 }

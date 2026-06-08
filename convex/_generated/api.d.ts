@@ -16,6 +16,7 @@ import type * as githubApp from "../githubApp.js";
 import type * as lib_sandboxAccess from "../lib/sandboxAccess.js";
 import type * as lib_users from "../lib/users.js";
 import type * as lib_workerAuth from "../lib/workerAuth.js";
+import type * as mcpServers from "../mcpServers.js";
 import type * as sandboxPresets from "../sandboxPresets.js";
 import type * as sshAccess from "../sshAccess.js";
 import type * as users from "../users.js";
@@ -35,6 +36,7 @@ declare const fullApi: ApiFromModules<{
   "lib/sandboxAccess": typeof lib_sandboxAccess;
   "lib/users": typeof lib_users;
   "lib/workerAuth": typeof lib_workerAuth;
+  mcpServers: typeof mcpServers;
   sandboxPresets: typeof sandboxPresets;
   sshAccess: typeof sshAccess;
   users: typeof users;

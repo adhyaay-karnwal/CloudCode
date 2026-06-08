@@ -10,7 +10,13 @@ const sandbox = await daytona.create({
 
 await sandbox.git.clone("https://github.com/pingdotgg/t3code", "workspace/repo")
 
-await sandbox._experimental_createSnapshot("t3code")
+try {
+  await sandbox._experimental_createSnapshot("t3code")
+} catch (error) {
+  console.error("Failed to create snapshot 't3code':", error)
+  process.exit(1)
+}
+
 console.log("Snapshot 't3code' created successfully")
 
 console.log(sandbox.state)
