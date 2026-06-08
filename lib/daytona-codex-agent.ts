@@ -36,6 +36,14 @@ import {
   installCloudcodeContextTools,
 } from "./daytona-context"
 import {
+  buildImageAttachmentPromptBlock,
+  isChatImageAttachmentMimeType,
+  MAX_CHAT_IMAGE_ATTACHMENT_BYTES,
+  sanitizeImageAttachmentName,
+  type ChatImageAttachment,
+  type SandboxImageAttachment,
+} from "./chat-attachments"
+import {
   createDaytonaSandbox,
   daytonaCodexPath,
   daytonaTerminalPath,
@@ -51,6 +59,7 @@ import {
   runDaytonaCommand,
   shellQuote,
   startDaytonaActivityHeartbeat,
+  writeDaytonaFile,
   writeDaytonaTextFile,
   type DaytonaSandboxPaths,
 } from "./daytona-sandbox"
@@ -158,6 +167,7 @@ export type RunCodexInSandboxInput = {
   githubUserEmail?: string
   githubUserName?: string
   githubUsername?: string
+  imageAttachments?: ChatImageAttachment[]
   mcpServers?: McpServerInput[]
   model?: string
   notesAccessToken?: string
@@ -1360,6 +1370,141 @@ function createSandboxTarget(
     writeTextFile: (path, content) =>
       writeDaytonaTextFile(sandbox, path, content),
   }
+}
+
+function imageAttachmentExtension(attachment: ChatImageAttachment) {
+  const fromName = sanitizeImageAttachmentName(attachment.name)
+    .split(".")
+    .pop()
+    ?.toLowerCase()
+  if (
+    fromName === "gif" ||
+    fromName === "jpeg" ||
+    fromName === "jpg" ||
+    fromName === "png" ||
+    fromName === "webp"
+  ) {
+    return fromName
+  }
+
+  switch (attachment.mimeType) {
+    case "image/gif":
+      return "gif"
+    case "image/jpeg":
+      return "jpg"
+    case "image/png":
+      return "png"
+    case "image/webp":
+      return "webp"
+    default:
+      return "img"
+  }
+}
+
+function sandboxImageAttachmentPath({
+  attachment,
+  index,
+  paths,
+  runId,
+}: {
+  attachment: ChatImageAttachment
+  index: number
+  paths: DaytonaSandboxPaths
+  runId?: string
+}) {
+  const safeRunId = runId?.replace(/[^\w.-]+/g, "_") || "run"
+  const safeName = sanitizeImageAttachmentName(attachment.name).replace(
+    /\.[^.]*$/,
+    ""
+  )
+  const extension = imageAttachmentExtension(attachment)
+  return `${paths.runtimeHome}/attachments/${safeRunId}/image-${index + 1}-${safeName}.${extension}`
+}
+
+async function downloadImageAttachment(
+  attachment: ChatImageAttachment,
+  signal?: AbortSignal
+) {
+  const response = await fetch(attachment.url, { signal })
+  if (!response.ok) {
+    throw new Error(`Unable to download image attachment ${attachment.name}.`)
+  }
+
+  const contentType = response.headers
+    .get("content-type")
+    ?.split(";")[0]
+    ?.toLowerCase()
+  const mimeType =
+    contentType && isChatImageAttachmentMimeType(contentType)
+      ? contentType
+      : attachment.mimeType
+  if (!isChatImageAttachmentMimeType(mimeType)) {
+    throw new Error(`Unsupported image attachment type: ${mimeType}.`)
+  }
+
+  const contentLength = Number(response.headers.get("content-length") ?? 0)
+  if (contentLength > MAX_CHAT_IMAGE_ATTACHMENT_BYTES) {
+    throw new Error(`Image attachment ${attachment.name} is too large.`)
+  }
+
+  const buffer = Buffer.from(await response.arrayBuffer())
+  if (buffer.byteLength > MAX_CHAT_IMAGE_ATTACHMENT_BYTES) {
+    throw new Error(`Image attachment ${attachment.name} is too large.`)
+  }
+
+  return buffer
+}
+
+async function materializeImageAttachments({
+  input,
+  paths,
+  sandbox,
+}: {
+  input: RunCodexInSandboxInput
+  paths: DaytonaSandboxPaths
+  sandbox: Sandbox
+}): Promise<SandboxImageAttachment[]> {
+  const attachments = input.imageAttachments ?? []
+  if (attachments.length === 0) return []
+
+  const root = `${paths.runtimeHome}/attachments/${
+    input.runId?.replace(/[^\w.-]+/g, "_") || "run"
+  }`
+  const mkdir = await runDaytonaCommand(
+    sandbox,
+    `mkdir -p ${shellQuote(root)}`,
+    {
+      signal: input.signal,
+      timeoutMs: 10_000,
+    }
+  )
+  if (mkdir.exitCode !== 0) {
+    throw new Error(
+      compactLine(mkdir.stderr || mkdir.stdout) ||
+        "Unable to prepare image attachment directory."
+    )
+  }
+
+  const materialized: SandboxImageAttachment[] = []
+  for (let index = 0; index < attachments.length; index += 1) {
+    const attachment = attachments[index]
+    const sandboxPath = sandboxImageAttachmentPath({
+      attachment,
+      index,
+      paths,
+      runId: input.runId,
+    })
+    const buffer = await downloadImageAttachment(attachment, input.signal)
+    await writeDaytonaFile(sandbox, sandboxPath, buffer)
+    materialized.push({ ...attachment, sandboxPath })
+    await emitLog(input, {
+      detail: sandboxPath,
+      kind: "setup",
+      message: "Image attachment ready",
+    })
+  }
+
+  return materialized
 }
 
 async function collectRunDiffAndStatus({
@@ -2609,6 +2754,11 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
     })
 
     const codexThreadIdToResume = existingCodexThreadId
+    const sandboxImageAttachments = await materializeImageAttachments({
+      input,
+      paths,
+      sandbox,
+    })
     const taskPrompt = input.prompt
     const sharedNotesEnabled = Boolean(
       input.convexUrl && input.notesAccessToken && input.runId && input.threadId
@@ -2617,6 +2767,7 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
       cloudcodeYamlAgentContext(input.sandboxPreset?.cloudcodeYaml),
       sharedNotesEnabled ? cloudcodeContextAgentContext() : undefined,
       daytonaDesktopAgentContext(),
+      buildImageAttachmentPromptBlock(sandboxImageAttachments),
     ].filter((value): value is string => Boolean(value))
     const promptForTask = (task: string) =>
       contextBlocks.length

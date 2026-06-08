@@ -44,6 +44,14 @@ const runLog = v.object({
   message: v.string(),
   time: v.number(),
 })
+const imageAttachment = v.object({
+  id: v.string(),
+  kind: v.literal("image"),
+  mimeType: v.string(),
+  name: v.string(),
+  size: v.number(),
+  url: v.string(),
+})
 const MAX_STORED_RUN_LOGS = 80
 const MAX_STORED_LOG_MESSAGE_LENGTH = 500
 const MAX_STORED_LOG_DETAIL_LENGTH = 1_500
@@ -385,6 +393,7 @@ export const create = mutation({
     githubUserEmail: v.optional(v.string()),
     githubUserName: v.optional(v.string()),
     githubUsername: v.optional(v.string()),
+    imageAttachments: v.optional(v.array(imageAttachment)),
     model,
     notesAccessToken: v.string(),
     previousDiff: v.optional(v.string()),
@@ -441,6 +450,9 @@ export const create = mutation({
         : {}),
       ...(args.githubUserName ? { githubUserName: args.githubUserName } : {}),
       ...(args.githubUsername ? { githubUsername: args.githubUsername } : {}),
+      ...(args.imageAttachments?.length
+        ? { imageAttachments: args.imageAttachments }
+        : {}),
       logs: [queuedLog],
       model: args.model,
       notesAccessToken: args.notesAccessToken,

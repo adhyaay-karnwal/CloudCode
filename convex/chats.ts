@@ -53,6 +53,15 @@ const messageMeta = v.object({
   status: v.optional(v.string()),
 })
 
+const imageAttachment = v.object({
+  id: v.string(),
+  kind: v.literal("image"),
+  mimeType: v.string(),
+  name: v.string(),
+  size: v.number(),
+  url: v.string(),
+})
+
 const THREAD_LIST_LIMIT = 80
 const MAX_NOTES_LENGTH = 20_000
 const MAX_STORED_RUN_LOGS = 80
@@ -279,6 +288,7 @@ async function fullThreadRecord(ctx: QueryCtx, thread: Doc<"threads">) {
     ...(await threadSummaryRecord(ctx, thread)),
     notes: thread.notes,
     messages: messages.map((message) => ({
+      attachments: message.attachments,
       content: message.content,
       createdAt: message._creationTime,
       error: message.error,
@@ -327,6 +337,7 @@ export const get = query({
 
 export const createThread = mutation({
   args: {
+    attachments: v.optional(v.array(imageAttachment)),
     baseBranch: v.optional(v.string()),
     branchMode: v.optional(branchMode),
     model,
@@ -361,6 +372,7 @@ export const createThread = mutation({
     })
 
     await ctx.db.insert("messages", {
+      ...(args.attachments?.length ? { attachments: args.attachments } : {}),
       content: args.prompt,
       role: "user",
       threadId,
@@ -383,6 +395,7 @@ export const createThread = mutation({
 
 export const appendRunMessages = mutation({
   args: {
+    attachments: v.optional(v.array(imageAttachment)),
     prompt: v.string(),
     speed,
     thinking,
@@ -396,6 +409,9 @@ export const appendRunMessages = mutation({
     const [assistantMessageId] = await Promise.all([
       ctx.db
         .insert("messages", {
+          ...(args.attachments?.length
+            ? { attachments: args.attachments }
+            : {}),
           content: args.prompt,
           role: "user",
           threadId: args.threadId,

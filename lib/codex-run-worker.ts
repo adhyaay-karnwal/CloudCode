@@ -17,6 +17,7 @@ import {
   extractInlineToolMarkers,
   stripInlineToolMarkers,
 } from "@/lib/codex-run-log"
+import type { ChatImageAttachment } from "@/lib/chat-attachments"
 import type { SandboxPresetForRun } from "@/lib/sandbox-presets"
 import { decryptSecret } from "@/lib/secret-crypto"
 
@@ -34,6 +35,7 @@ type WorkerRunRecord = {
   githubUserEmail?: string
   githubUserName?: string
   githubUsername?: string
+  imageAttachments?: ChatImageAttachment[]
   model: string
   notesAccessToken?: string
   previousDiff?: string
@@ -197,6 +199,7 @@ export async function startAndLoadWorkerRun(
       githubUserEmail: response.run.githubUserEmail,
       githubUserName: response.run.githubUserName,
       githubUsername: response.run.githubUsername,
+      imageAttachments: response.run.imageAttachments,
       model: response.run.model,
       convexUrl: getConvexUrl(),
       mcpServers,

@@ -81,6 +81,15 @@ const messageMeta = v.object({
   status: v.optional(v.string()),
 })
 
+const imageAttachment = v.object({
+  id: v.string(),
+  kind: v.literal("image"),
+  mimeType: v.string(),
+  name: v.string(),
+  size: v.number(),
+  url: v.string(),
+})
+
 export default defineSchema({
   codexAuth: defineTable({
     accessToken: v.string(),
@@ -115,6 +124,7 @@ export default defineSchema({
     githubUserEmail: v.optional(v.string()),
     githubUserName: v.optional(v.string()),
     githubUsername: v.optional(v.string()),
+    imageAttachments: v.optional(v.array(imageAttachment)),
     logs: v.optional(v.array(runLog)),
     model,
     previousDiff: v.optional(v.string()),
@@ -184,6 +194,7 @@ export default defineSchema({
     .index("by_github_user", ["githubUserId"]),
 
   messages: defineTable({
+    attachments: v.optional(v.array(imageAttachment)),
     content: v.string(),
     error: v.optional(v.boolean()),
     meta: v.optional(messageMeta),

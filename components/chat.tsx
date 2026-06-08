@@ -9,12 +9,12 @@ import {
   Folder,
   FolderOpen,
   GitBranch,
+  ImagePlus,
   KeyRound,
   Loader2,
   Monitor,
   PanelLeft,
   PanelRight,
-  Plus,
   SquareTerminal,
   Square,
   StickyNote,
@@ -24,6 +24,8 @@ import dynamic from "next/dynamic"
 import { createPortal } from "react-dom"
 import {
   type ChangeEvent,
+  type ClipboardEvent,
+  type DragEvent,
   type FormEvent,
   type KeyboardEvent,
   type ReactNode,
@@ -37,6 +39,7 @@ import {
 } from "react"
 
 import { GeistPixelSquare } from "geist/font/pixel"
+import NextImage from "next/image"
 
 import { closeBrowserTerminalSession } from "@/components/sandbox-terminal-session"
 import { SettingsScreen } from "@/components/settings-screen"
@@ -67,8 +70,17 @@ import { popoverSurfaceClass } from "@/components/ui/surface"
 import type { FileBrowserOpenMode } from "@/components/file-browser"
 import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
+import { useImageUpload } from "@/hooks/use-image-upload"
 import { MOBILE_MEDIA_QUERY, useIsMobile } from "@/hooks/use-is-mobile"
 import { useStoreUserEffect } from "@/hooks/use-store-user-effect"
+import {
+  CHAT_IMAGE_ATTACHMENT_MIME_TYPES,
+  isChatImageAttachmentMimeType,
+  MAX_CHAT_IMAGE_ATTACHMENT_BYTES,
+  MAX_CHAT_IMAGE_ATTACHMENTS,
+  sanitizeImageAttachmentName,
+  type ChatImageAttachment,
+} from "@/lib/chat-attachments"
 import { getDiffStats } from "@/lib/diff-metadata"
 import type { CodexRunLog } from "@/lib/codex-run-log"
 import { buildResumeHandoff } from "@/lib/chat-resume-handoff"
@@ -137,6 +149,7 @@ const ChatContextPanel = dynamic(
 type Role = "user" | "assistant"
 
 type Message = {
+  attachments?: ChatImageAttachment[]
   id: Id<"messages">
   role: Role
   content: string
@@ -311,6 +324,18 @@ type OptimisticRun = {
   messages: Message[]
 }
 
+type DraftImageAttachment = {
+  error?: string
+  id: string
+  kind: "image"
+  mimeType: string
+  name: string
+  objectUrl?: string
+  size: number
+  status: "ready" | "uploading" | "failed"
+  url?: string
+}
+
 type ThreadScrollSnapshot = {
   atBottom: boolean
   runKey: string
@@ -344,6 +369,8 @@ const TEXT_FILE_PREFETCH_CONCURRENCY = 2
 const TEXT_FILE_PREFETCH_DELAY_MS = 300
 const EMPTY_MESSAGES: Message[] = []
 const STREAM_TOOL_MARKER_REGEX = /<codex-tool>[\s\S]*?<\/codex-tool>/g
+const CHAT_IMAGE_ATTACHMENT_ACCEPT = CHAT_IMAGE_ATTACHMENT_MIME_TYPES.join(",")
+const IMAGE_ONLY_PROMPT = "Please inspect the attached image(s)."
 
 function repoLabel(url: string) {
   if (!url) return "Untitled"
@@ -416,6 +443,7 @@ export function Chat() {
 function ChatInner() {
   const { user } = useUser()
   const { isLoading: userLoading } = useStoreUserEffect()
+  const uploadImage = useImageUpload()
   const rawChatSummaries = useQuery(api.chats.list)
   const chatSummaries = useMemo(
     () => (rawChatSummaries ?? []) as ChatRecord[],
@@ -545,6 +573,11 @@ function ChatInner() {
   const [allDiffsOpen, setAllDiffsOpen] = useState(false)
   const [notesOpen, setNotesOpen] = useState(false)
   const [diffStyle, setDiffStyle] = useState<"unified" | "split">("unified")
+  const [draftAttachments, setDraftAttachments] = useState<
+    DraftImageAttachment[]
+  >([])
+  const [attachmentError, setAttachmentError] = useState("")
+  const [attachmentDragActive, setAttachmentDragActive] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(() =>
     typeof window === "undefined"
       ? true
@@ -591,7 +624,9 @@ function ChatInner() {
   const lastLiveRunRef = useRef<LiveRunRecord | null>(null)
   const autoPresetDefaultedRef = useRef(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const composerRef = useRef<HTMLDivElement>(null)
+  const draftAttachmentObjectUrlsRef = useRef<Set<string>>(new Set())
   const threadRef = useRef<HTMLDivElement | null>(null)
   const isAtBottomRef = useRef(true)
   const promptFocusedRef = useRef(false)
@@ -904,6 +939,30 @@ function ChatInner() {
   const activeMessagePending =
     Boolean(active?.pending) || messages.some((message) => message.pending)
   const activeRunPending = activeLocalRunPending || activeMessagePending
+  const readyDraftAttachments = useMemo<ChatImageAttachment[]>(
+    () =>
+      draftAttachments.flatMap((attachment) =>
+        attachment.status === "ready" && attachment.url
+          ? [
+              {
+                id: attachment.id,
+                kind: "image",
+                mimeType: attachment.mimeType,
+                name: attachment.name,
+                size: attachment.size,
+                url: attachment.url,
+              },
+            ]
+          : []
+      ),
+    [draftAttachments]
+  )
+  const uploadingAttachmentCount = draftAttachments.filter(
+    (attachment) => attachment.status === "uploading"
+  ).length
+  const failedAttachmentCount = draftAttachments.filter(
+    (attachment) => attachment.status === "failed"
+  ).length
   const canStopActiveRun = Boolean(active && activeRunPending)
   const terminalVisible =
     terminalOpen && (Boolean(activeSandboxId) || activeRunPending)
@@ -1125,6 +1184,16 @@ function ChatInner() {
     localStorage.setItem(PRESET_KEY, autoPreset.id)
   }, [draftSandboxPresetId, sandboxPresets])
 
+  useEffect(
+    () => () => {
+      for (const url of draftAttachmentObjectUrlsRef.current) {
+        URL.revokeObjectURL(url)
+      }
+      draftAttachmentObjectUrlsRef.current.clear()
+    },
+    []
+  )
+
   useEffect(() => {
     if (activeId) localStorage.setItem(ACTIVE_KEY, activeId)
     else localStorage.removeItem(ACTIVE_KEY)
@@ -1327,6 +1396,7 @@ function ChatInner() {
   function showOptimisticRun(
     runKey: string,
     prompt: string,
+    attachments: ChatImageAttachment[],
     baseMessageCount: number,
     runSpeed: Speed,
     runThinking: Thinking
@@ -1338,6 +1408,7 @@ function ChatInner() {
         baseMessageCount,
         messages: [
           {
+            ...(attachments.length ? { attachments } : {}),
             content: prompt,
             id: `optimistic-${runKey}-${now}-user` as Id<"messages">,
             role: "user",
@@ -1467,10 +1538,132 @@ function ChatInner() {
     persistDraftSandboxPreset(next)
   }
 
+  function clearDraftAttachments() {
+    for (const attachment of draftAttachments) {
+      if (attachment.objectUrl) {
+        URL.revokeObjectURL(attachment.objectUrl)
+        draftAttachmentObjectUrlsRef.current.delete(attachment.objectUrl)
+      }
+    }
+    setDraftAttachments([])
+    setAttachmentError("")
+    setAttachmentDragActive(false)
+    if (fileInputRef.current) fileInputRef.current.value = ""
+  }
+
+  function removeDraftAttachment(id: string) {
+    setDraftAttachments((current) => {
+      const removed = current.find((attachment) => attachment.id === id)
+      if (removed?.objectUrl) {
+        URL.revokeObjectURL(removed.objectUrl)
+        draftAttachmentObjectUrlsRef.current.delete(removed.objectUrl)
+      }
+      return current.filter((attachment) => attachment.id !== id)
+    })
+    setAttachmentError("")
+  }
+
+  function addImageFiles(files: File[]) {
+    if (files.length === 0) return
+
+    setAttachmentError("")
+    const openSlots = MAX_CHAT_IMAGE_ATTACHMENTS - draftAttachments.length
+    if (openSlots <= 0) {
+      setAttachmentError(
+        `You can attach up to ${MAX_CHAT_IMAGE_ATTACHMENTS} images.`
+      )
+      return
+    }
+
+    const accepted: File[] = []
+    for (const file of files) {
+      if (accepted.length >= openSlots) break
+      if (!isChatImageAttachmentMimeType(file.type)) {
+        setAttachmentError(
+          "Only PNG, JPEG, GIF, and WebP images are supported."
+        )
+        continue
+      }
+      if (file.size > MAX_CHAT_IMAGE_ATTACHMENT_BYTES) {
+        setAttachmentError("Each image must be 10 MB or smaller.")
+        continue
+      }
+      accepted.push(file)
+    }
+
+    if (files.length > openSlots) {
+      setAttachmentError(
+        `Only ${openSlots} more image${openSlots === 1 ? "" : "s"} can be attached.`
+      )
+    }
+    if (accepted.length === 0) return
+
+    const pending = accepted.map((file) => {
+      const objectUrl = URL.createObjectURL(file)
+      draftAttachmentObjectUrlsRef.current.add(objectUrl)
+      return {
+        id: crypto.randomUUID(),
+        kind: "image" as const,
+        mimeType: file.type,
+        name: sanitizeImageAttachmentName(file.name),
+        objectUrl,
+        size: file.size,
+        status: "uploading" as const,
+      }
+    })
+
+    setDraftAttachments((current) => [...current, ...pending])
+
+    pending.forEach((attachment, index) => {
+      const file = accepted[index]
+      uploadImage(file)
+        .then((url) => {
+          setDraftAttachments((current) =>
+            current.map((candidate) => {
+              if (candidate.id !== attachment.id) return candidate
+              if (candidate.objectUrl) {
+                URL.revokeObjectURL(candidate.objectUrl)
+                draftAttachmentObjectUrlsRef.current.delete(candidate.objectUrl)
+              }
+              return {
+                ...candidate,
+                objectUrl: undefined,
+                status: "ready",
+                url,
+              }
+            })
+          )
+        })
+        .catch((error) => {
+          setDraftAttachments((current) =>
+            current.map((candidate) => {
+              if (candidate.id !== attachment.id) return candidate
+              return {
+                ...candidate,
+                error:
+                  error instanceof Error ? error.message : "Upload failed.",
+                status: "failed",
+              }
+            })
+          )
+        })
+    })
+  }
+
+  function onAttachClick() {
+    fileInputRef.current?.click()
+  }
+
+  function onAttachmentInputChange(event: ChangeEvent<HTMLInputElement>) {
+    addImageFiles(Array.from(event.target.files ?? []))
+    event.target.value = ""
+  }
+
   function startNewChat() {
     promptFocusedRef.current = false
     setActiveId(null)
     setInput("")
+    clearDraftAttachments()
     setEditingRepo(false)
     setActiveFilePath(null)
     setFilesOpen(false)
@@ -1493,6 +1686,7 @@ function ChatInner() {
     promptFocusedRef.current = false
     setActiveId(id)
     setInput("")
+    clearDraftAttachments()
     setEditingRepo(false)
     setActiveFilePath(null)
     setFilesOpen(false)
@@ -1509,6 +1703,7 @@ function ChatInner() {
   function showSettings() {
     promptFocusedRef.current = false
     setView("settings")
+    clearDraftAttachments()
     setActiveFilePath(null)
     setFilesOpen(false)
     setGithubOpen(false)
@@ -1575,9 +1770,11 @@ function ChatInner() {
 
   async function send(prompt: string) {
     const trimmed = prompt.trim()
+    const attachments = readyDraftAttachments
+    const runPrompt = trimmed || IMAGE_ONLY_PROMPT
     const initialRunKey = activeId ? (activeId as string) : DRAFT_RUN_KEY
     if (
-      !trimmed ||
+      (!trimmed && attachments.length === 0) ||
       userLoading ||
       runningRunKeysSet.has(initialRunKey) ||
       (active
@@ -1595,6 +1792,14 @@ function ChatInner() {
       window.location.href = "/api/codex-auth/login"
       return
     }
+    if (uploadingAttachmentCount > 0) {
+      setAttachmentError("Wait for image uploads to finish before sending.")
+      return
+    }
+    if (failedAttachmentCount > 0) {
+      setAttachmentError("Remove failed image uploads before sending.")
+      return
+    }
     const codexProfile = authStatus.activeProfile || authStatus.profile
 
     let chatId = active?.id ?? null
@@ -1603,12 +1808,15 @@ function ChatInner() {
     let queued = false
 
     setInput("")
+    setDraftAttachments([])
+    setAttachmentError("")
 
     queueingRunKeys.add(runKey)
     markRunActive(runKey)
     showOptimisticRun(
       runKey,
       trimmed,
+      attachments,
       active?.messages.length ?? 0,
       draftSpeed,
       draftThinking
@@ -1619,6 +1827,7 @@ function ChatInner() {
       if (!chatId) {
         const trimmedBaseBranch = draftBaseBranch.trim()
         const created = await createThread({
+          attachments: attachments.length ? attachments : undefined,
           baseBranch: trimmedBaseBranch || undefined,
           branchMode: effectiveDraftBranchMode,
           model: draftModel,
@@ -1627,7 +1836,10 @@ function ChatInner() {
           sandboxPresetId: runSandboxPresetId || undefined,
           speed: draftSpeed,
           thinking: draftThinking,
-          title: trimmed.split("\n")[0].slice(0, 60),
+          title:
+            trimmed.split("\n")[0].slice(0, 60) ||
+            attachments[0]?.name ||
+            "Image request",
         })
         chatId = created.threadId
         assistantMessageId = created.assistantMessageId
@@ -1635,6 +1847,7 @@ function ChatInner() {
         setActiveId(chatId)
       } else {
         const appended = await appendRunMessages({
+          attachments: attachments.length ? attachments : undefined,
           prompt: trimmed,
           speed,
           thinking,
@@ -1694,7 +1907,8 @@ function ChatInner() {
           assistantMessageId,
           previousDiff,
           profile: codexProfile,
-          prompt: trimmed,
+          imageAttachments: attachments.length ? attachments : undefined,
+          prompt: runPrompt,
           reasoningEffort: thinking,
           repoUrl: repoUrl.trim(),
           resumeContext,
@@ -1969,6 +2183,40 @@ function ChatInner() {
     promptFocusedRef.current = false
   }
 
+  function onComposerPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    const files = Array.from(event.clipboardData.files).filter((file) =>
+      file.type.startsWith("image/")
+    )
+    if (files.length === 0) return
+    event.preventDefault()
+    addImageFiles(files)
+  }
+
+  function onComposerDragOver(event: DragEvent<HTMLFormElement>) {
+    if (
+      !Array.from(event.dataTransfer.items).some((item) => item.kind === "file")
+    ) {
+      return
+    }
+    event.preventDefault()
+    setAttachmentDragActive(true)
+  }
+
+  function onComposerDragLeave(event: DragEvent<HTMLFormElement>) {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
+    setAttachmentDragActive(false)
+  }
+
+  function onComposerDrop(event: DragEvent<HTMLFormElement>) {
+    const files = Array.from(event.dataTransfer.files).filter((file) =>
+      file.type.startsWith("image/")
+    )
+    if (files.length === 0) return
+    event.preventDefault()
+    setAttachmentDragActive(false)
+    addImageFiles(files)
+  }
+
   const preloadTerminalPanel = useCallback(() => {
     void loadSandboxTerminalPanel()
   }, [])
@@ -1983,8 +2231,73 @@ function ChatInner() {
       <div className="pointer-events-auto w-full max-w-3xl rounded-3xl">
         <form
           onSubmit={onSubmit}
-          className="relative z-[1] w-full rounded-3xl border border-field/70 bg-background transition-colors focus-within:border-border"
+          onDragOver={onComposerDragOver}
+          onDragLeave={onComposerDragLeave}
+          onDrop={onComposerDrop}
+          className={cn(
+            "relative z-[1] w-full rounded-3xl border border-field/70 bg-background transition-colors focus-within:border-border",
+            attachmentDragActive && "border-border bg-muted/35"
+          )}
         >
+          <input
+            ref={fileInputRef}
+            type="file"
+            aria-label="Attach images"
+            accept={CHAT_IMAGE_ATTACHMENT_ACCEPT}
+            multiple
+            className="sr-only"
+            onChange={onAttachmentInputChange}
+          />
+          {draftAttachments.length > 0 ? (
+            <div className="flex gap-2 overflow-x-auto px-3 pt-3 pb-1 md:px-4">
+              {draftAttachments.map((attachment) => (
+                <div
+                  key={attachment.id}
+                  className="group relative h-16 w-16 shrink-0 overflow-hidden rounded-xl border border-border/70 bg-muted"
+                  title={attachment.name}
+                >
+                  {attachment.objectUrl || attachment.url ? (
+                    <NextImage
+                      src={(attachment.objectUrl ?? attachment.url)!}
+                      alt={attachment.name}
+                      fill
+                      unoptimized
+                      sizes="64px"
+                      className="h-full w-full object-cover"
+                    />
+                  ) : (
+                    <div className="grid h-full w-full place-items-center">
+                      <ImagePlus className="size-5 text-muted-foreground" />
+                    </div>
+                  )}
+                  {attachment.status === "uploading" ? (
+                    <div className="absolute inset-0 grid place-items-center bg-background/65">
+                      <Loader2 className="size-4 animate-spin" />
+                    </div>
+                  ) : null}
+                  {attachment.status === "failed" ? (
+                    <div className="text-destructive-foreground absolute inset-0 grid place-items-center bg-destructive/85 px-1 text-center text-[10px] leading-3">
+                      Failed
+                    </div>
+                  ) : null}
+                  <button
+                    type="button"
+                    aria-label={`Remove ${attachment.name}`}
+                    title="Remove image"
+                    onClick={() => removeDraftAttachment(attachment.id)}
+                    className="absolute top-1 right-1 grid size-5 place-items-center rounded-full bg-background/90 text-foreground opacity-100 shadow-sm md:opacity-0 md:transition-opacity md:group-hover:opacity-100"
+                  >
+                    <X className="size-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {attachmentError ? (
+            <div className="px-4 pt-2 text-xs text-destructive">
+              {attachmentError}
+            </div>
+          ) : null}
           <textarea
             ref={textareaRef}
             value={input}
@@ -1994,6 +2307,7 @@ function ChatInner() {
             onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
               setInput(e.target.value)
             }
+            onPaste={onComposerPaste}
             onKeyDown={onKeyDown}
             onFocus={onTextareaFocus}
             onBlur={onTextareaBlur}
@@ -2004,8 +2318,15 @@ function ChatInner() {
           />
 
           <div className="flex items-center gap-1.5 px-2.5 pt-1 pb-2.5">
-            <IconButton aria-label="Attach" disabled className="hidden sm:grid">
-              <Plus className="size-[18px]" />
+            <IconButton
+              type="button"
+              aria-label="Attach images"
+              title="Attach images"
+              onClick={onAttachClick}
+              disabled={draftAttachments.length >= MAX_CHAT_IMAGE_ATTACHMENTS}
+              className="grid"
+            >
+              <ImagePlus className="size-[18px]" />
             </IconButton>
 
             <div className="ml-auto flex min-w-0 flex-nowrap items-center justify-end gap-1.5 overflow-x-auto overscroll-x-contain md:flex-wrap md:overflow-visible">
@@ -2048,7 +2369,10 @@ function ChatInner() {
                 <Button
                   type="submit"
                   size="icon-sm"
-                  disabled={!input.trim()}
+                  disabled={
+                    (!input.trim() && readyDraftAttachments.length === 0) ||
+                    uploadingAttachmentCount > 0
+                  }
                   aria-label="Send"
                   className="size-9 rounded-full md:size-8"
                 >

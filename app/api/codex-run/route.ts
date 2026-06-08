@@ -8,6 +8,7 @@ import type { Id } from "@/convex/_generated/dataModel"
 import { parseBranchMode } from "@/lib/codex-branch-names"
 import { getConvexAuthToken } from "@/lib/codex-auth"
 import { syncDiscoveredSandbox } from "@/lib/codex-run-sandbox-sync"
+import { parseChatImageAttachments } from "@/lib/chat-attachments"
 import type { CodexSpeed, ReasoningEffort } from "@/lib/daytona-codex-agent"
 import { maybeGetCurrentGitHubRepoCredential } from "@/lib/github-auth"
 import { canClonePublicGitHubRepo } from "@/lib/github-repo-api"
@@ -86,6 +87,7 @@ export async function POST(request: Request) {
       branchMode?: unknown
       branchName?: unknown
       codexThreadId?: unknown
+      imageAttachments?: unknown
       model?: unknown
       previousDiff?: unknown
       profile?: unknown
@@ -109,6 +111,7 @@ export async function POST(request: Request) {
     const model = requiredString(body.model, "model")
     const reasoningEffort = parseReasoningEffort(body.reasoningEffort)
     const speed = parseSpeed(body.speed)
+    const imageAttachments = parseChatImageAttachments(body.imageAttachments)
 
     if (!reasoningEffort) {
       return NextResponse.json(
@@ -154,6 +157,7 @@ export async function POST(request: Request) {
       githubUserEmail: githubCredential?.gitUserEmail,
       githubUserName: githubCredential?.gitUserName,
       githubUsername: githubCredential?.username ?? undefined,
+      imageAttachments: imageAttachments.length ? imageAttachments : undefined,
       model: model as "gpt-5.5" | "gpt-5.4" | "gpt-5.4-mini",
       notesAccessToken: randomUUID(),
       previousDiff:

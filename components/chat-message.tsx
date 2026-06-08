@@ -10,7 +10,8 @@ import {
   SquareTerminal,
   Terminal,
 } from "lucide-react"
-import { memo, useMemo, useState } from "react"
+import NextImage from "next/image"
+import { memo, useEffect, useMemo, useState } from "react"
 
 import { ChangedFiles, DiffList } from "@/components/changed-files"
 import { Markdown } from "@/components/chat-markdown"
@@ -21,9 +22,11 @@ import {
   type RecordingVideoArtifact,
 } from "@/components/recording-video-utils"
 import { cardSurfaceClass } from "@/components/ui/surface"
+import type { ChatImageAttachment } from "@/lib/chat-attachments"
 import { cn } from "@/lib/utils"
 
 export type ChatMessage = {
+  attachments?: ChatImageAttachment[]
   content: string
   error?: boolean
   id?: string
@@ -69,8 +72,28 @@ export const MessageBlock = memo(function MessageBlock({
   if (message.role === "user") {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[85%] rounded-2xl bg-muted px-4 py-2.5 text-[14px] leading-6 break-words whitespace-pre-wrap md:text-[15px]">
-          {message.content}
+        <div className="max-w-[85%] rounded-2xl bg-muted px-3 py-2.5 text-[14px] leading-6 break-words whitespace-pre-wrap md:text-[15px]">
+          {message.attachments?.length ? (
+            <div
+              className={cn(
+                "flex flex-wrap justify-end gap-2",
+                message.attachments.length === 1 && "block"
+              )}
+            >
+              {message.attachments.map((attachment) => (
+                <ImageAttachmentPreview
+                  key={attachment.id}
+                  attachment={attachment}
+                  compact={message.attachments!.length > 1}
+                />
+              ))}
+            </div>
+          ) : null}
+          {message.content ? (
+            <div className={message.attachments?.length ? "mt-2 px-1" : "px-1"}>
+              {message.content}
+            </div>
+          ) : null}
         </div>
       </div>
     )
@@ -114,6 +137,81 @@ export const MessageBlock = memo(function MessageBlock({
     </div>
   )
 })
+
+function ImageAttachmentPreview({
+  attachment,
+  compact,
+}: {
+  attachment: ChatImageAttachment
+  compact: boolean
+}) {
+  const [dimensions, setDimensions] = useState<{
+    height: number
+    width: number
+  } | null>(null)
+
+  useEffect(() => {
+    let canceled = false
+    const image = new window.Image()
+    image.onload = () => {
+      if (canceled) return
+      setDimensions({
+        height: image.naturalHeight || 1,
+        width: image.naturalWidth || 1,
+      })
+    }
+    image.onerror = () => {
+      if (!canceled) setDimensions(null)
+    }
+    image.src = attachment.url
+
+    return () => {
+      canceled = true
+      image.onload = null
+      image.onerror = null
+    }
+  }, [attachment.url])
+
+  const layout = useMemo(() => {
+    const width = dimensions?.width ?? 4
+    const height = dimensions?.height ?? 3
+    const ratio = width / height
+    const maxHeight = compact ? 180 : 420
+    const maxWidth = compact ? 180 : 560
+    const displayHeight = Math.min(height, maxHeight)
+    const displayWidth = Math.min(
+      width,
+      maxWidth,
+      Math.max(compact ? 120 : 180, Math.round(displayHeight * ratio))
+    )
+
+    return {
+      aspectRatio: `${width} / ${height}`,
+      maxHeight: compact ? "11.25rem" : "min(60vh, 26.25rem)",
+      width: compact ? `${displayWidth}px` : `min(${displayWidth}px, 100%)`,
+    }
+  }, [compact, dimensions])
+
+  return (
+    <a
+      href={attachment.url}
+      target="_blank"
+      rel="noreferrer"
+      className="relative block max-w-full overflow-hidden rounded-xl border border-border/60 bg-background/70"
+      style={layout}
+      title={attachment.name}
+    >
+      <NextImage
+        src={attachment.url}
+        alt={attachment.name}
+        fill
+        unoptimized
+        sizes={compact ? "180px" : "(max-width: 768px) 85vw, 560px"}
+        className="object-contain"
+      />
+    </a>
+  )
+}
 
 const TOOL_MARKER_REGEX = /<codex-tool>([^<]*)<\/codex-tool>/g
 
