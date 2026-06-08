@@ -16,7 +16,6 @@ import {
   Plus,
   RefreshCw,
   Server,
-  ShieldCheck,
   Terminal,
   Trash2,
   Wrench,
@@ -928,7 +927,6 @@ function McpSettings({
   onReload: () => Promise<void>
   servers: McpServerRecord[]
 }) {
-  const updateToolPolicy = useMutation(api.mcpServers.updateToolPolicy)
   const setServerEnabled = useMutation(api.mcpServers.setEnabled)
   const [selectedId, setSelectedId] = useState<Id<"mcpServers"> | null>(null)
   const [creatingCustom, setCreatingCustom] = useState(false)
@@ -1013,21 +1011,6 @@ function McpSettings({
       )
     } finally {
       setSaving(false)
-    }
-  }
-
-  async function setPolicy(
-    toolId: Id<"mcpServerTools">,
-    policy: McpToolPolicy
-  ) {
-    setError("")
-    try {
-      await updateToolPolicy({ policy, toolId })
-      await onReload()
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Unable to update tool policy."
-      )
     }
   }
 
@@ -1288,49 +1271,6 @@ function McpSettings({
                           </div>
                         ) : null}
                       </div>
-
-                      {server.tools.length ? (
-                        <div className="grid gap-1">
-                          <div className="flex items-center gap-2 px-0.5 text-xs font-medium text-foreground/80">
-                            <ShieldCheck className="size-3.5 text-muted-foreground" />
-                            Tool policy
-                          </div>
-                          <div>
-                            {server.tools.map((tool) => (
-                              <div
-                                key={tool.id}
-                                className="grid gap-2 border-b border-border/60 py-3 first:pt-1.5 last:border-0 last:pb-0 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
-                              >
-                                <div className="min-w-0">
-                                  <div className="truncate text-sm font-medium text-foreground/85">
-                                    {tool.title || tool.name}
-                                  </div>
-                                  <div className="truncate font-[family-name:var(--font-mono)] text-[11px] text-muted-foreground">
-                                    {tool.name}
-                                  </div>
-                                </div>
-                                <SegmentedControl
-                                  label={`Policy for ${tool.name}`}
-                                  value={tool.policy}
-                                  onChange={(policy) =>
-                                    void setPolicy(tool.id, policy)
-                                  }
-                                  options={[
-                                    { label: "Auto", value: "auto" },
-                                    { label: "Ask", value: "prompt" },
-                                    { label: "Never", value: "never" },
-                                  ]}
-                                />
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="flex items-center gap-2 px-0.5 text-xs text-muted-foreground">
-                          <ShieldCheck className="size-3.5 shrink-0" />
-                          Codex has not reported tools for this server yet.
-                        </div>
-                      )}
 
                       {error ? (
                         <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
