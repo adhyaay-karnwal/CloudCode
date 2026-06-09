@@ -20,6 +20,11 @@ import {
 import type { ChatImageAttachment } from "@/lib/chat-attachments"
 import type { SandboxPresetForRun } from "@/lib/sandbox-presets"
 import { decryptSecret } from "@/lib/secret-crypto"
+import type {
+  BillingUsageSource,
+  DaytonaBillingResources,
+  DaytonaBillingState,
+} from "@/lib/billing"
 
 export type WorkerRunPayload = {
   runId: Id<"codexRuns">
@@ -214,6 +219,7 @@ export async function startAndLoadWorkerRun(
       sandboxPreset,
       speed: response.run.speed,
       threadId: response.run.threadId as string,
+      userId: response.run.userId as string,
     },
     profile: response.run.profile,
     userId: response.run.userId,
@@ -317,6 +323,47 @@ export async function saveWorkerAuthJson(
     authJson,
     profile,
     userId,
+    workerSecret: getWorkerSecret(),
+  })
+}
+
+export async function recordWorkerBillingUsage(
+  client: ConvexHttpClient,
+  args: {
+    amountMicroUsd: number
+    idempotencyKey: string
+    metadata?: unknown
+    resourceId?: string
+    source: BillingUsageSource
+    userId: Id<"users">
+  }
+) {
+  return await client.action(api.billing.recordWorkerUsage, {
+    ...args,
+    workerSecret: getWorkerSecret(),
+  })
+}
+
+export async function observeWorkerDaytonaSandbox(
+  client: ConvexHttpClient,
+  args: {
+    observedAt: number
+    resources: DaytonaBillingResources
+    sandboxId: string
+    source: "observed" | "webhook"
+    state: DaytonaBillingState
+    userId: Id<"users">
+  }
+) {
+  return await client.action(api.billing.observeDaytonaSandboxForWorker, {
+    cpu: args.resources.cpu,
+    diskGiB: args.resources.diskGiB,
+    memoryGiB: args.resources.memoryGiB,
+    observedAt: args.observedAt,
+    sandboxId: args.sandboxId,
+    source: args.source,
+    state: args.state,
+    userId: args.userId,
     workerSecret: getWorkerSecret(),
   })
 }

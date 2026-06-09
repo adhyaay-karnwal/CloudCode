@@ -10,6 +10,13 @@ import {
   sendDaytonaTerminalInput,
   type ConnectedDaytonaTerminal,
 } from "@/lib/daytona-terminal-sessions"
+import {
+  BillingRequiredError,
+  observeCurrentUserDaytonaBillingInfo,
+  pauseCurrentUserSandboxForBilling,
+  requireCurrentUserInfraAccess,
+} from "@/lib/billing-server"
+import { readDaytonaSandboxInfo } from "@/lib/daytona-sandbox"
 import { maybeGetCurrentGitHubRepoCredential } from "@/lib/github-auth"
 import { requireSameOrigin } from "@/lib/request-security"
 import { requireCurrentUserSandbox } from "@/lib/sandbox-authorization"
@@ -81,7 +88,12 @@ export async function GET(request: Request) {
   let sandboxAccess: Awaited<ReturnType<typeof requireCurrentUserSandbox>>
   try {
     sandboxAccess = await requireCurrentUserSandbox(sandboxId)
-  } catch {
+    await requireCurrentUserInfraAccess()
+  } catch (error) {
+    if (error instanceof BillingRequiredError) {
+      await pauseCurrentUserSandboxForBilling(sandboxId)
+      return NextResponse.json({ error: error.message }, { status: 402 })
+    }
     return NextResponse.json({ error: "Sandbox not found." }, { status: 404 })
   }
 
@@ -119,6 +131,11 @@ export async function GET(request: Request) {
           terminalId,
         })
         terminalConnection = connection
+        await readDaytonaSandboxInfo(sandboxId)
+          .then(observeCurrentUserDaytonaBillingInfo)
+          .catch((error: unknown) => {
+            console.warn("Unable to observe terminal sandbox billing.", error)
+          })
 
         if (closed) {
           await detachDaytonaTerminal(
@@ -222,7 +239,12 @@ export async function POST(request: Request) {
   let sandboxAccess: Awaited<ReturnType<typeof requireCurrentUserSandbox>>
   try {
     sandboxAccess = await requireCurrentUserSandbox(sandboxId)
-  } catch {
+    await requireCurrentUserInfraAccess()
+  } catch (error) {
+    if (error instanceof BillingRequiredError) {
+      await pauseCurrentUserSandboxForBilling(sandboxId)
+      return NextResponse.json({ error: error.message }, { status: 402 })
+    }
     return NextResponse.json({ error: "Sandbox not found." }, { status: 404 })
   }
 
@@ -249,6 +271,11 @@ export async function POST(request: Request) {
         sandboxId,
         terminalId,
       })
+      await readDaytonaSandboxInfo(sandboxId)
+        .then(observeCurrentUserDaytonaBillingInfo)
+        .catch((error: unknown) => {
+          console.warn("Unable to observe terminal resize billing.", error)
+        })
       return NextResponse.json({ ok: true })
     }
 
@@ -261,6 +288,11 @@ export async function POST(request: Request) {
       sandboxId,
       terminalId,
     })
+    await readDaytonaSandboxInfo(sandboxId)
+      .then(observeCurrentUserDaytonaBillingInfo)
+      .catch((error: unknown) => {
+        console.warn("Unable to observe terminal input billing.", error)
+      })
     return NextResponse.json({ ok: true })
   } catch (error) {
     return NextResponse.json(

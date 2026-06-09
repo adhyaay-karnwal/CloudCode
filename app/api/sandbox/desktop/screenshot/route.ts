@@ -1,6 +1,13 @@
 import { NextResponse } from "next/server"
 
+import {
+  BillingRequiredError,
+  observeCurrentUserDaytonaBillingInfo,
+  pauseCurrentUserSandboxForBilling,
+  requireCurrentUserInfraAccess,
+} from "@/lib/billing-server"
 import { takeDaytonaDesktopScreenshot } from "@/lib/daytona-desktop"
+import { readDaytonaSandboxInfo } from "@/lib/daytona-sandbox"
 import { requireSameOrigin } from "@/lib/request-security"
 import { requireCurrentUserSandbox } from "@/lib/sandbox-authorization"
 
@@ -24,7 +31,13 @@ export async function GET(request: Request) {
 
   try {
     await requireCurrentUserSandbox(sandboxId)
+    await requireCurrentUserInfraAccess()
     const screenshot = await takeDaytonaDesktopScreenshot(sandboxId)
+    await readDaytonaSandboxInfo(sandboxId)
+      .then(observeCurrentUserDaytonaBillingInfo)
+      .catch((error) => {
+        console.warn("Unable to observe screenshot sandbox billing.", error)
+      })
     const base64 = screenshot.screenshot?.replace(
       /^data:image\/[a-z0-9.+-]+;base64,/i,
       ""
@@ -43,6 +56,11 @@ export async function GET(request: Request) {
       },
     })
   } catch (error) {
+    if (error instanceof BillingRequiredError) {
+      await pauseCurrentUserSandboxForBilling(sandboxId)
+      return jsonError(error.message, 402)
+    }
+
     return jsonError(
       error instanceof Error
         ? error.message

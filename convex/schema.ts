@@ -59,6 +59,24 @@ const codexRunStatus = v.union(
   v.literal("failed"),
   v.literal("canceled")
 )
+const billingPlanId = v.union(v.literal("hobby"), v.literal("plus"))
+const billingUsageSource = v.union(
+  v.literal("trigger"),
+  v.literal("daytona"),
+  v.literal("reconciliation")
+)
+const billingUsageStatus = v.union(
+  v.literal("pending"),
+  v.literal("tracked"),
+  v.literal("failed")
+)
+const daytonaBillingState = v.union(
+  v.literal("running"),
+  v.literal("stopped"),
+  v.literal("archived"),
+  v.literal("deleted"),
+  v.literal("unknown")
+)
 
 const runLog = v.object({
   detail: v.optional(v.string()),
@@ -149,6 +167,61 @@ export default defineSchema({
     .index("by_sandbox", ["sandboxId"])
     .index("by_trigger_run", ["triggerRunId"])
     .index("by_user_updated", ["userId", "updatedAt"]),
+
+  billingCustomers: defineTable({
+    autumnCustomerId: v.string(),
+    createdAt: v.number(),
+    email: v.optional(v.string()),
+    name: v.optional(v.string()),
+    planId: v.optional(billingPlanId),
+    status: v.optional(v.string()),
+    updatedAt: v.number(),
+    userId: v.id("users"),
+  })
+    .index("by_autumn_customer", ["autumnCustomerId"])
+    .index("by_user", ["userId"]),
+
+  billingUsageEvents: defineTable({
+    amountMicroUsd: v.number(),
+    createdAt: v.number(),
+    error: v.optional(v.string()),
+    idempotencyKey: v.string(),
+    metadata: v.optional(v.any()),
+    resourceId: v.optional(v.string()),
+    source: billingUsageSource,
+    status: billingUsageStatus,
+    trackedAt: v.optional(v.number()),
+    updatedAt: v.number(),
+    userId: v.id("users"),
+  })
+    .index("by_idempotency_key", ["idempotencyKey"])
+    .index("by_resource_source", ["resourceId", "source"])
+    .index("by_status_updated", ["status", "updatedAt"])
+    .index("by_user_created", ["userId", "createdAt"])
+    .index("by_user_status", ["userId", "status"]),
+
+  billingSandboxSegments: defineTable({
+    active: v.boolean(),
+    amountMicroUsd: v.optional(v.number()),
+    cpu: v.number(),
+    diskGiB: v.number(),
+    endedAt: v.optional(v.number()),
+    idempotencyKey: v.optional(v.string()),
+    lastObservedAt: v.number(),
+    memoryGiB: v.number(),
+    rateVersion: v.string(),
+    sandboxId: v.string(),
+    source: v.union(v.literal("observed"), v.literal("webhook")),
+    startedAt: v.number(),
+    state: daytonaBillingState,
+    usageEventId: v.optional(v.id("billingUsageEvents")),
+    userId: v.id("users"),
+  })
+    .index("by_sandbox_active", ["sandboxId", "active"])
+    .index("by_sandbox_started", ["sandboxId", "startedAt"])
+    .index("by_active", ["active"])
+    .index("by_user_active", ["userId", "active"])
+    .index("by_user_started", ["userId", "startedAt"]),
 
   sshAccessTokens: defineTable({
     accessId: v.string(),

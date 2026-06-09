@@ -2,6 +2,12 @@ import { randomUUID } from "node:crypto"
 
 import { Daytona, type Sandbox } from "@daytona/sdk"
 
+import {
+  daytonaBillingState,
+  type DaytonaBillingResources,
+  type DaytonaBillingState,
+} from "./billing"
+
 const DAYTONA_TERMINAL_PORT = 22222
 const DEFAULT_SSH_ACCESS_MINUTES = 60
 const DEFAULT_DAYTONA_HOME =
@@ -69,8 +75,12 @@ export type DaytonaSandboxInfo = {
   autoArchiveInterval: number | null
   autoDeleteInterval: number | null
   autoStopInterval: number | null
+  billingState: DaytonaBillingState
   createdAt: number | null
+  cpu: number
+  diskGiB: number
   lastActivityAt: number | null
+  memoryGiB: number
   rawState?: string
   sandboxId: string
   state: DaytonaUiState
@@ -313,16 +323,43 @@ export async function readDaytonaSandboxInfo(
 }
 
 function daytonaSandboxInfo(sandbox: Sandbox): DaytonaSandboxInfo {
+  const resources = daytonaSandboxBillingResources(sandbox)
+
   return {
     autoArchiveInterval: sandbox.autoArchiveInterval ?? null,
     autoDeleteInterval: sandbox.autoDeleteInterval ?? null,
     autoStopInterval: sandbox.autoStopInterval ?? null,
+    billingState: daytonaBillingState(sandbox.state),
     createdAt: timeValue(sandbox.createdAt),
+    cpu: resources.cpu,
+    diskGiB: resources.diskGiB,
     lastActivityAt: timeValue(sandbox.lastActivityAt),
+    memoryGiB: resources.memoryGiB,
     rawState: sandbox.state,
     sandboxId: sandbox.id,
     state: normalizeDaytonaState(sandbox.state),
     updatedAt: timeValue(sandbox.updatedAt),
+  }
+}
+
+export function daytonaSandboxBillingResources(
+  sandbox: Pick<Sandbox, "cpu" | "disk" | "memory">
+): DaytonaBillingResources {
+  const fallback = defaultDaytonaSandboxResources()
+
+  return {
+    cpu:
+      Number.isFinite(sandbox.cpu) && sandbox.cpu > 0
+        ? sandbox.cpu
+        : fallback.cpu,
+    diskGiB:
+      Number.isFinite(sandbox.disk) && sandbox.disk > 0
+        ? sandbox.disk
+        : fallback.disk,
+    memoryGiB:
+      Number.isFinite(sandbox.memory) && sandbox.memory > 0
+        ? sandbox.memory
+        : fallback.memory,
   }
 }
 

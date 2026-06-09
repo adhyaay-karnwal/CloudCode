@@ -181,6 +181,9 @@ type CachedRunState = {
 
 type SandboxState = "running" | "stopped" | "deleted" | "error"
 type SandboxAction = "pause" | "resume" | "delete"
+type SandboxActionResult =
+  | { ok: true }
+  | { message: string; ok: false; status?: number }
 
 function normalizeSandboxActionState(
   value: unknown,
@@ -500,6 +503,9 @@ function ChatInner() {
     null
   )
   const [pendingSandboxDelete, setPendingSandboxDelete] = useState(false)
+  const [resumeBillingNotice, setResumeBillingNotice] = useState<string | null>(
+    null
+  )
   const [sandboxAction, setSandboxAction] = useState<SandboxAction | null>(null)
   const [input, setInput] = useState("")
   const [draftRepo, setDraftRepo] = useState(() =>
@@ -2016,8 +2022,10 @@ function ChatInner() {
     action: Exclude<SandboxAction, "delete">,
     endpoint: string,
     fallbackState: SandboxState
-  ) {
-    if (!active || !activeSandboxId || sandboxAction) return
+  ): Promise<SandboxActionResult> {
+    if (!active || !activeSandboxId || sandboxAction) {
+      return { message: `Unable to ${action} sandbox.`, ok: false }
+    }
 
     const threadId = active.id
     const sandboxId = activeSandboxId
@@ -2034,28 +2042,42 @@ function ChatInner() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sandboxId }),
       })
-      const data = (await res.json()) as {
+      const data = (await res.json().catch(() => null)) as {
+        error?: unknown
         sandboxId?: unknown
         state?: unknown
-      }
+      } | null
       if (!res.ok) {
-        throw new Error(
+        const message =
           typeof data === "object" &&
-            data &&
-            "error" in data &&
-            typeof data.error === "string"
+          data &&
+          "error" in data &&
+          typeof data.error === "string"
             ? data.error
             : `Failed to ${action} sandbox.`
-        )
+        console.warn(`Failed to ${action} sandbox.`, message)
+        return {
+          message,
+          ok: false,
+          status: res.status,
+        }
       }
 
       await persistSandboxState(
         threadId,
-        typeof data.sandboxId === "string" ? data.sandboxId : sandboxId,
-        normalizeSandboxActionState(data.state, fallbackState)
+        typeof data?.sandboxId === "string" ? data.sandboxId : sandboxId,
+        normalizeSandboxActionState(data?.state, fallbackState)
       )
+      return { ok: true }
     } catch (error) {
       console.warn(`Failed to ${action} sandbox.`, error)
+      return {
+        message:
+          error instanceof Error
+            ? error.message
+            : `Failed to ${action} sandbox.`,
+        ok: false,
+      }
     } finally {
       setSandboxAction(null)
     }
@@ -2068,7 +2090,18 @@ function ChatInner() {
   }
 
   function resumeActiveSandbox() {
-    void runSandboxAction("resume", "/api/sandbox/resume", "running")
+    void (async () => {
+      const result = await runSandboxAction(
+        "resume",
+        "/api/sandbox/resume",
+        "running"
+      )
+      if (!result.ok && result.status === 402) {
+        setResumeBillingNotice(
+          "You need available billing credits to resume this Daytona sandbox."
+        )
+      }
+    })()
   }
 
   function requestDeleteActiveSandbox() {
@@ -2480,6 +2513,21 @@ function ChatInner() {
           destructive
           onCancel={() => setPendingSandboxDelete(false)}
           onConfirm={confirmDeleteActiveSandbox}
+        />
+      ) : null}
+
+      {resumeBillingNotice ? (
+        <ConfirmDialog
+          title="No credits remaining"
+          description={resumeBillingNotice}
+          cancelLabel="Close"
+          confirmLabel="Open settings"
+          confirmWhite
+          onCancel={() => setResumeBillingNotice(null)}
+          onConfirm={() => {
+            setResumeBillingNotice(null)
+            showSettings()
+          }}
         />
       ) : null}
 
@@ -3499,6 +3547,7 @@ function ConfirmDialog({
   confirmLabel = "Confirm",
   cancelLabel = "Cancel",
   destructive,
+  confirmWhite,
   onConfirm,
   onCancel,
 }: {
@@ -3507,6 +3556,7 @@ function ConfirmDialog({
   confirmLabel?: string
   cancelLabel?: string
   destructive?: boolean
+  confirmWhite?: boolean
   onConfirm: () => void
   onCancel: () => void
 }) {
@@ -3552,7 +3602,7 @@ function ConfirmDialog({
           <button
             type="button"
             onClick={onCancel}
-            className="rounded-lg border border-border px-3 py-2 text-sm text-foreground/80 transition-colors hover:bg-muted"
+            className="rounded-lg border border-border px-3 py-1.5 text-sm text-foreground/80 transition-colors hover:bg-muted"
           >
             {cancelLabel}
           </button>
@@ -3560,10 +3610,12 @@ function ConfirmDialog({
             type="button"
             onClick={onConfirm}
             className={cn(
-              "rounded-lg px-3 py-2 text-sm transition-colors",
+              "rounded-lg px-3 py-1.5 text-sm transition-colors",
               destructive
                 ? "text-destructive-foreground bg-destructive hover:bg-destructive/90"
-                : "bg-foreground text-background hover:bg-foreground/90"
+                : confirmWhite
+                  ? "border border-border text-foreground/80 hover:bg-muted"
+                  : "bg-foreground text-background hover:bg-foreground/90"
             )}
           >
             {confirmLabel}

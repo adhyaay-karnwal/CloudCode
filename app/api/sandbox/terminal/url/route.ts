@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server"
 
 import {
+  BillingRequiredError,
+  getStartedCurrentUserDaytonaSandbox,
+} from "@/lib/billing-server"
+import {
   getDaytonaTerminalUrl,
-  getStartedDaytonaSandbox,
   resolveDaytonaPaths,
 } from "@/lib/daytona-sandbox"
 import { maybeGetCurrentGitHubRepoCredential } from "@/lib/github-auth"
@@ -32,8 +35,13 @@ export async function GET(request: Request) {
       sandboxAccess.repoUrl
     )
 
+    let sandbox:
+      | Awaited<
+          ReturnType<typeof getStartedCurrentUserDaytonaSandbox>
+        >["sandbox"]
+      | undefined
     if (githubAuth?.token) {
-      const sandbox = await getStartedDaytonaSandbox(sandboxId)
+      sandbox = (await getStartedCurrentUserDaytonaSandbox(sandboxId)).sandbox
       const paths = await resolveDaytonaPaths(sandbox)
       const auth = await setupSandboxGitHubAuth({
         githubToken: githubAuth.token,
@@ -52,10 +60,18 @@ export async function GET(request: Request) {
       })
     }
 
+    if (!sandbox) {
+      await getStartedCurrentUserDaytonaSandbox(sandboxId)
+    }
+
     return NextResponse.json({
       url: await getDaytonaTerminalUrl(sandboxId),
     })
   } catch (error) {
+    if (error instanceof BillingRequiredError) {
+      return NextResponse.json({ error: error.message }, { status: 402 })
+    }
+
     return NextResponse.json(
       {
         error:

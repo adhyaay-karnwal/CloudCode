@@ -2,6 +2,7 @@ import { auth } from "@clerk/nextjs/server"
 import { ConvexHttpClient } from "convex/browser"
 
 import { api } from "@/convex/_generated/api"
+import type { Id } from "@/convex/_generated/dataModel"
 import { getConvexAuthTokenForSession } from "@/lib/codex-auth"
 
 export class SandboxAuthorizationError extends Error {
@@ -13,6 +14,7 @@ export class SandboxAuthorizationError extends Error {
 
 export type CurrentUserSandbox = {
   repoUrl: string
+  userId: Id<"users">
 }
 
 const SANDBOX_ACCESS_CACHE_TTL_MS = 15_000

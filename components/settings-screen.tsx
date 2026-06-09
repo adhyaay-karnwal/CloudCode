@@ -1,6 +1,6 @@
 "use client"
 
-import { useMutation, useQuery } from "convex/react"
+import { useAction, useMutation, useQuery } from "convex/react"
 import {
   Check,
   CheckCircle2,
@@ -8,6 +8,7 @@ import {
   Circle,
   ClipboardPaste,
   CornerDownRight,
+  CreditCard,
   Globe,
   KeyRound,
   Layers3,
@@ -33,6 +34,7 @@ import type {
   CodexAuthAccountStatus,
   CodexAuthOverview,
 } from "@/lib/codex-auth-types"
+import { BILLING_PLANS, type BillingPlanId } from "@/lib/billing"
 import { dedupeEnvVars, parseDotenv } from "@/lib/dotenv-parse"
 import { cn } from "@/lib/utils"
 
@@ -257,6 +259,7 @@ export function SettingsScreen({
             </div>
           </section>
 
+          <BillingSettings />
           <McpSettings
             error={mcpError}
             loading={mcpLoading}
@@ -268,6 +271,88 @@ export function SettingsScreen({
       </div>
     </div>
   )
+}
+
+function BillingSettings() {
+  const billing = useQuery(api.billing.viewer)
+  const attachPlan = useAction(api.billing.attachCurrentUserPlan)
+  const [busyPlanId, setBusyPlanId] = useState<BillingPlanId | null>(null)
+  const [error, setError] = useState("")
+  const currentPlanId = billing?.customer?.planId
+
+  async function purchasePlan(planId: BillingPlanId) {
+    if (busyPlanId) return
+
+    setBusyPlanId(planId)
+    setError("")
+
+    try {
+      const successUrl = new URL(window.location.origin)
+      successUrl.searchParams.set("view", "settings")
+      const result = await attachPlan({
+        planId,
+        successUrl: successUrl.toString(),
+      })
+
+      if (result.checkoutUrl) {
+        window.location.assign(result.checkoutUrl)
+        return
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to start checkout.")
+    } finally {
+      setBusyPlanId(null)
+    }
+  }
+
+  return (
+    <section className="mt-8 space-y-2">
+      <h2 className={cn(sectionLabel, "px-1")}>Billing</h2>
+      <div className={card}>
+        <div className={cn(cardRow, "flex-wrap")}>
+          <CreditCard className="size-5 shrink-0 text-muted-foreground" />
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-medium text-foreground/85">Autumn</div>
+            <div className="text-xs text-muted-foreground">
+              {currentPlanId
+                ? `Current plan: ${billingPlanName(currentPlanId)}`
+                : "Choose a subscription"}
+            </div>
+            {error ? (
+              <div className="mt-1 text-[11px] leading-4 text-destructive">
+                {error}
+              </div>
+            ) : null}
+          </div>
+          <div className="flex w-full flex-wrap justify-end gap-1.5 sm:w-auto">
+            {BILLING_PLANS.map((plan) => {
+              const busy = busyPlanId === plan.planId
+              const active = currentPlanId === plan.planId
+
+              return (
+                <button
+                  key={plan.planId}
+                  type="button"
+                  disabled={Boolean(busyPlanId) || active}
+                  onClick={() => void purchasePlan(plan.planId)}
+                  className={active ? navAction : navPrimary}
+                >
+                  {busy ? <Loader2 className="size-3.5 animate-spin" /> : null}
+                  {active
+                    ? `${plan.name} active`
+                    : `${plan.name} $${plan.priceUsd}`}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function billingPlanName(planId: string) {
+  return BILLING_PLANS.find((plan) => plan.planId === planId)?.name ?? planId
 }
 
 function ChatGPTConnectionRow({

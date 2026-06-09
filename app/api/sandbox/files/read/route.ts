@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server"
 
 import {
-  getStartedDaytonaSandbox,
+  BillingRequiredError,
+  getStartedCurrentUserDaytonaSandbox,
+} from "@/lib/billing-server"
+import {
   readDaytonaFile,
   readDaytonaTextFile,
   resolveDaytonaPaths,
 } from "@/lib/daytona-sandbox"
-import { requireCurrentUserSandbox } from "@/lib/sandbox-authorization"
 
 export const runtime = "nodejs"
 
@@ -54,8 +56,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    await requireCurrentUserSandbox(sandboxId)
-    const sandbox = await getStartedDaytonaSandbox(sandboxId)
+    const { sandbox } = await getStartedCurrentUserDaytonaSandbox(sandboxId)
     const paths = await resolveDaytonaPaths(sandbox)
     const fullPath = `${paths.repoPath}/${cleaned}`
     const info = await sandbox.fs.getFileDetails(fullPath)
@@ -109,6 +110,10 @@ export async function GET(request: Request) {
       size: info.size,
     })
   } catch (error) {
+    if (error instanceof BillingRequiredError) {
+      return NextResponse.json({ error: error.message }, { status: 402 })
+    }
+
     return NextResponse.json(
       {
         error: error instanceof Error ? error.message : "Failed to read file",

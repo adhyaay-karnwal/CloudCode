@@ -141,6 +141,21 @@ export async function POST(request: Request) {
         { status: 401 }
       )
     }
+
+    const billing = await client.action(
+      api.billing.checkCurrentUserInfraAccess,
+      {}
+    )
+    if (!billing.allowed) {
+      return NextResponse.json(
+        {
+          error:
+            "Add a Hobby or Plus subscription, or wait for your included usage to reset.",
+        },
+        { status: 402 }
+      )
+    }
+
     const encryptedGitHubToken = githubCredential?.token
       ? encryptSecret(githubCredential.token)
       : undefined
@@ -178,19 +193,20 @@ export async function POST(request: Request) {
       threadId,
       workerSecret: getWorkerSecret(),
     })
-    runId = created.runId
+    const createdRunId = created.runId
+    runId = createdRunId
 
     const handle = await tasks.trigger<typeof cloudcodeRun>(
       "cloudcode-run",
-      { runId },
+      { runId: createdRunId },
       {
-        idempotencyKey: runId,
+        idempotencyKey: createdRunId,
         tags: [`user:${created.userId}`, `thread:${threadId}`],
       }
     )
 
     const attached = await client.mutation(api.codexRuns.attachTriggerRun, {
-      runId,
+      runId: createdRunId,
       triggerRunId: handle.id,
     })
     if (attached.canceled) {
@@ -199,17 +215,17 @@ export async function POST(request: Request) {
       await runs.cancel(handle.id).catch((error) => {
         console.warn("Unable to cancel queued Trigger.dev run.", error)
       })
-      const sandbox = await syncDiscoveredSandbox(client, runId)
+      const sandbox = await syncDiscoveredSandbox(client, createdRunId)
       await client.mutation(api.codexRuns.finishQueuedCancel, {
-        runId,
+        runId: createdRunId,
         sandboxId: sandbox?.sandboxId,
         sandboxState: sandbox?.state,
         triggerRunId: handle.id,
       })
-      return NextResponse.json({ runId, triggerRunId: handle.id })
+      return NextResponse.json({ runId: createdRunId, triggerRunId: handle.id })
     }
 
-    return NextResponse.json({ runId, triggerRunId: handle.id })
+    return NextResponse.json({ runId: createdRunId, triggerRunId: handle.id })
   } catch (error) {
     console.error("/api/codex-run failed", error)
     if (runId) {

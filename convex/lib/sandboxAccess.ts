@@ -16,14 +16,14 @@ export async function sandboxAccessForUser(
     .withIndex("by_sandbox", (q) => q.eq("sandboxId", sandboxId))
     .take(10)
   const run = runs.find((candidate) => candidate.userId === userId)
-  if (run) return { repoUrl: run.repoUrl }
+  if (run) return { repoUrl: run.repoUrl, userId }
 
   const threads = await ctx.db
     .query("threads")
     .withIndex("by_sandbox", (q) => q.eq("sandboxId", sandboxId))
     .take(10)
   const thread = threads.find((candidate) => candidate.userId === userId)
-  if (thread) return { repoUrl: thread.repoUrl }
+  if (thread) return { repoUrl: thread.repoUrl, userId }
 
   return null
 }

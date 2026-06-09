@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 
+import { observeCurrentUserDaytonaBillingInfo } from "@/lib/billing-server"
 import { stopDaytonaSandbox } from "@/lib/daytona-sandbox"
 import { requireSameOrigin } from "@/lib/request-security"
 import { requireCurrentUserSandbox } from "@/lib/sandbox-authorization"
@@ -26,7 +27,11 @@ export async function POST(request: Request) {
 
   try {
     await requireCurrentUserSandbox(sandboxId)
-    return NextResponse.json(await stopDaytonaSandbox(sandboxId))
+    const info = await stopDaytonaSandbox(sandboxId)
+    await observeCurrentUserDaytonaBillingInfo(info).catch((error) => {
+      console.warn("Unable to observe paused sandbox billing.", error)
+    })
+    return NextResponse.json(info)
   } catch (error) {
     return NextResponse.json(
       {

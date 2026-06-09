@@ -187,6 +187,7 @@ export type RunCodexInSandboxInput = {
   signal?: AbortSignal
   speed?: CodexSpeed
   threadId?: string
+  userId?: string
 }
 
 export type RunCodexInSandboxResult = {
@@ -1819,6 +1820,7 @@ async function connectOrCreateSandbox(input: RunCodexInSandboxInput) {
       labels: {
         "cloudcode-run-id": input.runId,
         "cloudcode-thread-id": input.threadId,
+        "cloudcode-user-id": input.userId,
       },
       name: input.sandboxPreset?.name,
       snapshot: input.sandboxPreset?.daytonaSnapshot,

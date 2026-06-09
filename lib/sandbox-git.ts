@@ -1,7 +1,7 @@
 import type { Sandbox } from "@daytona/sdk"
 
+import { getStartedCurrentUserDaytonaSandbox } from "@/lib/billing-server"
 import {
-  getStartedDaytonaSandbox,
   repoCommandEnv,
   resolveDaytonaPaths,
   runDaytonaCommand,
@@ -10,7 +10,6 @@ import {
 } from "@/lib/daytona-sandbox"
 import { maybeGetCurrentGitHubRepoCredential } from "@/lib/github-auth"
 import { parseGitHubRepoUrl, type GitHubRepo } from "@/lib/github-repo"
-import { requireCurrentUserSandbox } from "@/lib/sandbox-authorization"
 import {
   configureSandboxGitHubRemote,
   setupSandboxGitHubAuth,
@@ -50,8 +49,9 @@ export type SandboxGitStatus = {
 export async function resolveSandboxGitContext(
   sandboxId: string
 ): Promise<SandboxGitContext> {
-  const { repoUrl } = await requireCurrentUserSandbox(sandboxId)
-  const sandbox = await getStartedDaytonaSandbox(sandboxId)
+  const { access, sandbox } =
+    await getStartedCurrentUserDaytonaSandbox(sandboxId)
+  const { repoUrl } = access
   const paths = await resolveDaytonaPaths(sandbox)
   return { paths, repo: parseGitHubRepoUrl(repoUrl), repoUrl, sandbox }
 }

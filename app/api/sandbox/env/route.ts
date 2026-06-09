@@ -2,6 +2,10 @@ import { NextResponse } from "next/server"
 import type { Sandbox } from "@daytona/sdk"
 
 import {
+  BillingRequiredError,
+  getStartedCurrentUserDaytonaSandbox,
+} from "@/lib/billing-server"
+import {
   getStartedDaytonaSandbox,
   readDaytonaTextFile,
   resolveDaytonaPaths,
@@ -103,8 +107,8 @@ async function getEnvPath(sandboxId: string, sandbox: Sandbox) {
   return fullPath
 }
 
-async function readEnvFile(sandboxId: string) {
-  const sandbox = await getStartedDaytonaSandbox(sandboxId)
+async function readEnvFile(sandboxId: string, providedSandbox?: Sandbox) {
+  const sandbox = providedSandbox ?? (await getStartedDaytonaSandbox(sandboxId))
   const fullPath = await getEnvPath(sandboxId, sandbox)
 
   try {
@@ -165,11 +169,15 @@ export async function GET(request: Request) {
   }
 
   try {
-    await requireCurrentUserSandbox(sandboxId)
-    const { content } = await readEnvFile(sandboxId)
+    const { sandbox } = await getStartedCurrentUserDaytonaSandbox(sandboxId)
+    const { content } = await readEnvFile(sandboxId, sandbox)
     const { userContent } = splitManagedBlock(content)
     return json({ entries: parseEntries(userContent) })
   } catch (error) {
+    if (error instanceof BillingRequiredError) {
+      return json({ error: error.message }, { status: 402 })
+    }
+
     return json(
       {
         error:
@@ -200,7 +208,8 @@ async function save(request: Request) {
 
   try {
     await requireCurrentUserSandbox(sandboxId)
-    const { content, fullPath, sandbox } = await readEnvFile(sandboxId)
+    const { sandbox } = await getStartedCurrentUserDaytonaSandbox(sandboxId)
+    const { content, fullPath } = await readEnvFile(sandboxId, sandbox)
     const { managedBlock } = splitManagedBlock(content)
 
     await writeDaytonaTextFile(
@@ -211,6 +220,10 @@ async function save(request: Request) {
 
     return json({ entries, ok: true })
   } catch (error) {
+    if (error instanceof BillingRequiredError) {
+      return json({ error: error.message }, { status: 402 })
+    }
+
     return json(
       {
         error:

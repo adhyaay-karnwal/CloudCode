@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server"
 
 import {
-  getStartedDaytonaSandbox,
+  BillingRequiredError,
+  getStartedCurrentUserDaytonaSandbox,
+} from "@/lib/billing-server"
+import {
   resolveDaytonaPaths,
   runDaytonaCommand,
   shellQuote,
 } from "@/lib/daytona-sandbox"
-import { requireCurrentUserSandbox } from "@/lib/sandbox-authorization"
 
 export const runtime = "nodejs"
 
@@ -59,8 +61,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    await requireCurrentUserSandbox(sandboxId)
-    const sandbox = await getStartedDaytonaSandbox(sandboxId)
+    const { sandbox } = await getStartedCurrentUserDaytonaSandbox(sandboxId)
     const root = requestedRoot || (await resolveDaytonaPaths(sandbox)).repoPath
     const skipNames = [...SKIP_DESCEND]
       .map((name) => `-name ${shellQuote(name)}`)
@@ -88,6 +89,10 @@ export async function GET(request: Request) {
       truncated: out.truncated,
     })
   } catch (error) {
+    if (error instanceof BillingRequiredError) {
+      return NextResponse.json({ error: error.message }, { status: 402 })
+    }
+
     return NextResponse.json(
       {
         error: error instanceof Error ? error.message : "Failed to list files",

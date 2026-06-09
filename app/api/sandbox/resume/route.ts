@@ -1,5 +1,11 @@
 import { NextResponse } from "next/server"
 
+import {
+  BillingRequiredError,
+  observeCurrentUserDaytonaBillingInfo,
+  pauseCurrentUserSandboxForBilling,
+  requireCurrentUserInfraAccess,
+} from "@/lib/billing-server"
 import { resumeDaytonaSandbox } from "@/lib/daytona-sandbox"
 import { requireSameOrigin } from "@/lib/request-security"
 import { requireCurrentUserSandbox } from "@/lib/sandbox-authorization"
@@ -26,8 +32,16 @@ export async function POST(request: Request) {
 
   try {
     await requireCurrentUserSandbox(sandboxId)
-    return NextResponse.json(await resumeDaytonaSandbox(sandboxId))
+    await requireCurrentUserInfraAccess()
+    const info = await resumeDaytonaSandbox(sandboxId)
+    await observeCurrentUserDaytonaBillingInfo(info)
+    return NextResponse.json(info)
   } catch (error) {
+    if (error instanceof BillingRequiredError) {
+      await pauseCurrentUserSandboxForBilling(sandboxId)
+      return NextResponse.json({ error: error.message }, { status: 402 })
+    }
+
     return NextResponse.json(
       {
         error:

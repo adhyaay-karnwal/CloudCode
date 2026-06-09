@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server"
 
-import { deleteDaytonaSandboxQuietly } from "@/lib/daytona-sandbox"
+import { observeCurrentUserDaytonaBilling } from "@/lib/billing-server"
+import {
+  deleteDaytonaSandboxQuietly,
+  readDaytonaSandboxInfo,
+} from "@/lib/daytona-sandbox"
 import { requireSameOrigin } from "@/lib/request-security"
 import { requireCurrentUserSandbox } from "@/lib/sandbox-authorization"
 
@@ -28,6 +32,21 @@ export async function POST(request: Request) {
     await requireCurrentUserSandbox(sandboxId)
   } catch {
     return NextResponse.json({ error: "Sandbox not found." }, { status: 404 })
+  }
+
+  const info = await readDaytonaSandboxInfo(sandboxId).catch(() => null)
+  if (info) {
+    await observeCurrentUserDaytonaBilling({
+      resources: {
+        cpu: info.cpu,
+        diskGiB: info.diskGiB,
+        memoryGiB: info.memoryGiB,
+      },
+      sandboxId,
+      state: "deleted",
+    }).catch((error) => {
+      console.warn("Unable to observe deleted sandbox billing.", error)
+    })
   }
 
   await deleteDaytonaSandboxQuietly(sandboxId)
