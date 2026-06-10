@@ -6,6 +6,7 @@ import {
   ArrowUp,
   Check,
   ChevronDown,
+  CornerDownRight,
   Folder,
   FolderOpen,
   GitBranch,
@@ -15,9 +16,11 @@ import {
   Monitor,
   PanelLeft,
   PanelRight,
+  Pencil,
   SquareTerminal,
   Square,
   StickyNote,
+  Trash2,
   X,
 } from "lucide-react"
 import dynamic from "next/dynamic"
@@ -340,6 +343,12 @@ type DraftImageAttachment = {
   url?: string
 }
 
+type QueuedMessage = {
+  attachments: ChatImageAttachment[]
+  id: string
+  text: string
+}
+
 type ThreadScrollSnapshot = {
   atBottom: boolean
   runKey: string
@@ -372,9 +381,14 @@ const MAX_PREFETCHED_CHANGED_TEXT_FILES = 12
 const TEXT_FILE_PREFETCH_CONCURRENCY = 2
 const TEXT_FILE_PREFETCH_DELAY_MS = 300
 const EMPTY_MESSAGES: Message[] = []
+const EMPTY_QUEUED_MESSAGES: QueuedMessage[] = []
 const STREAM_TOOL_MARKER_REGEX = /<codex-tool>[\s\S]*?<\/codex-tool>/g
 const CHAT_IMAGE_ATTACHMENT_ACCEPT = CHAT_IMAGE_ATTACHMENT_MIME_TYPES.join(",")
 const IMAGE_ONLY_PROMPT = "Please inspect the attached image(s)."
+
+function createQueuedMessageId() {
+  return `q_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+}
 
 function repoLabel(url: string) {
   if (!url) return "Untitled"
@@ -600,6 +614,13 @@ function ChatInner() {
   const [settingsSection, setSettingsSection] =
     useState<SettingsSectionId>("connections")
   const [runningRunKeys, setRunningRunKeys] = useState<Record<string, true>>({})
+  // Messages the user composed while a run was active, keyed by thread id. They
+  // flush automatically (FIFO) once the thread's run settles. Held client-side
+  // because flushing reuses the full composer send path and its local context.
+  const [queuedMessages, setQueuedMessages] = useState<
+    Record<string, QueuedMessage[]>
+  >({})
+  const autoSendingQueueRef = useRef<Set<string>>(new Set())
   const [liveRunStates, setLiveRunStates] = useState<
     Record<string, CachedRunState>
   >({})
@@ -1268,6 +1289,40 @@ function ChatInner() {
     visibleLiveRun?.threadId,
   ])
 
+  // Flush the next queued message for the open thread once its run settles. One
+  // message goes out at a time; each send marks the thread active again, which
+  // re-arms this effect for the remaining items (FIFO). The ref guards against
+  // re-entry during the async gap before the run is marked active.
+  useEffect(() => {
+    if (!activeId) return
+    const threadKey = activeId as string
+    const queue = queuedMessages[threadKey]
+    if (!queue || queue.length === 0) return
+    if (activeRunPending || queueingRunKeys.has(threadKey)) return
+    if (autoSendingQueueRef.current.has(threadKey)) return
+    const next = queue[0]
+    autoSendingQueueRef.current.add(threadKey)
+    setQueuedMessages((current) => {
+      const list = current[threadKey]
+      if (!list) return current
+      const rest = list.slice(1)
+      if (rest.length === 0) {
+        const updated = { ...current }
+        delete updated[threadKey]
+        return updated
+      }
+      return { ...current, [threadKey]: rest }
+    })
+    void sendRef
+      .current(next.text, {
+        attachments: next.attachments,
+        fromQueue: true,
+      })
+      .finally(() => {
+        autoSendingQueueRef.current.delete(threadKey)
+      })
+  }, [activeId, activeRunPending, queueingRunKeys, queuedMessages])
+
   useEffect(() => {
     const el = textareaRef.current
     if (!el) return
@@ -1754,6 +1809,7 @@ function ChatInner() {
       const sandboxId = threadSandboxId(id)
       await cancelCodexRun(id)
       clearRunKey(id as string)
+      clearQueuedMessages(id as string)
       if (sandboxId) closeBrowserTerminalSession(sandboxId)
 
       try {
@@ -1787,14 +1843,36 @@ function ChatInner() {
     void updateThread({ threadId: id, title: trimmed })
   }
 
-  async function send(prompt: string) {
+  async function send(
+    prompt: string,
+    options?: { attachments?: ChatImageAttachment[]; fromQueue?: boolean }
+  ) {
     const trimmed = prompt.trim()
-    const attachments = readyDraftAttachments
+    const fromQueue = options?.fromQueue ?? false
+    const attachments = options?.attachments ?? readyDraftAttachments
     const runPrompt = trimmed || IMAGE_ONLY_PROMPT
     const initialRunKey = activeId ? (activeId as string) : DRAFT_RUN_KEY
+    if ((!trimmed && attachments.length === 0) || userLoading) {
+      return
+    }
+    // A run is already in flight for the open thread: queue the message and let
+    // it flush once the run settles instead of silently dropping it.
+    if (!fromQueue && activeId && activeRunPending) {
+      if (uploadingAttachmentCount > 0) {
+        setAttachmentError("Wait for image uploads to finish before sending.")
+        return
+      }
+      if (failedAttachmentCount > 0) {
+        setAttachmentError("Remove failed image uploads before sending.")
+        return
+      }
+      enqueueMessage(activeId as string, trimmed, attachments)
+      setInput("")
+      setDraftAttachments([])
+      setAttachmentError("")
+      return
+    }
     if (
-      (!trimmed && attachments.length === 0) ||
-      userLoading ||
       runningRunKeysSet.has(initialRunKey) ||
       (active
         ? Boolean(active.pending) ||
@@ -1826,9 +1904,13 @@ function ChatInner() {
     let runKey = initialRunKey
     let queued = false
 
-    setInput("")
-    setDraftAttachments([])
-    setAttachmentError("")
+    // When flushing the queue the composer holds whatever the user is typing
+    // next, so only clear it for a direct send.
+    if (!fromQueue) {
+      setInput("")
+      setDraftAttachments([])
+      setAttachmentError("")
+    }
 
     queueingRunKeys.add(runKey)
     markRunActive(runKey)
@@ -1980,6 +2062,11 @@ function ChatInner() {
     }
   }
 
+  // Keep the latest `send` reachable from the queue-flush effect without
+  // listing the freshly-recreated function as an effect dependency.
+  const sendRef = useRef(send)
+  sendRef.current = send
+
   async function cancelCodexRun(threadId: Id<"threads">) {
     const key = threadId as string
     cancelRequestedThreadIds.add(key)
@@ -2010,6 +2097,86 @@ function ChatInner() {
     if (activeSandboxId) {
       closeBrowserTerminalSession(activeSandboxId)
       setTerminalOpen(false)
+    }
+  }
+
+  function enqueueMessage(
+    threadKey: string,
+    text: string,
+    attachments: ChatImageAttachment[]
+  ) {
+    setQueuedMessages((current) => {
+      const list = current[threadKey] ?? []
+      return {
+        ...current,
+        [threadKey]: [
+          ...list,
+          { attachments, id: createQueuedMessageId(), text },
+        ],
+      }
+    })
+  }
+
+  function removeQueuedMessage(threadKey: string, id: string) {
+    setQueuedMessages((current) => {
+      const list = current[threadKey]
+      if (!list) return current
+      const rest = list.filter((message) => message.id !== id)
+      if (rest.length === list.length) return current
+      if (rest.length === 0) {
+        const next = { ...current }
+        delete next[threadKey]
+        return next
+      }
+      return { ...current, [threadKey]: rest }
+    })
+  }
+
+  function clearQueuedMessages(threadKey: string) {
+    setQueuedMessages((current) => {
+      if (!current[threadKey]) return current
+      const next = { ...current }
+      delete next[threadKey]
+      return next
+    })
+  }
+
+  // Pull a queued message back into the composer so the user can revise it.
+  function editQueuedMessage(threadKey: string, id: string) {
+    const target = queuedMessages[threadKey]?.find(
+      (message) => message.id === id
+    )
+    if (!target) return
+    removeQueuedMessage(threadKey, id)
+    setInput(target.text)
+    if (target.attachments.length) {
+      setDraftAttachments((current) => [
+        ...current,
+        ...target.attachments.map((attachment) => ({
+          ...attachment,
+          status: "ready" as const,
+        })),
+      ])
+    }
+    requestAnimationFrame(() => textareaRef.current?.focus())
+  }
+
+  // Interrupt the active run and send this message next. Moving it to the front
+  // of the queue means the auto-flush effect picks it up first once the run
+  // settles from the cancellation.
+  function steerQueuedMessage(threadKey: string, id: string) {
+    setQueuedMessages((current) => {
+      const list = current[threadKey]
+      if (!list) return current
+      const target = list.find((message) => message.id === id)
+      if (!target) return current
+      return {
+        ...current,
+        [threadKey]: [target, ...list.filter((message) => message.id !== id)],
+      }
+    })
+    if (active && (active.id as string) === threadKey && activeRunPending) {
+      void cancelCodexRun(active.id)
     }
   }
 
@@ -2272,9 +2439,65 @@ function ChatInner() {
     setTerminalOpen((value) => !value)
   }, [])
 
+  const activeQueuedMessages = activeId
+    ? (queuedMessages[activeId as string] ?? EMPTY_QUEUED_MESSAGES)
+    : EMPTY_QUEUED_MESSAGES
   const composerBlock =
     view === "settings" || activeFilePath || notesOpen ? null : (
       <div className="pointer-events-auto w-full max-w-3xl rounded-3xl">
+        {activeQueuedMessages.length > 0 && activeId ? (
+          <div className="mb-2 flex flex-col gap-1.5">
+            {activeQueuedMessages.map((queued) => {
+              const label =
+                queued.text.trim() ||
+                (queued.attachments.length
+                  ? `${queued.attachments.length} image${
+                      queued.attachments.length > 1 ? "s" : ""
+                    }`
+                  : "Queued message")
+              return (
+                <div
+                  key={queued.id}
+                  className="flex items-center gap-1.5 rounded-2xl border border-field/70 bg-background px-3 py-1.5"
+                >
+                  <CornerDownRight className="size-4 shrink-0 text-muted-foreground/70" />
+                  <span className="min-w-0 flex-1 truncate text-sm text-foreground">
+                    {label}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      steerQueuedMessage(activeId as string, queued.id)
+                    }
+                    title="Interrupt the running task and send this now"
+                    className="flex shrink-0 items-center gap-1 rounded-full px-2 py-1 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  >
+                    <CornerDownRight className="size-3.5" />
+                    Steer
+                  </button>
+                  <IconButton
+                    onClick={() =>
+                      editQueuedMessage(activeId as string, queued.id)
+                    }
+                    aria-label="Edit queued message"
+                    title="Edit"
+                  >
+                    <Pencil className="size-4" />
+                  </IconButton>
+                  <IconButton
+                    onClick={() =>
+                      removeQueuedMessage(activeId as string, queued.id)
+                    }
+                    aria-label="Delete queued message"
+                    title="Delete"
+                  >
+                    <Trash2 className="size-4" />
+                  </IconButton>
+                </div>
+              )
+            })}
+          </div>
+        ) : null}
         <form
           onSubmit={onSubmit}
           onDragOver={onComposerDragOver}
