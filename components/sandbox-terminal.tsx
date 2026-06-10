@@ -408,14 +408,6 @@ function isEditableElement(element: Element | null) {
   )
 }
 
-function bytesFromBinary(binary: string) {
-  const bytes = new Uint8Array(binary.length)
-  for (let i = 0; i < binary.length; i += 1) {
-    bytes[i] = binary.charCodeAt(i)
-  }
-  return bytes
-}
-
 export function SandboxTerminalPanel({
   open,
   sandboxId,
@@ -948,11 +940,17 @@ function SandboxTerminalPane({
     const fitAddon = new FitAddon()
     const node = containerRef.current
     let disposed = false
+    let connectedOnce = false
     let inputFlushTimer: ReturnType<typeof setTimeout> | undefined
-    let inputSendQueue = Promise.resolve()
+    let reconnectAttempt = 0
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined
     let pendingInput = ""
     let resizeTimer: ReturnType<typeof setTimeout> | undefined
+    let socket: WebSocket | undefined
+    let socketConnectionId = 0
+    let socketInputReady = false
     let lastSize = { cols: 0, rows: 0 }
+    const inputEncoder = new TextEncoder()
 
     function setTerminalState(
       status: TerminalStatus,
@@ -961,9 +959,9 @@ function SandboxTerminalPane({
       onStatusChange(terminalId, { error, status })
     }
 
-    function postTerminal(payload: Record<string, unknown>) {
+    function postTerminalControl(payload: Record<string, unknown>) {
       if (disposed) return Promise.resolve()
-      return fetch("/api/sandbox/terminal/pty", {
+      return fetch("/api/sandbox/terminal/ws", {
         body: JSON.stringify({
           sandboxId: sessionSandboxId,
           terminalId,
@@ -985,24 +983,27 @@ function SandboxTerminalPane({
       })
     }
 
-    function sendInput(data: string) {
-      const send = inputSendQueue.then(() => postTerminal({ data }))
-      inputSendQueue = send.catch(() => undefined)
-
-      return send.catch((err) => {
-        if (disposed) return
-        setTerminalState(
-          "error",
-          err instanceof Error ? err.message : "Terminal input failed."
-        )
-        throw err
-      })
-    }
     function flushInput() {
       if (!pendingInput || disposed) return
+      if (
+        !socketInputReady ||
+        !socket ||
+        socket.readyState !== WebSocket.OPEN
+      ) {
+        return
+      }
+
       const data = pendingInput
       pendingInput = ""
-      void sendInput(data).catch(() => undefined)
+      try {
+        socket.send(inputEncoder.encode(data))
+      } catch (error) {
+        pendingInput = data + pendingInput
+        setTerminalState(
+          "error",
+          error instanceof Error ? error.message : "Terminal input failed."
+        )
+      }
     }
 
     function sendResize() {
@@ -1018,9 +1019,9 @@ function SandboxTerminalPane({
       if (!cols || !rows) return
       if (cols === lastSize.cols && rows === lastSize.rows) return
       lastSize = { cols, rows }
-      void postTerminal({ action: "resize", cols, rows }).catch(() => {
-        // The initial resize can race the PTY connection; the GET request also
-        // carries the first size, so missing this one is harmless.
+      void postTerminalControl({ action: "resize", cols, rows }).catch(() => {
+        // The initial resize can race the PTY creation; the WebSocket prep
+        // request also carries the first size, so missing this one is harmless.
       })
     }
 
@@ -1103,58 +1104,163 @@ function SandboxTerminalPane({
       lastSize = { cols: 100, rows: 30 }
     }
 
-    const params = new URLSearchParams({
-      cols: String(lastSize.cols || 100),
-      rows: String(lastSize.rows || 30),
-      sandboxId: sessionSandboxId,
-      terminalId,
-    })
-
     setTerminalState("connecting")
 
-    const eventSource = new EventSource(`/api/sandbox/terminal/pty?${params}`)
-    eventSource.onmessage = (event) => {
-      if (disposed) return
-      let message: { data?: unknown; error?: unknown; type?: unknown }
-      try {
-        message = JSON.parse(event.data) as {
-          data?: unknown
-          error?: unknown
-          type?: unknown
-        }
-      } catch {
-        return
+    function terminalWebSocketParams() {
+      return new URLSearchParams({
+        cols: String(lastSize.cols || 100),
+        rows: String(lastSize.rows || 30),
+        sandboxId: sessionSandboxId,
+        terminalId,
+      })
+    }
+
+    async function prepareTerminalWebSocket() {
+      const response = await fetch(
+        `/api/sandbox/terminal/ws?${terminalWebSocketParams()}`,
+        { cache: "no-store" }
+      )
+      const data = (await response.json().catch(() => undefined)) as
+        | { error?: unknown; protocol?: unknown; wsUrl?: unknown }
+        | undefined
+
+      if (!response.ok) {
+        throw new Error(
+          typeof data?.error === "string"
+            ? data.error
+            : "Unable to prepare Daytona terminal."
+        )
       }
 
-      if (message.type === "ready") {
-        setTerminalState("ready")
-        focusTerminal()
-        return
+      if (typeof data?.wsUrl !== "string" || !data.wsUrl.trim()) {
+        throw new Error("Daytona terminal WebSocket URL missing.")
       }
 
-      if (message.type === "data" && typeof message.data === "string") {
-        const binary = atob(message.data)
-        if (!binary) return
-
-        const bytes = bytesFromBinary(binary)
-        terminal.write(bytes)
-        return
-      }
-
-      if (message.type === "error") {
-        const detail =
-          typeof message.error === "string"
-            ? message.error
-            : "Unable to connect Daytona terminal."
-        setTerminalState("error", detail)
-        terminal.writeln(`\r\n${detail}`)
-        eventSource.close()
+      return {
+        protocol: typeof data.protocol === "string" ? data.protocol : undefined,
+        wsUrl: data.wsUrl,
       }
     }
-    eventSource.onerror = () => {
-      if (disposed || eventSource.readyState === EventSource.CLOSED) return
+
+    function scheduleReconnect() {
+      if (disposed || reconnectTimer) return
       setTerminalState("reconnecting")
+      const delay = Math.min(5_000, 250 * 2 ** reconnectAttempt)
+      reconnectAttempt += 1
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = undefined
+        void connectSocket()
+      }, delay)
     }
+
+    function handleSocketError(error: string) {
+      if (disposed) return
+      setTerminalState("error", error)
+      terminal.writeln(`\r\n${error}`)
+    }
+
+    async function socketBytes(data: unknown) {
+      if (data instanceof ArrayBuffer) return new Uint8Array(data)
+      if (ArrayBuffer.isView(data)) {
+        return new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+      }
+      if (data instanceof Blob) return new Uint8Array(await data.arrayBuffer())
+      return null
+    }
+
+    async function handleSocketMessage(event: MessageEvent) {
+      if (disposed) return
+
+      if (typeof event.data === "string") {
+        try {
+          const message = JSON.parse(event.data) as {
+            error?: unknown
+            status?: unknown
+            type?: unknown
+          }
+          if (message.type === "control") {
+            if (message.status === "connected") {
+              connectedOnce = true
+              reconnectAttempt = 0
+              socketInputReady = true
+              setTerminalState("ready")
+              flushInput()
+              focusTerminal()
+              return
+            }
+            if (message.status === "error") {
+              handleSocketError(
+                typeof message.error === "string"
+                  ? message.error
+                  : "Unable to connect Daytona terminal."
+              )
+              socket?.close()
+              return
+            }
+          }
+        } catch {
+          // Non-control strings are PTY output.
+        }
+
+        terminal.write(event.data)
+        return
+      }
+
+      const bytes = await socketBytes(event.data)
+      if (bytes?.byteLength) terminal.write(bytes)
+    }
+
+    async function connectSocket() {
+      const connectionId = socketConnectionId + 1
+      socketConnectionId = connectionId
+      socketInputReady = false
+
+      try {
+        const { protocol, wsUrl } = await prepareTerminalWebSocket()
+        if (disposed || connectionId !== socketConnectionId) return
+
+        socket?.close()
+        socket = protocol
+          ? new WebSocket(wsUrl, protocol)
+          : new WebSocket(wsUrl)
+        socket.binaryType = "arraybuffer"
+        socket.onmessage = (event) => {
+          void handleSocketMessage(event)
+        }
+        socket.onerror = () => {
+          if (!disposed) setTerminalState("reconnecting")
+        }
+        socket.onclose = (event) => {
+          if (disposed || connectionId !== socketConnectionId) return
+          socketInputReady = false
+          socket = undefined
+
+          if (!connectedOnce) {
+            handleSocketError(
+              event.reason || "Unable to connect Daytona terminal."
+            )
+            return
+          }
+
+          scheduleReconnect()
+        }
+      } catch (error) {
+        if (disposed || connectionId !== socketConnectionId) return
+
+        const detail =
+          error instanceof Error
+            ? error.message
+            : "Unable to connect Daytona terminal."
+        if (connectedOnce) {
+          setTerminalState("reconnecting")
+          scheduleReconnect()
+        } else {
+          handleSocketError(detail)
+        }
+      }
+    }
+
+    void connectSocket()
 
     return () => {
       unregisterCloser()
@@ -1165,13 +1271,14 @@ function SandboxTerminalPane({
         clearTimeout(inputFlushTimer)
         inputFlushTimer = undefined
       }
+      if (reconnectTimer) clearTimeout(reconnectTimer)
       if (resizeTimer) clearTimeout(resizeTimer)
       flushInput()
       disposed = true
       dataDisposable.dispose()
       resizeObserver?.disconnect()
       window.removeEventListener("resize", scheduleResize)
-      eventSource.close()
+      socket?.close()
       terminal.dispose()
       if (terminalRef.current === terminal) terminalRef.current = null
     }

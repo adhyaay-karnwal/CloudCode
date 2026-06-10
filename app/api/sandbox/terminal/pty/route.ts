@@ -114,14 +114,19 @@ export async function GET(request: Request) {
       }
 
       try {
-        const githubAuthPromise = daytonaTerminalHasCurrentGitHubAuth(
+        const githubAuth = daytonaTerminalHasCurrentGitHubAuth(
           sandboxId,
           terminalId
         )
           ? null
-          : maybeGetCurrentGitHubRepoCredential(sandboxAccess.repoUrl)
+          : await maybeGetCurrentGitHubRepoCredential(sandboxAccess.repoUrl)
         const connection = await connectDaytonaTerminal({
           cols,
+          githubToken: githubAuth?.token,
+          githubTokenExpiresAt: githubAuth?.expiresAt,
+          githubUserEmail: githubAuth?.gitUserEmail,
+          githubUserName: githubAuth?.gitUserName,
+          githubUsername: githubAuth?.username,
           onData: (data) => {
             enqueue(terminalData(data))
           },
@@ -161,24 +166,6 @@ export async function GET(request: Request) {
         connection.activate()
         enqueue({ type: "ready" })
         heartbeat = setInterval(() => enqueue({ type: "ping" }), 20_000)
-
-        if (githubAuthPromise) {
-          void githubAuthPromise
-            .then((githubAuth) =>
-              refreshTerminalGitHubAuthFromCredential({
-                githubAuth,
-                repoUrl: sandboxAccess.repoUrl,
-                sandboxId,
-                terminalId,
-              })
-            )
-            .catch((error: unknown) => {
-              console.warn(
-                "Unable to refresh Daytona terminal GitHub auth.",
-                error
-              )
-            })
-        }
       } catch (error) {
         enqueue({
           error:

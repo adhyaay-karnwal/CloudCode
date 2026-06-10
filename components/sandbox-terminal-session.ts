@@ -76,7 +76,7 @@ export function killBrowserTerminalSession(
     forgetTerminalSession(sandboxId, terminalId)
   }
 
-  return fetch("/api/sandbox/terminal/pty", {
+  return fetch("/api/sandbox/terminal/ws", {
     body: JSON.stringify({ sandboxId, terminalId }),
     cache: "no-store",
     headers: { "Content-Type": "application/json" },
