@@ -24,6 +24,9 @@ export class BillingRequiredError extends Error {
   }
 }
 
+const INFRA_ACCESS_CACHE_TTL_MS = 15_000
+const INFRA_ACCESS_CACHE_MAX_ENTRIES = 500
+
 function getConvexUrl() {
   const url = process.env.NEXT_PUBLIC_CONVEX_URL
 
@@ -41,6 +44,36 @@ async function currentUserConvexClient() {
   const client = new ConvexHttpClient(getConvexUrl())
   client.setAuth(await getConvexAuthTokenForSession(session))
   return client
+}
+
+async function checkCurrentUserInfraAccess(client: ConvexHttpClient) {
+  const billing = await client.action(
+    api.billing.checkCurrentUserInfraAccess,
+    {}
+  )
+  if (!billing.allowed) throw new BillingRequiredError()
+  return billing
+}
+
+type InfraAccess = Awaited<ReturnType<typeof checkCurrentUserInfraAccess>>
+
+type InfraAccessCacheEntry = {
+  expiresAt: number
+  promise: Promise<InfraAccess>
+}
+
+const infraAccessCache = new Map<string, InfraAccessCacheEntry>()
+
+function pruneInfraAccessCache(now: number) {
+  for (const [key, entry] of infraAccessCache) {
+    if (entry.expiresAt <= now) infraAccessCache.delete(key)
+  }
+
+  while (infraAccessCache.size > INFRA_ACCESS_CACHE_MAX_ENTRIES) {
+    const oldest = infraAccessCache.keys().next()
+    if (oldest.done) break
+    infraAccessCache.delete(oldest.value)
+  }
 }
 
 export async function observeCurrentUserDaytonaBilling({
@@ -67,13 +100,31 @@ export async function observeCurrentUserDaytonaBilling({
 }
 
 export async function requireCurrentUserInfraAccess() {
-  const client = await currentUserConvexClient()
-  const billing = await client.action(
-    api.billing.checkCurrentUserInfraAccess,
-    {}
-  )
-  if (!billing.allowed) throw new BillingRequiredError()
-  return billing
+  const session = await auth()
+  if (!session.userId) throw new Error("Not authenticated.")
+
+  const now = Date.now()
+  const cached = infraAccessCache.get(session.userId)
+  if (cached && cached.expiresAt > now) return await cached.promise
+  if (cached) infraAccessCache.delete(session.userId)
+
+  const client = new ConvexHttpClient(getConvexUrl())
+  client.setAuth(await getConvexAuthTokenForSession(session))
+
+  const promise = checkCurrentUserInfraAccess(client)
+  infraAccessCache.set(session.userId, {
+    expiresAt: now + INFRA_ACCESS_CACHE_TTL_MS,
+    promise,
+  })
+  pruneInfraAccessCache(now)
+
+  promise.catch(() => {
+    if (infraAccessCache.get(session.userId)?.promise === promise) {
+      infraAccessCache.delete(session.userId)
+    }
+  })
+
+  return await promise
 }
 
 export async function observeCurrentUserDaytonaBillingInfo(

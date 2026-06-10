@@ -12,6 +12,7 @@ import {
 } from "@/lib/daytona-terminal-sessions"
 import {
   prepareDaytonaTerminalWebSocket,
+  refreshDaytonaTerminalWebSocketGitHubAuth,
   resizeDaytonaTerminalWebSocket,
 } from "@/lib/daytona-terminal-websocket"
 import { readDaytonaSandboxInfo } from "@/lib/daytona-sandbox"
@@ -28,17 +29,12 @@ function numberParam(value: string | null, fallback: number) {
 }
 
 async function requireTerminalAccess(sandboxId: string) {
-  try {
-    const sandboxAccess = await requireCurrentUserSandbox(sandboxId)
-    await requireCurrentUserInfraAccess()
-    return { sandboxAccess }
-  } catch (error) {
-    if (error instanceof BillingRequiredError) {
-      await pauseCurrentUserSandboxForBilling(sandboxId)
-      return {
-        response: NextResponse.json({ error: error.message }, { status: 402 }),
-      }
-    }
+  const [sandboxAccessResult, infraAccessResult] = await Promise.allSettled([
+    requireCurrentUserSandbox(sandboxId),
+    requireCurrentUserInfraAccess(),
+  ])
+
+  if (sandboxAccessResult.status === "rejected") {
     return {
       response: NextResponse.json(
         { error: "Sandbox not found." },
@@ -46,6 +42,25 @@ async function requireTerminalAccess(sandboxId: string) {
       ),
     }
   }
+
+  if (infraAccessResult.status === "rejected") {
+    const error = infraAccessResult.reason
+    if (error instanceof BillingRequiredError) {
+      await pauseCurrentUserSandboxForBilling(sandboxId)
+      return {
+        response: NextResponse.json({ error: error.message }, { status: 402 }),
+      }
+    }
+
+    return {
+      response: NextResponse.json(
+        { error: "Sandbox not found." },
+        { status: 404 }
+      ),
+    }
+  }
+
+  return { sandboxAccess: sandboxAccessResult.value }
 }
 
 function terminalRequiredResponse() {
@@ -73,31 +88,44 @@ export async function GET(request: Request) {
   if ("response" in access) return access.response
 
   try {
-    const githubAuth = daytonaTerminalHasCurrentGitHubAuth(
+    const githubAuthPromise = daytonaTerminalHasCurrentGitHubAuth(
       sandboxId,
       terminalId
     )
       ? null
-      : await maybeGetCurrentGitHubRepoCredential(access.sandboxAccess.repoUrl)
+      : maybeGetCurrentGitHubRepoCredential(access.sandboxAccess.repoUrl)
 
     const terminal = await prepareDaytonaTerminalWebSocket({
       cols,
-      githubToken: githubAuth?.token,
-      githubTokenExpiresAt: githubAuth?.expiresAt,
-      githubUserEmail: githubAuth?.gitUserEmail,
-      githubUserName: githubAuth?.gitUserName,
-      githubUsername: githubAuth?.username,
-      repoUrl: access.sandboxAccess.repoUrl,
       rows,
       sandboxId,
       terminalId,
     })
 
-    await readDaytonaSandboxInfo(sandboxId)
+    void readDaytonaSandboxInfo(sandboxId)
       .then(observeCurrentUserDaytonaBillingInfo)
       .catch((error: unknown) => {
         console.warn("Unable to observe terminal sandbox billing.", error)
       })
+
+    if (githubAuthPromise) {
+      void githubAuthPromise
+        .then((githubAuth) =>
+          refreshDaytonaTerminalWebSocketGitHubAuth({
+            githubToken: githubAuth?.token,
+            githubTokenExpiresAt: githubAuth?.expiresAt,
+            githubUserEmail: githubAuth?.gitUserEmail,
+            githubUserName: githubAuth?.gitUserName,
+            githubUsername: githubAuth?.username,
+            repoUrl: access.sandboxAccess.repoUrl,
+            sandboxId,
+            terminalId,
+          })
+        )
+        .catch((error: unknown) => {
+          console.warn("Unable to refresh terminal GitHub auth.", error)
+        })
+    }
 
     return NextResponse.json(terminal, {
       headers: { "Cache-Control": "no-store" },
@@ -147,7 +175,7 @@ export async function POST(request: Request) {
       sandboxId,
       terminalId,
     })
-    await readDaytonaSandboxInfo(sandboxId)
+    void readDaytonaSandboxInfo(sandboxId)
       .then(observeCurrentUserDaytonaBillingInfo)
       .catch((error: unknown) => {
         console.warn("Unable to observe terminal resize billing.", error)

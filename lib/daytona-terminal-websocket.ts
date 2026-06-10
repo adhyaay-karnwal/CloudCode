@@ -22,6 +22,33 @@ export type DaytonaTerminalWebSocket = {
   wsUrl: string
 }
 
+type DaytonaTerminalSandbox = Awaited<
+  ReturnType<typeof getStartedDaytonaSandbox>
+>
+
+type DaytonaTerminalContext = {
+  paths: Awaited<ReturnType<typeof resolveDaytonaPaths>>
+  sandbox: DaytonaTerminalSandbox
+}
+
+const TERMINAL_CONTEXT_CACHE_TTL_MS = 30_000
+
+const terminalSandboxCache = new Map<
+  string,
+  {
+    expiresAt: number
+    promise: Promise<DaytonaTerminalSandbox>
+  }
+>()
+
+const terminalContextCache = new Map<
+  string,
+  {
+    expiresAt: number
+    promise: Promise<DaytonaTerminalContext>
+  }
+>()
+
 function cleanTerminalId(terminalId: string) {
   const trimmed = terminalId.trim()
   if (!/^[A-Za-z0-9._:-]{1,120}$/.test(trimmed)) {
@@ -73,6 +100,58 @@ async function toolboxErrorMessage(response: Response, fallback: string) {
   return text.trim() || fallback
 }
 
+function invalidateTerminalCaches(sandboxId: string) {
+  terminalSandboxCache.delete(sandboxId)
+  terminalContextCache.delete(sandboxId)
+}
+
+function getTerminalSandbox(sandboxId: string) {
+  const now = Date.now()
+  const cached = terminalSandboxCache.get(sandboxId)
+  if (cached && cached.expiresAt > now) return cached.promise
+  if (cached) terminalSandboxCache.delete(sandboxId)
+
+  const promise = getStartedDaytonaSandbox(sandboxId)
+  terminalSandboxCache.set(sandboxId, {
+    expiresAt: now + TERMINAL_CONTEXT_CACHE_TTL_MS,
+    promise,
+  })
+
+  promise.catch(() => {
+    if (terminalSandboxCache.get(sandboxId)?.promise === promise) {
+      terminalSandboxCache.delete(sandboxId)
+    }
+  })
+
+  return promise
+}
+
+function getTerminalContext(sandboxId: string) {
+  const now = Date.now()
+  const cached = terminalContextCache.get(sandboxId)
+  if (cached && cached.expiresAt > now) return cached.promise
+  if (cached) terminalContextCache.delete(sandboxId)
+
+  const promise = (async () => {
+    const sandbox = await getTerminalSandbox(sandboxId)
+    const paths = await resolveDaytonaPaths(sandbox)
+    return { paths, sandbox }
+  })()
+
+  terminalContextCache.set(sandboxId, {
+    expiresAt: now + TERMINAL_CONTEXT_CACHE_TTL_MS,
+    promise,
+  })
+
+  promise.catch(() => {
+    if (terminalContextCache.get(sandboxId)?.promise === promise) {
+      terminalContextCache.delete(sandboxId)
+    }
+  })
+
+  return promise
+}
+
 async function createPtySession({
   cols,
   cwd,
@@ -110,12 +189,21 @@ async function createPtySession({
     const data = (await response.json().catch(() => ({}))) as {
       sessionId?: unknown
     }
-    return typeof data.sessionId === "string" && data.sessionId.trim()
-      ? data.sessionId
-      : terminalId
+    return {
+      created: true,
+      sessionId:
+        typeof data.sessionId === "string" && data.sessionId.trim()
+          ? data.sessionId
+          : terminalId,
+    }
   }
 
-  if (response.status === 409) return terminalId
+  if (response.status === 409) {
+    return {
+      created: false,
+      sessionId: terminalId,
+    }
+  }
 
   throw new Error(
     await toolboxErrorMessage(response, "Unable to create Daytona terminal.")
@@ -144,23 +232,11 @@ function terminalWebSocketUrl({
 
 export async function prepareDaytonaTerminalWebSocket({
   cols,
-  githubToken,
-  githubTokenExpiresAt,
-  githubUserEmail,
-  githubUserName,
-  githubUsername,
-  repoUrl,
   rows,
   sandboxId,
   terminalId,
 }: {
   cols?: number
-  githubToken?: string
-  githubTokenExpiresAt?: string
-  githubUserEmail?: string
-  githubUserName?: string
-  githubUsername?: string | null
-  repoUrl?: string
   rows?: number
   sandboxId: string
   terminalId: string
@@ -168,9 +244,85 @@ export async function prepareDaytonaTerminalWebSocket({
   const cleanId = cleanTerminalId(terminalId)
   const safeCols = cleanSize(cols, 100, 20, 300)
   const safeRows = cleanSize(rows, 30, 8, 120)
-  const sandbox = await getStartedDaytonaSandbox(sandboxId)
-  const paths = await resolveDaytonaPaths(sandbox)
-  const githubAuth = await refreshDaytonaTerminalGitHubAuth({
+  const sandbox = await getTerminalSandbox(sandboxId)
+  const previewTokenPromise = sandbox.getPreviewLink(1)
+  const { paths } = await getTerminalContext(sandboxId)
+
+  const envs = {
+    CLICOLOR: "1",
+    COLORTERM: "truecolor",
+    CODEX_HOME: paths.codexHome,
+    FORCE_COLOR: "1",
+    LANG: "C.UTF-8",
+    LC_ALL: "C.UTF-8",
+    PATH: daytonaTerminalPath(paths.home),
+    TERM: "xterm-256color",
+  }
+
+  const terminalSession = await createPtySession({
+    cols: safeCols,
+    cwd: paths.repoPath,
+    envs,
+    rows: safeRows,
+    sandbox,
+    terminalId: cleanId,
+  }).catch(async (error: unknown) => {
+    const racedSession = await sandbox.process
+      .getPtySessionInfo(cleanId)
+      .catch(() => null)
+    if (!racedSession) throw error
+
+    void sandbox.process
+      .resizePtySession(cleanId, safeCols, safeRows)
+      .catch(() => undefined)
+
+    return {
+      created: false,
+      sessionId: cleanId,
+    }
+  })
+
+  if (!terminalSession.created) {
+    void sandbox.process
+      .resizePtySession(cleanId, safeCols, safeRows)
+      .catch(() => undefined)
+  }
+
+  const previewToken = (await previewTokenPromise).token ?? ""
+  return {
+    protocol: `X-Daytona-SDK-Version~${daytonaSdkPackage.version}`,
+    sessionId: terminalSession.sessionId,
+    wsUrl: terminalWebSocketUrl({
+      previewToken,
+      sandbox,
+      sessionId: terminalSession.sessionId,
+    }),
+  }
+}
+
+export async function refreshDaytonaTerminalWebSocketGitHubAuth({
+  githubToken,
+  githubTokenExpiresAt,
+  githubUserEmail,
+  githubUserName,
+  githubUsername,
+  repoUrl,
+  sandboxId,
+  terminalId,
+}: {
+  githubToken?: string
+  githubTokenExpiresAt?: string
+  githubUserEmail?: string
+  githubUserName?: string
+  githubUsername?: string | null
+  repoUrl?: string
+  sandboxId: string
+  terminalId: string
+}) {
+  const cleanId = cleanTerminalId(terminalId)
+  const { paths, sandbox } = await getTerminalContext(sandboxId)
+
+  return await refreshDaytonaTerminalGitHubAuth({
     githubToken,
     githubTokenExpiresAt,
     githubUserEmail,
@@ -182,49 +334,6 @@ export async function prepareDaytonaTerminalWebSocket({
     sandboxId,
     terminalId: cleanId,
   })
-
-  const envs = {
-    CLICOLOR: "1",
-    COLORTERM: "truecolor",
-    CODEX_HOME: paths.codexHome,
-    FORCE_COLOR: "1",
-    LANG: "C.UTF-8",
-    LC_ALL: "C.UTF-8",
-    PATH: daytonaTerminalPath(paths.home),
-    TERM: "xterm-256color",
-    ...githubAuth?.env,
-  }
-
-  let sessionId = cleanId
-  const existingSession = await sandbox.process
-    .getPtySessionInfo(cleanId)
-    .catch(() => null)
-  if (existingSession) {
-    await sandbox.process.resizePtySession(cleanId, safeCols, safeRows)
-  } else {
-    sessionId = await createPtySession({
-      cols: safeCols,
-      cwd: paths.repoPath,
-      envs,
-      rows: safeRows,
-      sandbox,
-      terminalId: cleanId,
-    }).catch(async (error: unknown) => {
-      const racedSession = await sandbox.process
-        .getPtySessionInfo(cleanId)
-        .catch(() => null)
-      if (!racedSession) throw error
-      await sandbox.process.resizePtySession(cleanId, safeCols, safeRows)
-      return cleanId
-    })
-  }
-
-  const previewToken = (await sandbox.getPreviewLink(1)).token ?? ""
-  return {
-    protocol: `X-Daytona-SDK-Version~${daytonaSdkPackage.version}`,
-    sessionId,
-    wsUrl: terminalWebSocketUrl({ previewToken, sandbox, sessionId }),
-  }
 }
 
 export async function resizeDaytonaTerminalWebSocket({
@@ -238,10 +347,21 @@ export async function resizeDaytonaTerminalWebSocket({
   sandboxId: string
   terminalId: string
 }) {
-  const sandbox = await getStartedDaytonaSandbox(sandboxId)
-  await sandbox.process.resizePtySession(
-    cleanTerminalId(terminalId),
-    cleanSize(cols, 100, 20, 300),
-    cleanSize(rows, 30, 8, 120)
-  )
+  const { sandbox } = await getTerminalContext(sandboxId)
+
+  try {
+    await sandbox.process.resizePtySession(
+      cleanTerminalId(terminalId),
+      cleanSize(cols, 100, 20, 300),
+      cleanSize(rows, 30, 8, 120)
+    )
+  } catch {
+    invalidateTerminalCaches(sandboxId)
+    const freshSandbox = await getStartedDaytonaSandbox(sandboxId)
+    await freshSandbox.process.resizePtySession(
+      cleanTerminalId(terminalId),
+      cleanSize(cols, 100, 20, 300),
+      cleanSize(rows, 30, 8, 120)
+    )
+  }
 }
