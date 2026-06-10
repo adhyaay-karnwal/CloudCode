@@ -950,9 +950,7 @@ function ChatGPTConnectionRow({
             const busy = Boolean(
               switchingProfile || renamingProfile || disconnectingProfile
             )
-            const disconnecting = disconnectingProfile === account.profile
             const renaming = renamingProfile === account.profile
-            const switching = switchingProfile === account.profile
 
             if (editing) {
               return (
@@ -1061,27 +1059,6 @@ function ChatGPTConnectionRow({
                     onClick={() => setPendingDisconnectAccount(account)}
                   >
                     <Trash2 className="size-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    aria-pressed={active}
-                    disabled={active || busy || Boolean(editingProfile)}
-                    onClick={() => void selectProfile(account.profile)}
-                    className={cn(
-                      metaPill,
-                      "h-7 transition-colors disabled:pointer-events-none disabled:opacity-80",
-                      active
-                        ? "text-foreground/70"
-                        : "text-muted-foreground hover:bg-muted-foreground/10 hover:text-foreground"
-                    )}
-                  >
-                    {disconnecting
-                      ? "Disconnecting"
-                      : switching
-                        ? "Switching"
-                        : active
-                          ? "Active"
-                          : "Use"}
                   </button>
                 </div>
               </div>
