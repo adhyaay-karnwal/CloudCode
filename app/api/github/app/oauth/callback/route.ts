@@ -63,10 +63,6 @@ export async function GET(request: NextRequest) {
   try {
     await completeGitHubAppUserAuthorization({
       code,
-      redirectUri: new URL(
-        "/api/github/app/oauth/callback",
-        url.origin
-      ).toString(),
     })
     if (installationId) {
       const installation = await verifyGitHubAppInstallation(installationId)

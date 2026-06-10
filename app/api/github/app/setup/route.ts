@@ -40,7 +40,11 @@ function clearStateCookie(response: NextResponse) {
   }
 }
 
-async function redirectAfterInstall(url: URL) {
+async function redirectAfterInstall(url: URL, next?: string) {
+  if (next === "install") {
+    return NextResponse.redirect(new URL("/api/github/app/install", url.origin))
+  }
+
   if (isGitHubAppUserAuthConfigured()) {
     const user = await getCurrentGitHubAppUserStatus()
     if (!user.connected) {
@@ -64,6 +68,7 @@ export async function GET(request: NextRequest) {
   const expectedUserState = request.cookies.get(
     GITHUB_APP_USER_STATE_COOKIE
   )?.value
+  const next = request.cookies.get(GITHUB_APP_USER_NEXT_COOKIE)?.value
 
   if (
     !returnedState ||
@@ -85,7 +90,7 @@ export async function GET(request: NextRequest) {
       }
       await syncCurrentGitHubAppUserInstallations().catch(() => [])
 
-      const response = await redirectAfterInstall(url)
+      const response = await redirectAfterInstall(url, next)
       clearStateCookie(response)
       return response
     }
@@ -100,7 +105,7 @@ export async function GET(request: NextRequest) {
     await saveGitHubAppInstallation(installation)
     await syncCurrentGitHubAppUserInstallations().catch(() => [])
 
-    const response = await redirectAfterInstall(url)
+    const response = await redirectAfterInstall(url, next)
     clearStateCookie(response)
     return response
   } catch (error) {

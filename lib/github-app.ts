@@ -414,12 +414,14 @@ export function createGitHubAppUserLoginUrl({
   redirectUri,
   state,
 }: {
-  redirectUri: string
+  redirectUri?: string
   state: string
 }) {
   const url = new URL("https://github.com/login/oauth/authorize")
   url.searchParams.set("client_id", getGitHubAppClientId())
-  url.searchParams.set("redirect_uri", redirectUri)
+  if (redirectUri) {
+    url.searchParams.set("redirect_uri", redirectUri)
+  }
   url.searchParams.set("state", state)
   url.searchParams.set("prompt", "select_account")
   return url.toString()

@@ -34,10 +34,6 @@ export async function GET(request: NextRequest) {
     const state = createGitHubAppState()
     const response = NextResponse.redirect(
       createGitHubAppUserLoginUrl({
-        redirectUri: new URL(
-          "/api/github/app/oauth/callback",
-          url.origin
-        ).toString(),
         state,
       })
     )
