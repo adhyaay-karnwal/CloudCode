@@ -2,6 +2,7 @@
 
 import { useClerk } from "@clerk/nextjs"
 import {
+  ArrowLeft,
   ChevronRight,
   Ellipsis,
   LaptopMinimal,
@@ -15,6 +16,10 @@ import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react"
 
 import { ContextMenu } from "@/components/context-menu"
 import { ResizeHandle } from "@/components/resize-handle"
+import {
+  SETTINGS_SECTIONS,
+  type SettingsSectionId,
+} from "@/components/settings-sections"
 import type { Id } from "@/convex/_generated/dataModel"
 import { useIsMobile } from "@/hooks/use-is-mobile"
 import { useResizablePanel } from "@/hooks/use-resizable-panel"
@@ -110,6 +115,9 @@ export function Sidebar({
   onDelete,
   onRename,
   onShowSettings,
+  onExitSettings,
+  settingsSection,
+  onSelectSettingsSection,
   onClose,
   brandClassName,
 }: {
@@ -122,6 +130,9 @@ export function Sidebar({
   onDelete: (id: Id<"threads">) => void
   onRename: (id: Id<"threads">, title: string) => void
   onShowSettings: () => void
+  onExitSettings: () => void
+  settingsSection: SettingsSectionId
+  onSelectSettingsSection: (id: SettingsSectionId) => void
   onClose: () => void
   brandClassName: string
 }) {
@@ -182,40 +193,83 @@ export function Sidebar({
           <X className="size-5" />
         </button>
       </div>
-      <div className="px-2 pt-2">
-        <button
-          type="button"
-          onClick={onNewChat}
-          className="flex w-full items-center gap-2 rounded-xl px-[0.625rem] py-2 text-[0.8125rem] text-foreground/80 transition-colors hover:bg-muted"
-        >
-          <SquarePen className="size-3 shrink-0" />
-          <span>New chat</span>
-        </button>
-      </div>
+      {currentView === "settings" ? (
+        <>
+          <div className="px-2 pt-2">
+            <button
+              type="button"
+              onClick={onExitSettings}
+              className="flex w-full items-center gap-2 rounded-xl px-[0.625rem] py-2 text-[0.8125rem] text-foreground/80 transition-colors hover:bg-muted"
+            >
+              <ArrowLeft className="size-3.5 shrink-0" />
+              <span>Back to chats</span>
+            </button>
+          </div>
 
-      <div className="mt-2 min-h-0 flex-1 overflow-y-auto px-2 pb-4">
-        {groups.length === 0 ? (
-          <div className="px-3 pt-4 text-[0.6875rem] text-muted-foreground/80">
-            No chats yet
+          <nav className="mt-2 min-h-0 flex-1 overflow-y-auto px-2 pb-4">
+            <div className="space-y-0.5">
+              {SETTINGS_SECTIONS.map((section) => {
+                const Icon = section.icon
+                const selected = settingsSection === section.id
+                return (
+                  <button
+                    key={section.id}
+                    type="button"
+                    aria-current={selected ? "page" : undefined}
+                    onClick={() => onSelectSettingsSection(section.id)}
+                    className={cn(
+                      "flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-[0.8125rem] transition-colors",
+                      selected
+                        ? "bg-muted font-medium text-foreground"
+                        : "text-foreground/80 hover:bg-muted"
+                    )}
+                  >
+                    <Icon className="size-4 shrink-0" />
+                    <span className="truncate">{section.label}</span>
+                  </button>
+                )
+              })}
+            </div>
+          </nav>
+        </>
+      ) : (
+        <>
+          <div className="px-2 pt-2">
+            <button
+              type="button"
+              onClick={onNewChat}
+              className="flex w-full items-center gap-2 rounded-xl px-[0.625rem] py-2 text-[0.8125rem] text-foreground/80 transition-colors hover:bg-muted"
+            >
+              <SquarePen className="size-3 shrink-0" />
+              <span>New chat</span>
+            </button>
           </div>
-        ) : (
-          <div className="space-y-1">
-            {groups.map((g) => (
-              <FolderGroup
-                key={g.repo || "untitled"}
-                label={repoLabel(g.repo)}
-                repoUrl={g.repo}
-                items={g.items}
-                activeId={activeId}
-                onSelect={onSelect}
-                onDelete={onDelete}
-                onRename={onRename}
-                onNewChatInRepo={onNewChatInRepo}
-              />
-            ))}
+
+          <div className="mt-2 min-h-0 flex-1 overflow-y-auto px-2 pb-4">
+            {groups.length === 0 ? (
+              <div className="px-3 pt-4 text-[0.6875rem] text-muted-foreground/80">
+                No chats yet
+              </div>
+            ) : (
+              <div className="space-y-1">
+                {groups.map((g) => (
+                  <FolderGroup
+                    key={g.repo || "untitled"}
+                    label={repoLabel(g.repo)}
+                    repoUrl={g.repo}
+                    items={g.items}
+                    activeId={activeId}
+                    onSelect={onSelect}
+                    onDelete={onDelete}
+                    onRename={onRename}
+                    onNewChatInRepo={onNewChatInRepo}
+                  />
+                ))}
+              </div>
+            )}
           </div>
-        )}
-      </div>
+        </>
+      )}
 
       <div className="border-t border-border/60 p-3">
         <button

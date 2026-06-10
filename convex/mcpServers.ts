@@ -203,6 +203,33 @@ async function serverChildren(ctx: QueryCtx, server: McpServerDoc) {
   }
 }
 
+async function insertSecrets(
+  ctx: MutationCtx,
+  serverId: Id<"mcpServers">,
+  userId: Id<"users">,
+  secrets: Array<{
+    kind: "env" | "httpHeader" | "envHttpHeader"
+    name: string
+    value: string
+  }>
+) {
+  const now = Date.now()
+  for (const secret of secrets) {
+    await ctx.db.insert("mcpServerSecrets", {
+      createdAt: now,
+      kind: secret.kind,
+      name:
+        secret.kind === "env"
+          ? cleanEnvName(secret.name)
+          : cleanHeaderName(secret.name),
+      serverId,
+      updatedAt: now,
+      userId,
+      value: secret.value,
+    })
+  }
+}
+
 async function replaceSecrets(
   ctx: MutationCtx,
   serverId: Id<"mcpServers">,
@@ -219,22 +246,69 @@ async function replaceSecrets(
     .collect()
 
   await Promise.all(existing.map((secret) => ctx.db.delete(secret._id)))
+  await insertSecrets(ctx, serverId, userId, secrets)
+}
 
-  const now = Date.now()
-  for (const secret of secrets) {
-    await ctx.db.insert("mcpServerSecrets", {
-      createdAt: now,
-      kind: secret.kind,
-      name:
-        secret.kind === "env"
-          ? cleanEnvName(secret.name)
-          : cleanHeaderName(secret.name),
-      serverId,
-      updatedAt: now,
-      userId,
-      value: secret.value,
-    })
+/**
+ * Normalizes the non-secret fields of a custom MCP server. `enabled` is left
+ * out so callers can set it on create without clobbering it on edit.
+ */
+function buildCustomServerFields(
+  args: {
+    args?: string[]
+    bearerTokenEnvVar?: string
+    command?: string
+    cwd?: string
+    envVars?: string[]
+    name: string
+    startupTimeoutSec?: number
+    toolTimeoutSec?: number
+    transport: "stdio" | "http"
+    url?: string
+  },
+  now: number
+) {
+  const name = cleanName(args.name)
+  const serverName = cleanServerName(name)
+  const argsList = cleanArgs(args.args)
+  const envVars = cleanEnvVars(args.envVars)
+  const transport = args.transport
+  const commandParts =
+    transport === "stdio" ? splitMcpLaunchCommand(args.command ?? "") : []
+
+  if (transport === "stdio" && !commandParts.length) {
+    throw new Error("Command is required for STDIO MCP servers.")
   }
+  if (transport === "http" && !args.url?.trim()) {
+    throw new Error("URL is required for HTTP MCP servers.")
+  }
+
+  const fields = {
+    args:
+      transport === "stdio"
+        ? [...commandParts.slice(1), ...(argsList ?? [])]
+        : argsList,
+    bearerTokenEnvVar:
+      transport === "http"
+        ? cleanOptionalString(args.bearerTokenEnvVar, 80)
+        : undefined,
+    command:
+      transport === "stdio"
+        ? cleanOptionalString(commandParts[0], 500)
+        : undefined,
+    cwd: transport === "stdio" ? cleanOptionalString(args.cwd, 500) : undefined,
+    description: undefined,
+    envVars,
+    name,
+    serverName,
+    startupTimeoutSec: cleanTimeout(args.startupTimeoutSec) ?? 20,
+    toolTimeoutSec: cleanTimeout(args.toolTimeoutSec) ?? 60,
+    transport,
+    updatedAt: now,
+    url: transport === "http" ? cleanUrl(args.url) : undefined,
+  }
+
+  return { fields, serverName }
 }
 
 async function upsertTools(
@@ -327,20 +401,7 @@ export const saveCustom = mutation({
   handler: async (ctx, args) => {
     const userId = await ensureCurrentUser(ctx)
     const now = Date.now()
-    const name = cleanName(args.name)
-    const serverName = cleanServerName(name)
-    const argsList = cleanArgs(args.args)
-    const envVars = cleanEnvVars(args.envVars)
-    const transport = args.transport
-    const commandParts =
-      transport === "stdio" ? splitMcpLaunchCommand(args.command ?? "") : []
-
-    if (transport === "stdio" && !commandParts.length) {
-      throw new Error("Command is required for STDIO MCP servers.")
-    }
-    if (transport === "http" && !args.url?.trim()) {
-      throw new Error("URL is required for HTTP MCP servers.")
-    }
+    const { fields, serverName } = buildCustomServerFields(args, now)
 
     let serverId = args.serverId
     if (serverId) {
@@ -357,39 +418,13 @@ export const saveCustom = mutation({
       }
     }
 
-    const fields = {
-      args:
-        transport === "stdio"
-          ? [...commandParts.slice(1), ...(argsList ?? [])]
-          : argsList,
-      bearerTokenEnvVar:
-        transport === "http"
-          ? cleanOptionalString(args.bearerTokenEnvVar, 80)
-          : undefined,
-      command:
-        transport === "stdio"
-          ? cleanOptionalString(commandParts[0], 500)
-          : undefined,
-      cwd:
-        transport === "stdio" ? cleanOptionalString(args.cwd, 500) : undefined,
-      description: undefined,
-      enabled: true,
-      envVars,
-      name,
-      serverName,
-      startupTimeoutSec: cleanTimeout(args.startupTimeoutSec) ?? 20,
-      toolTimeoutSec: cleanTimeout(args.toolTimeoutSec) ?? 60,
-      transport,
-      updatedAt: now,
-      url: transport === "http" ? cleanUrl(args.url) : undefined,
-    }
-
     if (serverId) {
-      await ctx.db.patch(serverId, fields)
+      await ctx.db.patch(serverId, { ...fields, enabled: true })
     } else {
       serverId = await ctx.db.insert("mcpServers", {
         ...fields,
         createdAt: now,
+        enabled: true,
         userId,
       })
     }
@@ -418,6 +453,68 @@ export const saveCustom = mutation({
     }
 
     return serverId
+  },
+})
+
+export const updateCustom = mutation({
+  args: {
+    ...customServerInput,
+    removeSecretIds: v.optional(v.array(v.id("mcpServerSecrets"))),
+    serverId: v.id("mcpServers"),
+  },
+  handler: async (ctx, args) => {
+    const userId = await ensureCurrentUser(ctx)
+    await requireOwnedServer(ctx, args.serverId, userId)
+    const now = Date.now()
+    const { fields, serverName } = buildCustomServerFields(args, now)
+
+    const conflict = await ctx.db
+      .query("mcpServers")
+      .withIndex("by_user_server_name", (q) =>
+        q.eq("userId", userId).eq("serverName", serverName)
+      )
+      .unique()
+    if (conflict && conflict._id !== args.serverId) {
+      throw new Error("An MCP server with this name already exists.")
+    }
+
+    // Patch metadata only — `enabled` is intentionally preserved.
+    await ctx.db.patch(args.serverId, fields)
+
+    // Drop the secrets the user explicitly removed; the rest are kept as-is
+    // since their encrypted values are never sent back to the client.
+    for (const secretId of args.removeSecretIds ?? []) {
+      const secret = await ctx.db.get(secretId)
+      if (
+        secret &&
+        secret.serverId === args.serverId &&
+        secret.userId === userId
+      ) {
+        await ctx.db.delete(secret._id)
+      }
+    }
+
+    const newSecrets = [
+      ...(args.secrets ?? []).map((secret) => ({
+        kind: "env" as const,
+        name: secret.name,
+        value: secret.value,
+      })),
+      ...(args.httpHeaders ?? []).map((secret) => ({
+        kind: "httpHeader" as const,
+        name: secret.name,
+        value: secret.value,
+      })),
+      ...(args.envHttpHeaders ?? []).map((secret) => ({
+        kind: "envHttpHeader" as const,
+        name: secret.name,
+        value: secret.value,
+      })),
+    ].filter((secret) => secret.name.trim() && secret.value.trim())
+
+    await insertSecrets(ctx, args.serverId, userId, newSecrets)
+
+    return args.serverId
   },
 })
 

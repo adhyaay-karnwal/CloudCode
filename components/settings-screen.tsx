@@ -24,28 +24,24 @@ import {
 } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState } from "react"
 
+import type { SettingsSectionId } from "@/components/settings-sections"
 import { IconButton } from "@/components/ui/icon-button"
 import { SegmentedControl } from "@/components/ui/segmented-control"
 import { Switch } from "@/components/ui/switch"
-import { cardSurfaceClass, popoverSurfaceClass } from "@/components/ui/surface"
+import { popoverSurfaceClass } from "@/components/ui/surface"
 import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
 import type {
   CodexAuthAccountStatus,
   CodexAuthOverview,
 } from "@/lib/codex-auth-types"
-import { BILLING_PLANS, type BillingPlanId } from "@/lib/billing"
+import {
+  BILLING_PLANS,
+  type BillingPlanId,
+  planIncludedHours,
+} from "@/lib/billing"
 import { dedupeEnvVars, parseDotenv } from "@/lib/dotenv-parse"
 import { cn } from "@/lib/utils"
-
-const card = cn("overflow-hidden", cardSurfaceClass)
-
-const cardRow = "flex items-center gap-3 px-3.5 py-3"
-
-const cardDivider = "border-t border-border/60"
-
-const sectionLabel =
-  "text-[11px] font-medium tracking-wide text-muted-foreground/80 uppercase"
 
 const navAction =
   "inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm text-foreground/80 transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
@@ -182,6 +178,7 @@ type McpServerRecord = {
 }
 
 export function SettingsScreen({
+  section,
   authStatus,
   authError,
   githubStatus,
@@ -190,6 +187,7 @@ export function SettingsScreen({
   onGitHubAuthChanged,
   sandboxPresets,
 }: {
+  section: SettingsSectionId
   authStatus: CodexAuthOverview | null
   authError: string
   githubStatus: GitHubAuthStatus | null
@@ -235,50 +233,150 @@ export function SettingsScreen({
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <div className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]">
-        <div className="mx-auto w-full max-w-2xl px-4 pt-10 pb-[calc(5rem+env(safe-area-inset-bottom))] md:px-6">
-          <h1 className="text-2xl font-medium tracking-tight text-foreground/90">
-            Settings
-          </h1>
-          <p className="mt-1.5 text-sm text-muted-foreground">
-            Manage connected accounts, MCP connections, and Daytona presets.
-          </p>
-
-          <section className="mt-8 space-y-2">
-            <h2 className={cn(sectionLabel, "px-1")}>Connections</h2>
-            <div className={card}>
-              <ChatGPTConnectionRow
-                status={authStatus}
-                authError={authError}
-                onCodexAuthChanged={onCodexAuthChanged}
-              />
-              <GitHubConnectionRow
-                status={githubStatus}
-                error={githubAuthError}
-                onGitHubAuthChanged={onGitHubAuthChanged}
-              />
-            </div>
-          </section>
-
-          <BillingSettings />
-          <McpSettings
-            error={mcpError}
-            loading={mcpLoading}
-            onReload={reloadMcpServers}
-            servers={mcpServers}
-          />
-          <PresetSettings presets={presets} />
+        <div className="mx-auto w-full max-w-2xl px-4 pt-8 pb-[calc(5rem+env(safe-area-inset-bottom))] md:px-8 md:pt-12">
+          {section === "connections" ? (
+            <ConnectionsSettings
+              authStatus={authStatus}
+              authError={authError}
+              githubStatus={githubStatus}
+              githubAuthError={githubAuthError}
+              onCodexAuthChanged={onCodexAuthChanged}
+              onGitHubAuthChanged={onGitHubAuthChanged}
+            />
+          ) : null}
+          {section === "billing" ? <BillingSettings /> : null}
+          {section === "mcp" ? (
+            <McpSettings
+              error={mcpError}
+              loading={mcpLoading}
+              onReload={reloadMcpServers}
+              servers={mcpServers}
+            />
+          ) : null}
+          {section === "presets" ? <PresetSettings presets={presets} /> : null}
         </div>
       </div>
     </div>
   )
 }
 
+function SettingsPage({
+  title,
+  description,
+  action,
+  children,
+}: {
+  title: string
+  description?: string
+  action?: React.ReactNode
+  children: React.ReactNode
+}) {
+  return (
+    <section className="space-y-6">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h1 className="text-xl font-medium tracking-tight text-foreground/90">
+            {title}
+          </h1>
+          {description ? (
+            <p className="mt-1 text-sm text-muted-foreground">{description}</p>
+          ) : null}
+        </div>
+        {action ? <div className="shrink-0">{action}</div> : null}
+      </div>
+      {children}
+    </section>
+  )
+}
+
+function ConnectionsSettings({
+  authStatus,
+  authError,
+  githubStatus,
+  githubAuthError,
+  onCodexAuthChanged,
+  onGitHubAuthChanged,
+}: {
+  authStatus: CodexAuthOverview | null
+  authError: string
+  githubStatus: GitHubAuthStatus | null
+  githubAuthError: string
+  onCodexAuthChanged: () => void | Promise<void>
+  onGitHubAuthChanged: () => void | Promise<void>
+}) {
+  return (
+    <SettingsPage
+      title="Connections"
+      description="Connect ChatGPT and GitHub to authorize Codex runs and repository access."
+    >
+      <div className="divide-y divide-border/60">
+        <div className="pb-7">
+          <ChatGPTConnectionRow
+            status={authStatus}
+            authError={authError}
+            onCodexAuthChanged={onCodexAuthChanged}
+          />
+        </div>
+        <div className="pt-7">
+          <GitHubConnectionRow
+            status={githubStatus}
+            error={githubAuthError}
+            onGitHubAuthChanged={onGitHubAuthChanged}
+          />
+        </div>
+      </div>
+    </SettingsPage>
+  )
+}
+
+type UsageHoursInfo = {
+  depleted: boolean
+  fractionRemaining: number
+  nextResetAt: number | null
+  runningHoursLeft: number
+  stoppedHoursLeft: number
+  unlimited: boolean
+}
+
 function BillingSettings() {
   const billing = useQuery(api.billing.viewer)
   const attachPlan = useAction(api.billing.attachCurrentUserPlan)
+  const refreshPlan = useAction(api.billing.refreshCurrentUserPlan)
   const [busyPlanId, setBusyPlanId] = useState<BillingPlanId | null>(null)
   const [error, setError] = useState("")
+  const [syncing, setSyncing] = useState(true)
+  const [planDetail, setPlanDetail] = useState<{
+    canceling: boolean
+    currentPeriodEnd: number | null
+  } | null>(null)
+  const [usage, setUsage] = useState<UsageHoursInfo | null>(null)
   const currentPlanId = billing?.customer?.planId
+
+  // The local record only stores the plan after a direct attach; hosted
+  // checkouts settle on Autumn. Pull the live subscription so the page always
+  // shows the real plan.
+  useEffect(() => {
+    let cancelled = false
+    setSyncing(true)
+    refreshPlan({})
+      .then((plan) => {
+        if (cancelled) return
+        setPlanDetail({
+          canceling: plan.canceling,
+          currentPeriodEnd: plan.currentPeriodEnd,
+        })
+        setUsage(plan.usage)
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setSyncing(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [refreshPlan])
+
+  const checking = !currentPlanId && (billing === undefined || syncing)
 
   async function purchasePlan(planId: BillingPlanId) {
     if (busyPlanId) return
@@ -298,6 +396,14 @@ function BillingSettings() {
         window.location.assign(result.checkoutUrl)
         return
       }
+
+      // Direct attach with no hosted checkout — pull the live renewal details.
+      const plan = await refreshPlan({})
+      setPlanDetail({
+        canceling: plan.canceling,
+        currentPeriodEnd: plan.currentPeriodEnd,
+      })
+      setUsage(plan.usage)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to start checkout.")
     } finally {
@@ -306,53 +412,153 @@ function BillingSettings() {
   }
 
   return (
-    <section className="mt-8 space-y-2">
-      <h2 className={cn(sectionLabel, "px-1")}>Billing</h2>
-      <div className={card}>
-        <div className={cn(cardRow, "flex-wrap")}>
+    <SettingsPage
+      title="Billing"
+      description="Manage your subscription. Payments are handled securely through Autumn."
+    >
+      <div className="space-y-5">
+        <div className="flex items-center gap-3">
           <CreditCard className="size-5 shrink-0 text-muted-foreground" />
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-medium text-foreground/85">Autumn</div>
-            <div className="text-xs text-muted-foreground">
-              {currentPlanId
-                ? `Current plan: ${billingPlanName(currentPlanId)}`
-                : "Choose a subscription"}
-            </div>
-            {error ? (
-              <div className="mt-1 text-[11px] leading-4 text-destructive">
-                {error}
+            {checking ? (
+              <div className="text-sm text-muted-foreground">
+                Checking your plan…
               </div>
-            ) : null}
+            ) : currentPlanId ? (
+              <>
+                <div className="text-sm font-medium text-foreground">
+                  {billingPlanName(currentPlanId)}
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  {planDetail?.canceling && planDetail.currentPeriodEnd
+                    ? `Cancels ${formatBillingDate(planDetail.currentPeriodEnd)}`
+                    : planDetail?.currentPeriodEnd
+                      ? `Renews ${formatBillingDate(planDetail.currentPeriodEnd)}`
+                      : "Your current plan"}
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="text-sm font-medium text-foreground">
+                  No active plan
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  Choose a plan to get started
+                </div>
+              </>
+            )}
           </div>
-          <div className="flex w-full flex-wrap justify-end gap-1.5 sm:w-auto">
-            {BILLING_PLANS.map((plan) => {
-              const busy = busyPlanId === plan.planId
-              const active = currentPlanId === plan.planId
+          {checking ? (
+            <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
+          ) : null}
+        </div>
 
-              return (
-                <button
-                  key={plan.planId}
-                  type="button"
-                  disabled={Boolean(busyPlanId) || active}
-                  onClick={() => void purchasePlan(plan.planId)}
-                  className={active ? navAction : navPrimary}
-                >
-                  {busy ? <Loader2 className="size-3.5 animate-spin" /> : null}
-                  {active
-                    ? `${plan.name} active`
-                    : `${plan.name} $${plan.priceUsd}`}
-                </button>
-              )
-            })}
+        {usage ? (
+          <div className="space-y-2">
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="text-sm text-muted-foreground">
+                {usage.unlimited ? (
+                  <span className="font-medium text-foreground">
+                    Unlimited sandbox usage
+                  </span>
+                ) : (
+                  <>
+                    <span className="font-medium text-foreground tabular-nums">
+                      {usage.depleted
+                        ? "0 hours"
+                        : usage.runningHoursLeft < 1
+                          ? "<1 hour"
+                          : `${usage.runningHoursLeft} ${usage.runningHoursLeft === 1 ? "hour" : "hours"}`}
+                    </span>{" "}
+                    of sandbox time left
+                  </>
+                )}
+              </span>
+              {usage.nextResetAt && !usage.unlimited ? (
+                <span className="shrink-0 text-xs text-muted-foreground">
+                  resets {formatBillingDate(usage.nextResetAt)}
+                </span>
+              ) : null}
+            </div>
+
+            <div
+              aria-hidden
+              className="relative h-2 w-full rounded-full bg-muted"
+            >
+              <div
+                className={cn(
+                  "absolute inset-y-0 left-0 rounded-full transition-[width]",
+                  usage.fractionRemaining <= 0.15
+                    ? "bg-destructive"
+                    : "bg-foreground"
+                )}
+                style={{
+                  width: usage.depleted
+                    ? "0%"
+                    : `${Math.max(usage.fractionRemaining * 100, 2)}%`,
+                }}
+              />
+            </div>
           </div>
+        ) : null}
+
+        {error ? (
+          <div className="text-[11px] leading-4 text-destructive">{error}</div>
+        ) : null}
+
+        <div className="divide-y divide-border/60 border-y border-border/60">
+          {BILLING_PLANS.map((plan) => {
+            const busy = busyPlanId === plan.planId
+            const active = currentPlanId === plan.planId
+
+            return (
+              <div key={plan.planId} className="flex items-center gap-3 py-3.5">
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-medium text-foreground">
+                    {plan.name}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    ${plan.priceUsd}/mo ·{" "}
+                    {planIncludedHours(plan.includedMicroUsd)} hours of usage
+                  </div>
+                </div>
+                {active ? (
+                  <span className={cn(statusBadge, statusOk)}>
+                    <Check className="size-3.5" />
+                    Current plan
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={Boolean(busyPlanId)}
+                    onClick={() => void purchasePlan(plan.planId)}
+                    className={navPrimary}
+                  >
+                    {busy ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : null}
+                    Choose
+                  </button>
+                )}
+              </div>
+            )
+          })}
         </div>
       </div>
-    </section>
+    </SettingsPage>
   )
 }
 
 function billingPlanName(planId: string) {
   return BILLING_PLANS.find((plan) => plan.planId === planId)?.name ?? planId
+}
+
+function formatBillingDate(ms: number) {
+  return new Date(ms).toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  })
 }
 
 function ChatGPTConnectionRow({
@@ -495,23 +701,18 @@ function ChatGPTConnectionRow({
 
   return (
     <div>
-      <div className={cardRow}>
+      <div className="flex items-center gap-3">
         <svg
           viewBox="0 0 256 260"
           preserveAspectRatio="xMidYMid"
           aria-hidden
-          className="size-6 shrink-0 fill-current text-foreground/80"
+          className="size-5 shrink-0 fill-current text-foreground/80"
         >
           <path d="M239.184 106.203a64.716 64.716 0 0 0-5.576-53.103C219.452 28.459 191 15.784 163.213 21.74A65.586 65.586 0 0 0 52.096 45.22a64.716 64.716 0 0 0-43.23 31.36c-14.31 24.602-11.061 55.634 8.033 76.74a64.665 64.665 0 0 0 5.525 53.102c14.174 24.65 42.644 37.324 70.446 31.36a64.72 64.72 0 0 0 48.754 21.744c28.481.025 53.714-18.361 62.414-45.481a64.767 64.767 0 0 0 43.229-31.36c14.137-24.558 10.875-55.423-8.083-76.483Zm-97.56 136.338a48.397 48.397 0 0 1-31.105-11.255l1.535-.87 51.67-29.825a8.595 8.595 0 0 0 4.247-7.367v-72.85l21.845 12.636c.218.111.37.32.409.563v60.367c-.056 26.818-21.783 48.545-48.601 48.601Zm-104.466-44.61a48.345 48.345 0 0 1-5.781-32.589l1.534.921 51.722 29.826a8.339 8.339 0 0 0 8.441 0l63.181-36.425v25.221a.87.87 0 0 1-.358.665l-52.335 30.184c-23.257 13.398-52.97 5.431-66.404-17.803ZM23.549 85.38a48.499 48.499 0 0 1 25.58-21.333v61.39a8.288 8.288 0 0 0 4.195 7.316l62.874 36.272-21.845 12.636a.819.819 0 0 1-.767 0L41.353 151.53c-23.211-13.454-31.171-43.144-17.804-66.405v.256Zm179.466 41.695-63.08-36.63L161.73 77.86a.819.819 0 0 1 .768 0l52.233 30.184a48.6 48.6 0 0 1-7.316 87.635v-61.391a8.544 8.544 0 0 0-4.4-7.213Zm21.742-32.69-1.535-.922-51.619-30.081a8.39 8.39 0 0 0-8.492 0L99.98 99.808V74.587a.716.716 0 0 1 .307-.665l52.233-30.133a48.652 48.652 0 0 1 72.236 50.391v.205ZM88.061 139.097l-21.845-12.585a.87.87 0 0 1-.41-.614V65.685a48.652 48.652 0 0 1 79.757-37.346l-1.535.87-51.67 29.825a8.595 8.595 0 0 0-4.246 7.367l-.051 72.697Zm11.868-25.58 28.138-16.217 28.188 16.218v32.434l-28.086 16.218-28.188-16.218-.052-32.434Z" />
         </svg>
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium text-foreground/85">ChatGPT</div>
+          <div className="text-sm font-medium text-foreground">ChatGPT</div>
           <div className="text-xs text-muted-foreground">{detail}</div>
-          {visibleError ? (
-            <div className="mt-1 text-[11px] leading-4 text-destructive">
-              {visibleError}
-            </div>
-          ) : null}
         </div>
         {connected ? (
           <form action="/api/codex-auth/login" method="get">
@@ -530,155 +731,157 @@ function ChatGPTConnectionRow({
           </button>
         </form>
       </div>
+      {visibleError ? (
+        <div className="mt-2 text-[11px] leading-4 text-destructive">
+          {visibleError}
+        </div>
+      ) : null}
+
       {accounts.length > 0 ? (
-        <div className="border-t border-border/60 px-3.5 py-2">
-          <div className="grid gap-1.5">
-            {accounts.map((account) => {
-              const active = account.profile === activeProfile
-              const editing = editingProfile === account.profile
-              const busy = Boolean(
-                switchingProfile || renamingProfile || disconnectingProfile
-              )
-              const disconnecting = disconnectingProfile === account.profile
-              const renaming = renamingProfile === account.profile
-              const switching = switchingProfile === account.profile
+        <div className="mt-3 space-y-0.5">
+          {accounts.map((account) => {
+            const active = account.profile === activeProfile
+            const editing = editingProfile === account.profile
+            const busy = Boolean(
+              switchingProfile || renamingProfile || disconnectingProfile
+            )
+            const disconnecting = disconnectingProfile === account.profile
+            const renaming = renamingProfile === account.profile
+            const switching = switchingProfile === account.profile
 
-              if (editing) {
-                return (
-                  <div
-                    key={account.profile}
-                    className="grid min-h-12 w-full grid-cols-[1rem_minmax(0,1fr)_auto_auto] items-center gap-2 rounded-lg bg-muted px-2.5 py-2 text-left text-foreground"
-                  >
-                    {active ? (
-                      <CheckCircle2 className="size-4 text-success" />
-                    ) : (
-                      <Circle className="size-4 text-muted-foreground" />
-                    )}
-                    <input
-                      className={cn(inputClass, "h-8")}
-                      value={draftDisplayName}
-                      maxLength={80}
-                      placeholder={codexAccountTitle(account)}
-                      disabled={renaming}
-                      aria-label="ChatGPT account name"
-                      onChange={(event) =>
-                        setDraftDisplayName(event.target.value)
-                      }
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          void renameProfile(account.profile)
-                        } else if (event.key === "Escape") {
-                          setEditingProfile(null)
-                          setDraftDisplayName("")
-                        }
-                      }}
-                    />
-                    <button
-                      type="button"
-                      className={iconBtn}
-                      disabled={renaming}
-                      title="Save name"
-                      aria-label="Save ChatGPT account name"
-                      onClick={() => void renameProfile(account.profile)}
-                    >
-                      <Check className="size-4" />
-                    </button>
-                    <button
-                      type="button"
-                      className={iconBtn}
-                      disabled={renaming}
-                      title="Cancel rename"
-                      aria-label="Cancel ChatGPT account rename"
-                      onClick={() => {
-                        setEditingProfile(null)
-                        setDraftDisplayName("")
-                      }}
-                    >
-                      <X className="size-4" />
-                    </button>
-                  </div>
-                )
-              }
-
+            if (editing) {
               return (
                 <div
                   key={account.profile}
-                  className={cn(
-                    "grid min-h-12 w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-lg transition-colors",
-                    active
-                      ? "bg-muted text-foreground"
-                      : "text-muted-foreground hover:bg-muted/70 hover:text-foreground",
-                    busy && "opacity-80"
-                  )}
+                  className="flex items-center gap-2 rounded-xl bg-muted px-2.5 py-2"
                 >
+                  {active ? (
+                    <CheckCircle2 className="size-4 shrink-0 text-success" />
+                  ) : (
+                    <Circle className="size-4 shrink-0 text-muted-foreground" />
+                  )}
+                  <input
+                    className={cn(inputClass, "h-8")}
+                    value={draftDisplayName}
+                    maxLength={80}
+                    placeholder={codexAccountTitle(account)}
+                    disabled={renaming}
+                    aria-label="ChatGPT account name"
+                    onChange={(event) =>
+                      setDraftDisplayName(event.target.value)
+                    }
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        void renameProfile(account.profile)
+                      } else if (event.key === "Escape") {
+                        setEditingProfile(null)
+                        setDraftDisplayName("")
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className={iconBtn}
+                    disabled={renaming}
+                    title="Save name"
+                    aria-label="Save ChatGPT account name"
+                    onClick={() => void renameProfile(account.profile)}
+                  >
+                    <Check className="size-4" />
+                  </button>
+                  <button
+                    type="button"
+                    className={iconBtn}
+                    disabled={renaming}
+                    title="Cancel rename"
+                    aria-label="Cancel ChatGPT account rename"
+                    onClick={() => {
+                      setEditingProfile(null)
+                      setDraftDisplayName("")
+                    }}
+                  >
+                    <X className="size-4" />
+                  </button>
+                </div>
+              )
+            }
+
+            return (
+              <div
+                key={account.profile}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-xl px-2.5 py-2 transition-colors",
+                  active ? "bg-muted" : "hover:bg-muted/60",
+                  busy && "opacity-80"
+                )}
+              >
+                <button
+                  type="button"
+                  aria-pressed={active}
+                  disabled={active || busy || Boolean(editingProfile)}
+                  onClick={() => void selectProfile(account.profile)}
+                  className="flex min-w-0 flex-1 items-center gap-2.5 text-left disabled:pointer-events-none"
+                >
+                  {active ? (
+                    <CheckCircle2 className="size-4 shrink-0 text-success" />
+                  ) : (
+                    <Circle className="size-4 shrink-0 text-muted-foreground" />
+                  )}
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-medium text-foreground">
+                      {codexAccountTitle(account)}
+                    </span>
+                    <span className="block truncate text-xs text-muted-foreground">
+                      {codexAccountSubtitle(account)}
+                    </span>
+                  </span>
+                </button>
+                <div className="flex shrink-0 items-center gap-0.5">
+                  <button
+                    type="button"
+                    className={iconBtn}
+                    disabled={busy || Boolean(editingProfile)}
+                    title="Rename account"
+                    aria-label={`Rename ${codexAccountTitle(account)}`}
+                    onClick={() => startRename(account)}
+                  >
+                    <Pencil className="size-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    className={cn(iconBtn, "hover:text-destructive")}
+                    disabled={busy || Boolean(editingProfile)}
+                    title="Disconnect account"
+                    aria-label={`Disconnect ${codexAccountTitle(account)}`}
+                    onClick={() => setPendingDisconnectAccount(account)}
+                  >
+                    <Trash2 className="size-3.5" />
+                  </button>
                   <button
                     type="button"
                     aria-pressed={active}
                     disabled={active || busy || Boolean(editingProfile)}
                     onClick={() => void selectProfile(account.profile)}
-                    className="grid min-w-0 grid-cols-[1rem_minmax(0,1fr)] items-center gap-2 px-2.5 py-2 text-left disabled:pointer-events-none"
-                  >
-                    {active ? (
-                      <CheckCircle2 className="size-4 text-success" />
-                    ) : (
-                      <Circle className="size-4" />
+                    className={cn(
+                      metaPill,
+                      "h-7 transition-colors disabled:pointer-events-none disabled:opacity-80",
+                      active
+                        ? "text-foreground/70"
+                        : "text-muted-foreground hover:bg-muted-foreground/10 hover:text-foreground"
                     )}
-                    <span className="min-w-0">
-                      <span className="block truncate text-sm font-medium">
-                        {codexAccountTitle(account)}
-                      </span>
-                      <span className="block truncate text-xs">
-                        {codexAccountSubtitle(account)}
-                      </span>
-                    </span>
+                  >
+                    {disconnecting
+                      ? "Disconnecting"
+                      : switching
+                        ? "Switching"
+                        : active
+                          ? "Active"
+                          : "Use"}
                   </button>
-                  <div className="mr-1 flex items-center gap-1">
-                    <button
-                      type="button"
-                      className={iconBtn}
-                      disabled={busy || Boolean(editingProfile)}
-                      title="Rename account"
-                      aria-label={`Rename ${codexAccountTitle(account)}`}
-                      onClick={() => startRename(account)}
-                    >
-                      <Pencil className="size-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      className={cn(iconBtn, "hover:text-destructive")}
-                      disabled={busy || Boolean(editingProfile)}
-                      title="Disconnect account"
-                      aria-label={`Disconnect ${codexAccountTitle(account)}`}
-                      onClick={() => setPendingDisconnectAccount(account)}
-                    >
-                      <Trash2 className="size-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      aria-pressed={active}
-                      disabled={active || busy || Boolean(editingProfile)}
-                      onClick={() => void selectProfile(account.profile)}
-                      className={cn(
-                        metaPill,
-                        "h-7 transition-colors disabled:pointer-events-none disabled:opacity-80",
-                        active
-                          ? "text-foreground/70"
-                          : "text-muted-foreground hover:bg-muted-foreground/10 hover:text-foreground"
-                      )}
-                    >
-                      {disconnecting
-                        ? "Disconnecting"
-                        : switching
-                          ? "Switching"
-                          : active
-                            ? "Active"
-                            : "Use"}
-                    </button>
-                  </div>
                 </div>
-              )
-            })}
-          </div>
+              </div>
+            )
+          })}
         </div>
       ) : null}
       {pendingDisconnectAccount ? (
@@ -880,12 +1083,12 @@ function GitHubConnectionRow({
   }
 
   return (
-    <div className={cardDivider}>
-      <div className={cardRow}>
+    <div>
+      <div className="flex items-center gap-3">
         <svg
           viewBox="0 0 98 96"
           aria-hidden
-          className="size-6 shrink-0 fill-current text-foreground/80"
+          className="size-5 shrink-0 fill-current text-foreground/80"
         >
           <path
             fillRule="evenodd"
@@ -894,13 +1097,8 @@ function GitHubConnectionRow({
           />
         </svg>
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium text-foreground/85">GitHub</div>
+          <div className="text-sm font-medium text-foreground">GitHub</div>
           <div className="text-xs text-muted-foreground">{detail}</div>
-          {visibleError ? (
-            <div className="mt-1 text-[11px] leading-4 text-destructive">
-              {visibleError}
-            </div>
-          ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           {!userReady ? (
@@ -948,23 +1146,30 @@ function GitHubConnectionRow({
         </div>
       </div>
 
-      {userReady && accounts.length > 0
-        ? accounts.map((account) => {
+      {visibleError ? (
+        <div className="mt-2 text-[11px] leading-4 text-destructive">
+          {visibleError}
+        </div>
+      ) : null}
+
+      {userReady && accounts.length > 0 ? (
+        <div className="mt-3 space-y-0.5">
+          {accounts.map((account) => {
             const targetId = /^\d+$/.test(account.id) ? account.id : undefined
 
             return (
               <div
                 key={`${account.accountType}:${account.login}`}
-                className={cn(cardRow, cardDivider)}
+                className="flex items-center gap-2.5 rounded-xl px-2.5 py-2 transition-colors hover:bg-muted/60"
               >
                 <span
                   aria-hidden
-                  className="grid size-6 shrink-0 place-items-center text-muted-foreground/70"
+                  className="grid size-4 shrink-0 place-items-center text-muted-foreground/70"
                 >
                   <CornerDownRight className="size-3.5" />
                 </span>
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-medium text-foreground/85">
+                  <div className="truncate text-sm font-medium text-foreground">
                     @{account.login}
                   </div>
                   <div className="text-xs text-muted-foreground">
@@ -995,8 +1200,9 @@ function GitHubConnectionRow({
                 </form>
               </div>
             )
-          })
-        : null}
+          })}
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -1015,160 +1221,96 @@ function McpSettings({
   const setServerEnabled = useMutation(api.mcpServers.setEnabled)
   const [selectedId, setSelectedId] = useState<Id<"mcpServers"> | null>(null)
   const [creatingCustom, setCreatingCustom] = useState(false)
-  const [transport, setTransport] = useState<"stdio" | "http">("stdio")
-  const [name, setName] = useState("")
-  const [command, setCommand] = useState("")
-  const [url, setUrl] = useState("")
-  const [bearerTokenEnvVar, setBearerTokenEnvVar] = useState("")
-  const [cwd, setCwd] = useState("")
-  const [args, setArgs] = useState<string[]>([])
-  const [envVars, setEnvVars] = useState<
-    Array<{ name: string; value: string }>
-  >([])
-  const [passthroughVars, setPassthroughVars] = useState<string[]>([])
-  const [headers, setHeaders] = useState<
-    Array<{ name: string; value: string }>
-  >([])
-  const [envHeaders, setEnvHeaders] = useState<
-    Array<{ name: string; value: string }>
-  >([])
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState("")
+  const [toggleError, setToggleError] = useState("")
   const selected = servers.find((server) => server.id === selectedId) ?? null
 
-  function resetCustomForm() {
-    setCreatingCustom(false)
-    setTransport("stdio")
-    setName("")
-    setCommand("")
-    setUrl("")
-    setBearerTokenEnvVar("")
-    setCwd("")
-    setArgs([])
-    setEnvVars([])
-    setPassthroughVars([])
-    setHeaders([])
-    setEnvHeaders([])
-    setSaving(false)
-    setError("")
+  function openCreate() {
+    setSelectedId(null)
+    setCreatingCustom(true)
   }
 
-  async function saveCustomServer() {
-    setSaving(true)
-    setError("")
-    try {
-      const cleanList = (values: string[]) =>
-        values.map((value) => value.trim()).filter(Boolean)
-      const cleanPairs = (values: Array<{ name: string; value: string }>) =>
-        values
-          .map((pair) => ({ name: pair.name.trim(), value: pair.value.trim() }))
-          .filter((pair) => pair.name && pair.value)
-      const response = await fetch("/api/mcp/custom", {
-        body: JSON.stringify({
-          args: cleanList(args),
-          bearerTokenEnvVar,
-          command,
-          cwd,
-          envHttpHeaders: cleanPairs(envHeaders),
-          envVars: cleanList(passthroughVars),
-          httpHeaders: cleanPairs(headers),
-          name,
-          secrets: cleanPairs(envVars),
-          transport,
-          url,
-        }),
-        headers: { "content-type": "application/json" },
-        method: "POST",
-      })
-      const data = (await response.json().catch(() => ({}))) as {
-        error?: string
-        serverId?: Id<"mcpServers">
-      }
-      if (!response.ok || !data.serverId) {
-        throw new Error(data.error ?? "Unable to save MCP server.")
-      }
-      setSelectedId(data.serverId)
-      resetCustomForm()
-      await onReload()
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Unable to save MCP server."
-      )
-    } finally {
-      setSaving(false)
+  async function deleteServer(serverId: Id<"mcpServers">) {
+    const response = await fetch("/api/mcp/custom", {
+      body: JSON.stringify({ serverId }),
+      headers: { "content-type": "application/json" },
+      method: "DELETE",
+    })
+    const data = (await response.json().catch(() => ({}))) as { error?: string }
+    if (!response.ok) {
+      throw new Error(data.error ?? "Unable to remove MCP server.")
     }
-  }
-
-  async function deleteSelected() {
-    if (!selected) return
-    setSaving(true)
-    setError("")
-    try {
-      const response = await fetch("/api/mcp/custom", {
-        body: JSON.stringify({ serverId: selected.id }),
-        headers: { "content-type": "application/json" },
-        method: "DELETE",
-      })
-      const data = (await response.json().catch(() => ({}))) as {
-        error?: string
-      }
-      if (!response.ok) {
-        throw new Error(data.error ?? "Unable to remove MCP server.")
-      }
-      setSelectedId(null)
-      await onReload()
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Unable to remove MCP server."
-      )
-    } finally {
-      setSaving(false)
-    }
+    setSelectedId(null)
+    await onReload()
   }
 
   async function toggleEnabled(serverId: Id<"mcpServers">, enabled: boolean) {
-    setError("")
+    setToggleError("")
     try {
       await setServerEnabled({ enabled, serverId })
       await onReload()
     } catch (err) {
-      setError(
+      setToggleError(
         err instanceof Error ? err.message : "Unable to update MCP server."
       )
     }
   }
 
   return (
-    <section className="mt-8 flex flex-col gap-2">
-      <div className="order-1 flex items-center justify-between px-1">
-        <h2 className={sectionLabel}>MCP Connections</h2>
-        <button
-          type="button"
-          onClick={() => {
-            resetCustomForm()
-            setSelectedId(null)
-            setCreatingCustom(true)
-          }}
-          className={navAction}
-        >
+    <SettingsPage
+      title="MCP Connections"
+      description="Give Codex extra tools over STDIO or streamable HTTP."
+      action={
+        <button type="button" onClick={openCreate} className={navAction}>
           <Plus className="size-3.5" />
           Custom MCP
         </button>
-      </div>
+      }
+    >
+      {creatingCustom ? (
+        <div className="rounded-2xl border border-border/60 bg-muted/40 p-4 sm:p-5">
+          <div className="mb-4 flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-foreground">
+                Connect a custom MCP
+              </div>
+              <div className="text-xs text-muted-foreground">
+                Run over STDIO or streamable HTTP
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setCreatingCustom(false)}
+              aria-label="Close custom MCP editor"
+              className={iconBtn}
+            >
+              <X className="size-3.5" />
+            </button>
+          </div>
 
-      <div className={cn("order-3", card)}>
+          <McpServerForm
+            onCancel={() => setCreatingCustom(false)}
+            onSaved={async (serverId) => {
+              setCreatingCustom(false)
+              setSelectedId(serverId)
+              await onReload()
+            }}
+          />
+        </div>
+      ) : null}
+
+      <div className="space-y-2">
         {loading ? (
-          <div className="flex flex-col items-center justify-center gap-3 px-6 py-12 text-center">
+          <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
             <Loader2 className="size-5 animate-spin text-muted-foreground" />
             <div className="text-sm text-muted-foreground">
               Loading MCP connections…
             </div>
           </div>
         ) : loadError ? (
-          <div className={cardRow}>
+          <div className="flex items-center gap-3 py-3">
             <Server className="size-5 shrink-0 text-muted-foreground" />
             <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium text-foreground/85">
+              <div className="text-sm font-medium text-foreground">
                 Unable to load MCP connections
               </div>
               <div className="line-clamp-2 text-xs text-muted-foreground">
@@ -1197,7 +1339,10 @@ function McpSettings({
             return (
               <div
                 key={server.id}
-                className="border-b border-border/60 last:border-0"
+                className={cn(
+                  "overflow-hidden rounded-xl border border-border/60 transition-colors",
+                  active && "bg-muted/40"
+                )}
               >
                 <button
                   type="button"
@@ -1207,9 +1352,8 @@ function McpSettings({
                   }}
                   aria-expanded={active}
                   className={cn(
-                    cardRow,
-                    "group w-full text-left transition-colors hover:bg-muted",
-                    active ? "bg-muted text-foreground" : "text-foreground/80"
+                    "group flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors",
+                    active ? "" : "hover:bg-muted"
                   )}
                 >
                   <TransportIcon
@@ -1266,132 +1410,51 @@ function McpSettings({
                 </button>
 
                 {active ? (
-                  <div className="border-t border-border/60 px-3.5 pt-4 pb-3.5">
-                    <div className="grid gap-5">
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="text-sm font-medium text-foreground/85">
-                            Available to Codex
-                          </div>
-                          <p className={fieldHint}>
-                            When off, this server is excluded from new Codex
-                            runs.
-                          </p>
+                  <div className="border-t border-border/60 px-3 pt-3 pb-3">
+                    <div className="mb-4 flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium text-foreground">
+                          Available to Codex
                         </div>
-                        <Switch
-                          aria-label="Available to Codex"
-                          checked={server.enabled}
-                          onCheckedChange={(enabled) =>
-                            void toggleEnabled(server.id, enabled)
-                          }
-                        />
+                        <p className={fieldHint}>
+                          When off, this server is excluded from new Codex runs.
+                        </p>
                       </div>
-
-                      <div className="rounded-xl bg-muted/30 p-3">
-                        <dl className="grid gap-2 text-xs">
-                          <McpSummaryRow
-                            label="Transport"
-                            value={
-                              server.transport === "http"
-                                ? "Streamable HTTP"
-                                : "STDIO"
-                            }
-                          />
-                          {server.transport === "stdio" ? (
-                            <>
-                              {server.command ? (
-                                <McpSummaryRow
-                                  label="Command"
-                                  mono
-                                  value={[
-                                    server.command,
-                                    ...(server.args ?? []),
-                                  ]
-                                    .filter(Boolean)
-                                    .join(" ")}
-                                />
-                              ) : null}
-                              {server.cwd ? (
-                                <McpSummaryRow
-                                  label="Directory"
-                                  mono
-                                  value={server.cwd}
-                                />
-                              ) : null}
-                              {server.envVars?.length ? (
-                                <McpSummaryRow
-                                  label="Env passthrough"
-                                  mono
-                                  value={server.envVars.join(", ")}
-                                />
-                              ) : null}
-                            </>
-                          ) : (
-                            <>
-                              {server.url ? (
-                                <McpSummaryRow
-                                  label="URL"
-                                  mono
-                                  value={server.url}
-                                />
-                              ) : null}
-                              {server.bearerTokenEnvVar ? (
-                                <McpSummaryRow
-                                  label="Bearer env"
-                                  mono
-                                  value={server.bearerTokenEnvVar}
-                                />
-                              ) : null}
-                            </>
-                          )}
-                        </dl>
-                        {server.secrets.length ? (
-                          <div className="mt-2.5 flex flex-wrap gap-1.5 border-t border-border/60 pt-2.5">
-                            {server.secrets.map((secret) => (
-                              <span key={secret.id} className={metaPill}>
-                                <KeyRound className="size-3" />
-                                {secret.name}
-                              </span>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
-
-                      {error ? (
-                        <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                          {error}
-                        </div>
-                      ) : null}
+                      <Switch
+                        aria-label="Available to Codex"
+                        checked={server.enabled}
+                        onCheckedChange={(enabled) =>
+                          void toggleEnabled(server.id, enabled)
+                        }
+                      />
                     </div>
 
-                    <div className="mt-4 flex items-center justify-between gap-2 border-t border-border/60 pt-3.5">
-                      <button
-                        type="button"
-                        onClick={deleteSelected}
-                        disabled={saving}
-                        className={navDestructive}
-                      >
-                        <Trash2 className="size-3.5" />
-                        Remove
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setSelectedId(null)}
-                        className={navAction}
-                      >
-                        Done
-                      </button>
-                    </div>
+                    {toggleError ? (
+                      <div className="mb-4 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                        {toggleError}
+                      </div>
+                    ) : null}
+
+                    <McpServerForm
+                      key={server.id}
+                      server={server}
+                      onCancel={() => setSelectedId(null)}
+                      onRemove={() => deleteServer(server.id)}
+                      onSaved={async () => {
+                        setSelectedId(null)
+                        await onReload()
+                      }}
+                    />
                   </div>
                 ) : null}
               </div>
             )
           })
         ) : (
-          <div className="flex flex-col items-center justify-center gap-3 px-6 py-10 text-center">
+          <div className="flex flex-col items-center justify-center gap-3 py-14 text-center">
             <Server className="size-5 text-muted-foreground" />
             <div>
-              <div className="text-sm font-medium text-foreground/85">
+              <div className="text-sm font-medium text-foreground">
                 No MCP servers connected
               </div>
               <p className="mt-1 text-xs text-muted-foreground">
@@ -1399,218 +1462,361 @@ function McpSettings({
                 or HTTP.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => {
-                resetCustomForm()
-                setSelectedId(null)
-                setCreatingCustom(true)
-              }}
-              className={navAction}
-            >
+            <button type="button" onClick={openCreate} className={navAction}>
               <Plus className="size-3.5" />
               Custom MCP
             </button>
           </div>
         )}
       </div>
-
-      {creatingCustom ? (
-        <div className={cn("order-2", card)}>
-          <div className={cn(cardRow, "border-b border-border/60")}>
-            <Server className="size-5 shrink-0 text-muted-foreground" />
-            <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium text-foreground/85">
-                Connect to a custom MCP
-              </div>
-              <div className="text-xs text-muted-foreground">
-                STDIO or streamable HTTP
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={resetCustomForm}
-              aria-label="Close custom MCP editor"
-              className={iconBtn}
-            >
-              <X className="size-3.5" />
-            </button>
-          </div>
-
-          <div className="grid gap-4 p-4">
-            <label className={fieldLabel}>
-              Name
-              <input
-                aria-label="MCP server name"
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                placeholder="MCP server name"
-                className={cn(inputClass, "font-normal")}
-              />
-            </label>
-
-            <SegmentedControl
-              fill
-              label="MCP transport"
-              value={transport}
-              onChange={setTransport}
-              options={[
-                { label: "STDIO", value: "stdio" },
-                { label: "Streamable HTTP", value: "http" },
-              ]}
-              className="h-9"
-              itemClassName="h-8 text-sm"
-            />
-
-            {transport === "stdio" ? (
-              <>
-                <label className={fieldLabel}>
-                  Command to launch
-                  <input
-                    aria-label="MCP command to launch"
-                    value={command}
-                    onChange={(event) => setCommand(event.target.value)}
-                    placeholder="openai-dev-mcp serve-sqlite"
-                    className={cn(inputClass, "font-normal")}
-                  />
-                </label>
-
-                <McpStringListEditor
-                  addLabel="Add argument"
-                  items={args}
-                  label="Arguments"
-                  placeholder="--project"
-                  onChange={setArgs}
-                />
-
-                <McpPairListEditor
-                  addLabel="Add environment variable"
-                  items={envVars}
-                  label="Environment variables"
-                  leftPlaceholder="Key"
-                  rightPlaceholder="Value"
-                  secret
-                  onChange={setEnvVars}
-                />
-
-                <McpStringListEditor
-                  addLabel="Add variable"
-                  items={passthroughVars}
-                  label="Environment variable passthrough"
-                  placeholder="GITHUB_TOKEN"
-                  onChange={setPassthroughVars}
-                />
-
-                <label className={fieldLabel}>
-                  Working directory
-                  <input
-                    aria-label="MCP working directory"
-                    value={cwd}
-                    onChange={(event) => setCwd(event.target.value)}
-                    placeholder="~/code"
-                    className={cn(inputClass, "font-normal")}
-                  />
-                </label>
-              </>
-            ) : (
-              <>
-                <label className={fieldLabel}>
-                  URL
-                  <input
-                    aria-label="MCP server URL"
-                    value={url}
-                    onChange={(event) => setUrl(event.target.value)}
-                    placeholder="https://mcp.example.com/mcp"
-                    className={cn(inputClass, "font-normal")}
-                  />
-                </label>
-                <label className={fieldLabel}>
-                  Bearer token env var
-                  <input
-                    aria-label="MCP bearer token environment variable"
-                    value={bearerTokenEnvVar}
-                    onChange={(event) =>
-                      setBearerTokenEnvVar(event.target.value)
-                    }
-                    placeholder="MCP_BEARER_TOKEN"
-                    className={cn(inputClass, "font-normal")}
-                  />
-                </label>
-                <McpPairListEditor
-                  addLabel="Add header"
-                  items={headers}
-                  label="Headers"
-                  leftPlaceholder="Key"
-                  rightPlaceholder="Value"
-                  secret
-                  onChange={setHeaders}
-                />
-                <McpPairListEditor
-                  addLabel="Add variable"
-                  items={envHeaders}
-                  label="Headers from environment variables"
-                  leftPlaceholder="Header"
-                  rightPlaceholder="Env var"
-                  onChange={setEnvHeaders}
-                />
-              </>
-            )}
-
-            {error ? (
-              <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                {error}
-              </div>
-            ) : null}
-          </div>
-
-          <div className="flex items-center justify-end gap-2 border-t border-border/60 px-3.5 py-2.5">
-            <button
-              type="button"
-              onClick={resetCustomForm}
-              disabled={saving}
-              className={navAction}
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={saveCustomServer}
-              disabled={
-                saving ||
-                !name.trim() ||
-                (transport === "stdio" ? !command.trim() : !url.trim())
-              }
-              className={navPrimary}
-            >
-              {saving ? "Saving" : "Save"}
-            </button>
-          </div>
-        </div>
-      ) : null}
-    </section>
+    </SettingsPage>
   )
 }
 
-function McpSummaryRow({
+function McpServerForm({
+  server,
+  onSaved,
+  onCancel,
+  onRemove,
+}: {
+  server?: McpServerRecord
+  onSaved: (serverId: Id<"mcpServers">) => void | Promise<void>
+  onCancel: () => void
+  onRemove?: () => void | Promise<void>
+}) {
+  const editing = Boolean(server)
+  const [transport, setTransport] = useState<"stdio" | "http">(
+    server?.transport ?? "stdio"
+  )
+  const [name, setName] = useState(server?.name ?? "")
+  const [command, setCommand] = useState(server?.command ?? "")
+  const [url, setUrl] = useState(server?.url ?? "")
+  const [bearerTokenEnvVar, setBearerTokenEnvVar] = useState(
+    server?.bearerTokenEnvVar ?? ""
+  )
+  const [cwd, setCwd] = useState(server?.cwd ?? "")
+  const [args, setArgs] = useState<string[]>(server?.args ?? [])
+  const [envVars, setEnvVars] = useState<
+    Array<{ name: string; value: string }>
+  >([])
+  const [passthroughVars, setPassthroughVars] = useState<string[]>(
+    server?.envVars ?? []
+  )
+  const [headers, setHeaders] = useState<
+    Array<{ name: string; value: string }>
+  >([])
+  const [envHeaders, setEnvHeaders] = useState<
+    Array<{ name: string; value: string }>
+  >([])
+  const [removeSecretIds, setRemoveSecretIds] = useState<
+    Array<Id<"mcpServerSecrets">>
+  >([])
+  const [saving, setSaving] = useState(false)
+  const [removing, setRemoving] = useState(false)
+  const [error, setError] = useState("")
+
+  const remainingSecrets = (server?.secrets ?? []).filter(
+    (secret) => !removeSecretIds.includes(secret.id)
+  )
+  const savedEnv = remainingSecrets.filter((secret) => secret.kind === "env")
+  const savedHeaders = remainingSecrets.filter(
+    (secret) => secret.kind === "httpHeader"
+  )
+  const savedEnvHeaders = remainingSecrets.filter(
+    (secret) => secret.kind === "envHttpHeader"
+  )
+
+  function removeSavedSecret(id: Id<"mcpServerSecrets">) {
+    setRemoveSecretIds((prev) => [...prev, id])
+  }
+
+  async function save() {
+    setSaving(true)
+    setError("")
+    try {
+      const cleanList = (values: string[]) =>
+        values.map((value) => value.trim()).filter(Boolean)
+      const cleanPairs = (values: Array<{ name: string; value: string }>) =>
+        values
+          .map((pair) => ({ name: pair.name.trim(), value: pair.value.trim() }))
+          .filter((pair) => pair.name && pair.value)
+      const response = await fetch("/api/mcp/custom", {
+        body: JSON.stringify({
+          args: cleanList(args),
+          bearerTokenEnvVar,
+          command,
+          cwd,
+          envHttpHeaders: cleanPairs(envHeaders),
+          envVars: cleanList(passthroughVars),
+          httpHeaders: cleanPairs(headers),
+          name,
+          secrets: cleanPairs(envVars),
+          transport,
+          url,
+          ...(editing && server
+            ? { removeSecretIds, serverId: server.id }
+            : {}),
+        }),
+        headers: { "content-type": "application/json" },
+        method: editing ? "PATCH" : "POST",
+      })
+      const data = (await response.json().catch(() => ({}))) as {
+        error?: string
+        serverId?: Id<"mcpServers">
+      }
+      if (!response.ok || !data.serverId) {
+        throw new Error(data.error ?? "Unable to save MCP server.")
+      }
+      await onSaved(data.serverId)
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Unable to save MCP server."
+      )
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function handleRemove() {
+    if (!onRemove) return
+    setRemoving(true)
+    setError("")
+    try {
+      await onRemove()
+    } catch (err) {
+      setRemoving(false)
+      setError(
+        err instanceof Error ? err.message : "Unable to remove MCP server."
+      )
+    }
+  }
+
+  return (
+    <div className="grid gap-4">
+      <label className={fieldLabel}>
+        Name
+        <input
+          aria-label="MCP server name"
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+          placeholder="MCP server name"
+          className={cn(inputClass, "font-normal")}
+        />
+      </label>
+
+      <SegmentedControl
+        fill
+        label="MCP transport"
+        value={transport}
+        onChange={setTransport}
+        options={[
+          { label: "STDIO", value: "stdio" },
+          { label: "Streamable HTTP", value: "http" },
+        ]}
+        className="h-9"
+        itemClassName="h-8 text-sm"
+      />
+
+      {transport === "stdio" ? (
+        <>
+          <label className={fieldLabel}>
+            Command to launch
+            <input
+              aria-label="MCP command to launch"
+              value={command}
+              onChange={(event) => setCommand(event.target.value)}
+              placeholder="openai-dev-mcp serve-sqlite"
+              className={cn(inputClass, "font-normal")}
+            />
+          </label>
+
+          <McpStringListEditor
+            addLabel="Add argument"
+            items={args}
+            label="Arguments"
+            placeholder="--project"
+            onChange={setArgs}
+          />
+
+          <McpSavedSecretList
+            label="Environment variables"
+            secrets={savedEnv}
+            onRemove={removeSavedSecret}
+          />
+
+          <McpPairListEditor
+            addLabel="Add environment variable"
+            items={envVars}
+            label={
+              savedEnv.length
+                ? "Add environment variables"
+                : "Environment variables"
+            }
+            leftPlaceholder="Key"
+            rightPlaceholder="Value"
+            secret
+            onChange={setEnvVars}
+          />
+
+          <McpStringListEditor
+            addLabel="Add variable"
+            items={passthroughVars}
+            label="Environment variable passthrough"
+            placeholder="GITHUB_TOKEN"
+            onChange={setPassthroughVars}
+          />
+
+          <label className={fieldLabel}>
+            Working directory
+            <input
+              aria-label="MCP working directory"
+              value={cwd}
+              onChange={(event) => setCwd(event.target.value)}
+              placeholder="~/code"
+              className={cn(inputClass, "font-normal")}
+            />
+          </label>
+        </>
+      ) : (
+        <>
+          <label className={fieldLabel}>
+            URL
+            <input
+              aria-label="MCP server URL"
+              value={url}
+              onChange={(event) => setUrl(event.target.value)}
+              placeholder="https://mcp.example.com/mcp"
+              className={cn(inputClass, "font-normal")}
+            />
+          </label>
+          <label className={fieldLabel}>
+            Bearer token env var
+            <input
+              aria-label="MCP bearer token environment variable"
+              value={bearerTokenEnvVar}
+              onChange={(event) => setBearerTokenEnvVar(event.target.value)}
+              placeholder="MCP_BEARER_TOKEN"
+              className={cn(inputClass, "font-normal")}
+            />
+          </label>
+          <McpSavedSecretList
+            label="Headers"
+            secrets={savedHeaders}
+            onRemove={removeSavedSecret}
+          />
+          <McpPairListEditor
+            addLabel="Add header"
+            items={headers}
+            label={savedHeaders.length ? "Add headers" : "Headers"}
+            leftPlaceholder="Key"
+            rightPlaceholder="Value"
+            secret
+            onChange={setHeaders}
+          />
+          <McpSavedSecretList
+            label="Headers from environment variables"
+            secrets={savedEnvHeaders}
+            onRemove={removeSavedSecret}
+          />
+          <McpPairListEditor
+            addLabel="Add variable"
+            items={envHeaders}
+            label={
+              savedEnvHeaders.length
+                ? "Add headers from environment variables"
+                : "Headers from environment variables"
+            }
+            leftPlaceholder="Header"
+            rightPlaceholder="Env var"
+            onChange={setEnvHeaders}
+          />
+        </>
+      )}
+
+      {error ? (
+        <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          {error}
+        </div>
+      ) : null}
+
+      <div className="flex items-center justify-between gap-2">
+        {editing && onRemove ? (
+          <button
+            type="button"
+            onClick={handleRemove}
+            disabled={saving || removing}
+            className={navDestructive}
+          >
+            <Trash2 className="size-3.5" />
+            {removing ? "Removing" : "Remove"}
+          </button>
+        ) : (
+          <span />
+        )}
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={saving || removing}
+            className={navAction}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={save}
+            disabled={
+              saving ||
+              removing ||
+              !name.trim() ||
+              (transport === "stdio" ? !command.trim() : !url.trim())
+            }
+            className={navPrimary}
+          >
+            {saving ? "Saving" : editing ? "Save changes" : "Save"}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function McpSavedSecretList({
   label,
-  value,
-  mono,
+  secrets,
+  onRemove,
 }: {
   label: string
-  value: string
-  mono?: boolean
+  secrets: Array<{ id: Id<"mcpServerSecrets">; name: string }>
+  onRemove: (id: Id<"mcpServerSecrets">) => void
 }) {
+  if (!secrets.length) return null
   return (
-    <div className="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-2">
-      <dt className="text-muted-foreground">{label}</dt>
-      <dd
-        className={cn(
-          "min-w-0 break-words text-foreground/85",
-          mono && "font-[family-name:var(--font-mono)]"
-        )}
-      >
-        {value}
-      </dd>
+    <div className="grid gap-2">
+      <div className="text-xs font-medium text-foreground/80">{label}</div>
+      <div className="overflow-hidden rounded-lg border border-border/60">
+        {secrets.map((secret) => (
+          <div
+            key={secret.id}
+            className="flex items-center gap-2 border-b border-border/60 px-3 py-2 last:border-0"
+          >
+            <span className="min-w-0 flex-1 truncate font-[family-name:var(--font-mono)] text-xs text-foreground/85">
+              {secret.name}
+            </span>
+            <span className="shrink-0 text-[11px] text-muted-foreground">
+              Saved
+            </span>
+            <button
+              type="button"
+              onClick={() => onRemove(secret.id)}
+              aria-label={`Remove ${secret.name}`}
+              className={cn(iconBtn, "hover:text-destructive")}
+            >
+              <Trash2 className="size-3.5" />
+            </button>
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
@@ -2013,7 +2219,7 @@ function PresetSettings({ presets }: { presets: SandboxPresetRecord[] }) {
 
   const presetFields = (
     <>
-      <div className="grid gap-4 p-4">
+      <div className="grid gap-4">
         <label className={fieldLabel}>
           Name
           <input
@@ -2036,11 +2242,11 @@ function PresetSettings({ presets }: { presets: SandboxPresetRecord[] }) {
               it uses the saved Convex cloudcode.yaml for the live sandbox.
             </p>
             {selected?.environments?.length ? (
-              <div className="-mx-4 mt-3 border-y border-border/60">
+              <div className="mt-3 border-y border-border/60">
                 {selected.environments.map((environment) => (
                   <div
                     key={environment.id}
-                    className="flex items-center gap-2 border-b border-border/60 px-4 py-2 last:border-0"
+                    className="flex items-center gap-2 border-b border-border/60 py-2 last:border-0"
                   >
                     <span className="min-w-0 flex-1 truncate text-xs text-foreground/80">
                       {environment.repoUrl.replace(/^https?:\/\//, "")}
@@ -2053,12 +2259,7 @@ function PresetSettings({ presets }: { presets: SandboxPresetRecord[] }) {
           </div>
         ) : (
           <>
-            <div
-              className={cn(
-                "flex items-start justify-between gap-3 px-3 py-2.5",
-                cardSurfaceClass
-              )}
-            >
+            <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-xs font-medium text-foreground/80">
                   Auto environment
@@ -2079,11 +2280,11 @@ function PresetSettings({ presets }: { presets: SandboxPresetRecord[] }) {
             </div>
 
             {autoEnvironment && selected?.environments?.length ? (
-              <div className="-mx-4 border-y border-border/60">
+              <div className="border-y border-border/60">
                 {selected.environments.map((environment) => (
                   <div
                     key={environment.id}
-                    className="flex items-center gap-2 border-b border-border/60 px-4 py-2 last:border-0"
+                    className="flex items-center gap-2 border-b border-border/60 py-2 last:border-0"
                   >
                     <span className="min-w-0 flex-1 truncate text-xs text-foreground/80">
                       {environment.repoUrl.replace(/^https?:\/\//, "")}
@@ -2149,11 +2350,11 @@ function PresetSettings({ presets }: { presets: SandboxPresetRecord[] }) {
               </div>
 
               {selected?.secrets.length ? (
-                <div className="-mx-4 mb-3 border-y border-border/60">
+                <div className="mb-3 border-y border-border/60">
                   {selected.secrets.map((secret) => (
                     <div
                       key={secret.id}
-                      className="flex items-center gap-2 border-b border-border/60 px-4 py-2 last:border-0"
+                      className="flex items-center gap-2 border-b border-border/60 py-2 last:border-0"
                     >
                       <span className="min-w-0 flex-1 truncate font-[family-name:var(--font-mono)] text-xs text-foreground/85">
                         {secret.name}
@@ -2264,7 +2465,7 @@ function PresetSettings({ presets }: { presets: SandboxPresetRecord[] }) {
         ) : null}
       </div>
 
-      <div className="flex items-center justify-between gap-2 border-t border-border/60 px-3.5 py-2.5">
+      <div className="mt-4 flex items-center justify-between gap-2 border-t border-border/60 pt-4">
         {!selectedIsAuto ? (
           <button
             type="button"
@@ -2301,21 +2502,21 @@ function PresetSettings({ presets }: { presets: SandboxPresetRecord[] }) {
   )
 
   return (
-    <section className="mt-8 flex flex-col gap-2">
-      <div className="order-1 flex items-center justify-between px-1">
-        <h2 className={sectionLabel}>Daytona Presets</h2>
+    <SettingsPage
+      title="Daytona Presets"
+      description="Configure sandbox environments, install scripts, and secrets."
+      action={
         <button type="button" onClick={startNewPreset} className={navAction}>
           <Plus className="size-3.5" />
           New preset
         </button>
-      </div>
-
+      }
+    >
       {creating ? (
-        <div className={cn("order-2", card)}>
-          <div className={cn(cardRow, "border-b border-border/60")}>
-            <Layers3 className="size-5 shrink-0 text-muted-foreground" />
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-sm font-medium text-foreground/85">
+        <div className="rounded-2xl border border-border/60 bg-muted/40 p-4 sm:p-5">
+          <div className="mb-4 flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-foreground">
                 New preset
               </div>
               <div className="text-xs text-muted-foreground">
@@ -2335,12 +2536,12 @@ function PresetSettings({ presets }: { presets: SandboxPresetRecord[] }) {
         </div>
       ) : null}
 
-      <div className={cn("order-3", card)}>
+      <div className="space-y-2">
         {presets.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-3 px-6 py-10 text-center">
+          <div className="flex flex-col items-center justify-center gap-3 py-14 text-center">
             <Layers3 className="size-5 text-muted-foreground" />
             <div>
-              <div className="text-sm font-medium text-foreground/85">
+              <div className="text-sm font-medium text-foreground">
                 No presets yet
               </div>
               <p className="mt-1 text-xs text-muted-foreground">
@@ -2381,7 +2582,10 @@ function PresetSettings({ presets }: { presets: SandboxPresetRecord[] }) {
             return (
               <div
                 key={preset.id}
-                className="border-b border-border/60 last:border-0"
+                className={cn(
+                  "overflow-hidden rounded-xl border border-border/60 transition-colors",
+                  active && "bg-muted/40"
+                )}
               >
                 <button
                   type="button"
@@ -2390,47 +2594,19 @@ function PresetSettings({ presets }: { presets: SandboxPresetRecord[] }) {
                   }
                   aria-expanded={active}
                   className={cn(
-                    cardRow,
-                    "group w-full text-left transition-colors hover:bg-muted",
-                    active ? "bg-muted text-foreground" : "text-foreground/80"
+                    "group flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors",
+                    active ? "" : "hover:bg-muted"
                   )}
                 >
                   <Layers3 className="size-5 shrink-0 text-muted-foreground" />
                   <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-medium text-foreground/85">
+                    <div className="truncate text-sm font-medium text-foreground">
                       {preset.name}
                     </div>
                     <div className="truncate text-xs text-muted-foreground">
                       {subtitle}
                     </div>
                   </div>
-                  {preset.pathInstallScript ? (
-                    <span
-                      className={metaPill}
-                      title="Runs a PATH setup script from the sandbox home"
-                    >
-                      <Terminal className="size-3" />
-                      PATH
-                    </span>
-                  ) : null}
-                  {preset.installScript ? (
-                    <span
-                      className={metaPill}
-                      title="Runs an install script from the repo root"
-                    >
-                      <Terminal className="size-3" />
-                      script
-                    </span>
-                  ) : null}
-                  {preset.secrets.length ? (
-                    <span
-                      className={metaPill}
-                      title={`${preset.secrets.length} secret${preset.secrets.length === 1 ? "" : "s"}`}
-                    >
-                      <KeyRound className="size-3" />
-                      {preset.secrets.length}
-                    </span>
-                  ) : null}
                   <ChevronRight
                     className={cn(
                       "size-3.5 shrink-0 transition-transform",
@@ -2441,8 +2617,10 @@ function PresetSettings({ presets }: { presets: SandboxPresetRecord[] }) {
                   />
                 </button>
                 {active ? (
-                  <div className="border-t border-border/60">
-                    {presetFields}
+                  <div className="px-3 pb-3">
+                    <div className="border-t border-border/60 pt-3">
+                      {presetFields}
+                    </div>
                   </div>
                 ) : null}
               </div>
@@ -2450,6 +2628,6 @@ function PresetSettings({ presets }: { presets: SandboxPresetRecord[] }) {
           })
         )}
       </div>
-    </section>
+    </SettingsPage>
   )
 }

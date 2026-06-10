@@ -8,11 +8,13 @@ export const BILLING_PLUS_PLAN_ID = "plus"
 
 export const BILLING_PLANS = [
   {
+    includedMicroUsd: 6_000_000,
     name: "Hobby",
     planId: BILLING_HOBBY_PLAN_ID,
     priceUsd: 10,
   },
   {
+    includedMicroUsd: 14_000_000,
     name: "Plus",
     planId: BILLING_PLUS_PLAN_ID,
     priceUsd: 20,
@@ -125,6 +127,68 @@ export function daytonaSegmentMicroUsd({
     resources.memoryGiB * rates.memoryMicroUsdPerGibSecond * seconds
 
   return ceilMicroUsd(cpu + memory + storage)
+}
+
+/**
+ * Representative sandbox profile used to project a remaining balance into
+ * "hours left" on the billing page. Mirrors the Daytona sandbox defaults
+ * (DEFAULT_SANDBOX_CPU / MEMORY / DISK in lib/daytona-sandbox.ts).
+ */
+export const DAYTONA_REFERENCE_SANDBOX_RESOURCES: DaytonaBillingResources = {
+  cpu: 2,
+  diskGiB: 8,
+  memoryGiB: 4,
+}
+
+/**
+ * Exact (unrounded) Daytona burn rate in micro_usd per second. A running
+ * sandbox bills CPU + memory + disk; a stopped sandbox bills disk only.
+ */
+export function daytonaBurnRateMicroUsdPerSecond({
+  rates = DAYTONA_BILLING_RATES,
+  resources,
+  state,
+}: {
+  rates?: DaytonaBillingRates
+  resources: DaytonaBillingResources
+  state: "running" | "stopped"
+}) {
+  const storage = resources.diskGiB * rates.storageMicroUsdPerGibSecond
+  if (state === "stopped") return storage
+  const cpu = resources.cpu * rates.cpuMicroUsdPerVcpuSecond
+  const memory = resources.memoryGiB * rates.memoryMicroUsdPerGibSecond
+  return cpu + memory + storage
+}
+
+/** Hours a balance lasts at a given burn rate; 0 when depleted or idle-free. */
+export function microUsdHoursLeft(
+  remainingMicroUsd: number,
+  burnRateMicroUsdPerSecond: number
+) {
+  if (
+    !Number.isFinite(remainingMicroUsd) ||
+    remainingMicroUsd <= 0 ||
+    burnRateMicroUsdPerSecond <= 0
+  ) {
+    return 0
+  }
+  return remainingMicroUsd / burnRateMicroUsdPerSecond / 3600
+}
+
+/**
+ * Whole hours of running sandbox time a plan's included allowance buys, using
+ * the same reference sandbox as the "hours left" meter so the figures align.
+ */
+export function planIncludedHours(includedMicroUsd: number) {
+  return Math.floor(
+    microUsdHoursLeft(
+      includedMicroUsd,
+      daytonaBurnRateMicroUsdPerSecond({
+        resources: DAYTONA_REFERENCE_SANDBOX_RESOURCES,
+        state: "running",
+      })
+    )
+  )
 }
 
 export function readDaytonaBillingRatesFromEnv(

@@ -15,9 +15,14 @@ import {
   BILLING_DAYTONA_CHECKPOINT_MS,
   BILLING_INFRA_USAGE_FEATURE_ID,
   BILLING_MINIMUM_START_BALANCE_MICRO_USD,
+  BILLING_PLANS,
   DAYTONA_BILLING_RATE_VERSION,
+  DAYTONA_REFERENCE_SANDBOX_RESOURCES,
   ceilMicroUsd,
+  daytonaBurnRateMicroUsdPerSecond,
   daytonaSegmentMicroUsd,
+  microUsdHoursLeft,
+  type BillingPlanId,
   type BillingUsageSource,
   type DaytonaBillingResources,
   type DaytonaBillingState,
@@ -71,6 +76,121 @@ type LocalUsageSummary = {
 
 function autumnCustomerId(userId: Id<"users">) {
   return userId as string
+}
+
+type ActivePlanInfo = {
+  canceling: boolean
+  currentPeriodEnd: number | null
+  planId: BillingPlanId | null
+  status: string | null
+}
+
+const KNOWN_PLAN_IDS = new Set<string>(BILLING_PLANS.map((plan) => plan.planId))
+
+/**
+ * Derives the customer's current base plan from the live Autumn subscriptions.
+ * The local `billingCustomers.planId` is only written on a direct attach, so
+ * hosted-checkout subscriptions must be read back from Autumn to be reflected.
+ */
+function resolveActivePlan(customer: {
+  subscriptions?: Array<{
+    addOn?: boolean
+    canceledAt?: number | null
+    currentPeriodEnd?: number | null
+    planId: string
+    status?: string
+  }>
+}): ActivePlanInfo {
+  const subscriptions = customer.subscriptions ?? []
+  const candidates = subscriptions.filter(
+    (subscription) =>
+      !subscription.addOn && KNOWN_PLAN_IDS.has(subscription.planId)
+  )
+  const subscription =
+    candidates.find((entry) => entry.status === "active") ?? candidates[0]
+
+  if (!subscription) {
+    return {
+      canceling: false,
+      currentPeriodEnd: null,
+      planId: null,
+      status: null,
+    }
+  }
+
+  return {
+    canceling: subscription.canceledAt != null,
+    currentPeriodEnd: subscription.currentPeriodEnd ?? null,
+    planId: subscription.planId as BillingPlanId,
+    status: subscription.status ?? null,
+  }
+}
+
+type UsageHoursInfo = {
+  depleted: boolean
+  fractionRemaining: number
+  nextResetAt: number | null
+  runningHoursLeft: number
+  stoppedHoursLeft: number
+  unlimited: boolean
+}
+
+/**
+ * Projects the customer's authoritative Autumn infra balance into a coarse
+ * "hours left" estimate, hiding the raw allowance from the browser. The local
+ * pending/failed usage (not yet settled on Autumn) is subtracted first.
+ */
+function computeUsageHours(
+  customer: {
+    balances?: Record<
+      string,
+      {
+        granted?: number
+        nextResetAt?: number | null
+        remaining?: number
+        unlimited?: boolean
+      }
+    >
+  },
+  pendingMicroUsd: number
+): UsageHoursInfo | null {
+  const balance = customer.balances?.[BILLING_INFRA_USAGE_FEATURE_ID]
+  if (!balance) return null
+
+  const unlimited = Boolean(balance.unlimited)
+  const remainingRaw =
+    typeof balance.remaining === "number" ? balance.remaining : 0
+  const grantedRaw = typeof balance.granted === "number" ? balance.granted : 0
+  const remainingMicroUsd = Math.max(
+    0,
+    remainingRaw - Math.max(0, pendingMicroUsd)
+  )
+
+  const runningBurn = daytonaBurnRateMicroUsdPerSecond({
+    resources: DAYTONA_REFERENCE_SANDBOX_RESOURCES,
+    state: "running",
+  })
+  const stoppedBurn = daytonaBurnRateMicroUsdPerSecond({
+    resources: DAYTONA_REFERENCE_SANDBOX_RESOURCES,
+    state: "stopped",
+  })
+
+  return {
+    depleted: !unlimited && remainingMicroUsd <= 0,
+    fractionRemaining: unlimited
+      ? 1
+      : grantedRaw > 0
+        ? Math.min(1, Math.max(0, remainingMicroUsd / grantedRaw))
+        : 0,
+    nextResetAt: balance.nextResetAt ?? null,
+    runningHoursLeft: Math.floor(
+      microUsdHoursLeft(remainingMicroUsd, runningBurn)
+    ),
+    stoppedHoursLeft: Math.floor(
+      microUsdHoursLeft(remainingMicroUsd, stoppedBurn)
+    ),
+    unlimited,
+  }
 }
 
 function cleanError(error: unknown) {
@@ -176,7 +296,7 @@ async function autumnClient() {
 async function ensureAutumnCustomer(ctx: ActionCtx, user: BillingUser) {
   const customerId = autumnCustomerId(user._id)
   const autumn = await autumnClient()
-  await autumn.customers.getOrCreate({
+  const customer = await autumn.customers.getOrCreate({
     customerId,
     email: user.email,
     fingerprint: user.subject || user.tokenIdentifier,
@@ -189,7 +309,7 @@ async function ensureAutumnCustomer(ctx: ActionCtx, user: BillingUser) {
     name: user.name,
     userId: user._id,
   })
-  return { autumn, customerId }
+  return { autumn, customer, customerId }
 }
 
 async function trackUsageEvent(
@@ -406,6 +526,35 @@ export const attachCurrentUserPlan = action({
   },
 })
 
+export const refreshCurrentUserPlan = action({
+  args: {},
+  handler: async (
+    ctx
+  ): Promise<ActivePlanInfo & { usage: UsageHoursInfo | null }> => {
+    const user = (await ctx.runQuery(
+      api.users.viewer,
+      {}
+    )) as BillingUser | null
+    if (!user) throw new Error("Not authenticated.")
+
+    const { customer } = await ensureAutumnCustomer(ctx, user)
+    const plan = resolveActivePlan(customer)
+
+    await ctx.runMutation(internal.billing.setCustomerPlan, {
+      planId: plan.planId ?? undefined,
+      status: plan.status ?? undefined,
+      userId: user._id,
+    })
+
+    const summary = (await ctx.runQuery(internal.billing.pendingUsageForUser, {
+      userId: user._id,
+    })) as LocalUsageSummary
+    const usage = computeUsageHours(customer, summary.pendingMicroUsd)
+
+    return { ...plan, usage }
+  },
+})
+
 export const recordWorkerUsage = action({
   args: {
     amountMicroUsd: v.number(),
@@ -547,6 +696,29 @@ export const upsertCustomerRecord = internalMutation({
       ...patch,
       createdAt: now,
       userId: args.userId,
+    })
+  },
+})
+
+export const setCustomerPlan = internalMutation({
+  args: {
+    planId: v.optional(billingPlanId),
+    status: v.optional(v.string()),
+    userId: v.id("users"),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("billingCustomers")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .unique()
+    if (!existing) return
+
+    // Patching with `undefined` clears the field, so a downgraded or canceled
+    // customer correctly drops back to "no active plan".
+    await ctx.db.patch(existing._id, {
+      planId: args.planId,
+      status: args.status,
+      updatedAt: Date.now(),
     })
   },
 })

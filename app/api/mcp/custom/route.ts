@@ -100,6 +100,61 @@ export async function POST(request: Request) {
   }
 }
 
+export async function PATCH(request: Request) {
+  const blocked = requireSameOrigin(request)
+  if (blocked) return blocked
+
+  try {
+    const body = (await request.json()) as Record<string, unknown>
+    if (typeof body.serverId !== "string") {
+      return NextResponse.json(
+        { error: "MCP server id is required." },
+        { status: 400 }
+      )
+    }
+
+    const client = await convexClient()
+    const serverId = await client.mutation(api.mcpServers.updateCustom, {
+      args: Array.isArray(body.args)
+        ? body.args.filter((arg): arg is string => typeof arg === "string")
+        : undefined,
+      bearerTokenEnvVar:
+        typeof body.bearerTokenEnvVar === "string"
+          ? body.bearerTokenEnvVar
+          : undefined,
+      command: typeof body.command === "string" ? body.command : undefined,
+      cwd: typeof body.cwd === "string" ? body.cwd : undefined,
+      envHttpHeaders: encryptedPairs(body.envHttpHeaders),
+      envVars: Array.isArray(body.envVars)
+        ? body.envVars.filter(
+            (name): name is string => typeof name === "string"
+          )
+        : undefined,
+      httpHeaders: encryptedPairs(body.httpHeaders),
+      name: typeof body.name === "string" ? body.name : "",
+      removeSecretIds: Array.isArray(body.removeSecretIds)
+        ? (body.removeSecretIds.filter(
+            (id): id is string => typeof id === "string"
+          ) as Id<"mcpServerSecrets">[])
+        : undefined,
+      secrets: encryptedPairs(body.secrets),
+      serverId: body.serverId as Id<"mcpServers">,
+      transport: body.transport === "http" ? "http" : "stdio",
+      url: typeof body.url === "string" ? body.url : undefined,
+    })
+
+    return NextResponse.json({ serverId })
+  } catch (error) {
+    return NextResponse.json(
+      {
+        error:
+          error instanceof Error ? error.message : "Unable to save MCP server.",
+      },
+      { status: 400 }
+    )
+  }
+}
+
 export async function GET(request: Request) {
   const blocked = requireSameOrigin(request)
   if (blocked) return blocked

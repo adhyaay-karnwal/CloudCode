@@ -42,6 +42,7 @@ import { GeistPixelSquare } from "geist/font/pixel"
 import NextImage from "next/image"
 
 import { closeBrowserTerminalSession } from "@/components/sandbox-terminal-session"
+import type { SettingsSectionId } from "@/components/settings-sections"
 import { SettingsScreen } from "@/components/settings-screen"
 import { Sidebar } from "@/components/chat-sidebar"
 import {
@@ -596,6 +597,8 @@ function ChatInner() {
       ? "settings"
       : "chat"
   )
+  const [settingsSection, setSettingsSection] =
+    useState<SettingsSectionId>("connections")
   const [runningRunKeys, setRunningRunKeys] = useState<Record<string, true>>({})
   const [liveRunStates, setLiveRunStates] = useState<
     Record<string, CachedRunState>
@@ -1706,8 +1709,9 @@ function ChatInner() {
     if (isMobile) setSidebarOpen(false)
   }
 
-  function showSettings() {
+  function showSettings(section?: SettingsSectionId) {
     promptFocusedRef.current = false
+    if (section) setSettingsSection(section)
     setView("settings")
     clearDraftAttachments()
     setActiveFilePath(null)
@@ -1718,6 +1722,15 @@ function ChatInner() {
     setContextOpen(false)
     setNotesOpen(false)
     setTerminalOpen(false)
+    if (isMobile) setSidebarOpen(false)
+  }
+
+  function exitSettings() {
+    setView("chat")
+  }
+
+  function selectSettingsSection(section: SettingsSectionId) {
+    setSettingsSection(section)
     if (isMobile) setSidebarOpen(false)
   }
 
@@ -2484,7 +2497,10 @@ function ChatInner() {
           onSelect={selectChat}
           onDelete={deleteChat}
           onRename={renameChat}
-          onShowSettings={showSettings}
+          onShowSettings={() => showSettings()}
+          onExitSettings={exitSettings}
+          settingsSection={settingsSection}
+          onSelectSettingsSection={selectSettingsSection}
           onClose={() => setSidebarOpen(false)}
           brandClassName={GeistPixelSquare.className}
         />
@@ -2526,7 +2542,7 @@ function ChatInner() {
           onCancel={() => setResumeBillingNotice(null)}
           onConfirm={() => {
             setResumeBillingNotice(null)
-            showSettings()
+            showSettings("billing")
           }}
         />
       ) : null}
@@ -2636,6 +2652,7 @@ function ChatInner() {
         />
         {view === "settings" ? (
           <SettingsScreen
+            section={settingsSection}
             authStatus={authStatus}
             authError={authError}
             githubStatus={githubStatus}
