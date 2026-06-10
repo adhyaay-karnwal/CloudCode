@@ -1229,28 +1229,10 @@ function GitHubConnectionRow({
   const accounts = status?.app?.accounts ?? []
   const installations = status?.app?.installations ?? []
   const user = status?.app?.user
-  const userLogin = user?.connected ? user.login : undefined
   const userReady = Boolean(user?.connected)
   const appReady = installations.length > 0
-  const ready = userReady && appReady
-  const installConfigured = status?.app?.installationConfigured !== false
-  const userAuthConfigured = status?.app?.userAuthConfigured !== false
   const visibleError =
     disconnectError || error || status?.app?.organizationError
-
-  const detail = ready
-    ? `Authorized as @${userLogin}; App connected to ${installations
-        .map((installation) => `@${installation.accountLogin}`)
-        .join(", ")}.`
-    : appReady
-      ? `App connected to ${installations
-          .map((installation) => `@${installation.accountLogin}`)
-          .join(", ")}. Authenticate your GitHub user for git identity.`
-      : !installConfigured || !userAuthConfigured
-        ? "Set the GitHub App env vars to enable scoped repository access."
-        : userReady
-          ? `Authorized as @${userLogin}. Select repositories for your account or an organization below.`
-          : "Select repositories from your GitHub account or an organization."
 
   async function disconnect() {
     if (
@@ -1293,7 +1275,6 @@ function GitHubConnectionRow({
         <GitHubIcon className="size-5 shrink-0 text-foreground/80" />
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-foreground">GitHub</div>
-          <div className="text-xs text-muted-foreground">{detail}</div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           {!userReady ? (
