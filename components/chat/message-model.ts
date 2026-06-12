@@ -13,6 +13,7 @@ export type ChatRunLog = {
 export type ChatMessage = {
   attachments?: ChatImageAttachment[]
   content: string
+  createdAt?: number
   error?: boolean
   id?: string
   meta?: {

@@ -8,6 +8,7 @@ import {
   buildCodexAuthJson,
   saveCodexAuthJsonForWorker,
 } from "@/lib/codex/auth"
+import { WorkerRunCanceledError } from "@/lib/codex/run-cancel-error"
 import type {
   RunCodexInSandboxInput,
   RunCodexInSandboxResult,
@@ -85,12 +86,10 @@ type WorkerRunInputResponse =
       sandboxPreset?: WorkerPresetRecord
     }
 
-export class WorkerRunCanceledError extends Error {
-  constructor() {
-    super("Codex run was canceled.")
-    this.name = "WorkerRunCanceledError"
-  }
-}
+export {
+  isWorkerRunCanceledError,
+  WorkerRunCanceledError,
+} from "@/lib/codex/run-cancel-error"
 
 export type LoadedWorkerRun = {
   authJson: string
@@ -103,12 +102,6 @@ export type LoadedWorkerRun = {
   }
   profile?: string
   userId: Id<"users">
-}
-
-export function isWorkerRunCanceledError(
-  error: unknown
-): error is WorkerRunCanceledError {
-  return error instanceof WorkerRunCanceledError
 }
 
 function throwIfCanceled(response: unknown) {

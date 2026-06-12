@@ -8,7 +8,6 @@ import {
   logsForMessage,
   type ChatMessage,
 } from "@/components/chat/message-model"
-import { RunSetupSummary } from "@/components/chat/message-setup"
 import { UserMessageBubble } from "@/components/chat/message-user"
 
 export const MessageBlock = memo(function MessageBlock({
@@ -33,18 +32,8 @@ export const MessageBlock = memo(function MessageBlock({
     return <UserMessageBubble message={message} />
   }
 
-  const contentStarted = Boolean(message.content.trim())
-  const showSetup = message.pending || logs.length > 0
-
   return (
     <div className="space-y-3">
-      {showSetup ? (
-        <RunSetupSummary
-          contentStarted={contentStarted}
-          logs={logs}
-          pending={Boolean(message.pending)}
-        />
-      ) : null}
       {!message.pending || message.content.trim() ? (
         <AssistantBody
           text={message.content}
@@ -62,11 +51,6 @@ export const MessageBlock = memo(function MessageBlock({
           diff={message.meta.diff}
           onOpenDiff={(path) => onOpenFileDiff(path, message.meta!.diff!)}
         />
-      ) : null}
-      {message.meta?.branch ? (
-        <div className="font-mono text-[11px] text-muted-foreground">
-          ↳ {message.meta.branch}
-        </div>
       ) : null}
     </div>
   )

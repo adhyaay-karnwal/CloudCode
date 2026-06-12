@@ -47,6 +47,26 @@ export async function POST(request: Request) {
       discoverSandbox,
     ])
 
+    // An executing worker finalizes "canceling" itself via its abort/interrupt
+    // path, but a Trigger run that is queued, crashed, or already finished has
+    // no worker that could ever do that — without finalizing here those runs
+    // would stay "canceling" forever.
+    if (canceled?.runId && canceled.triggerRunId) {
+      const triggerRun = await runs
+        .retrieve(canceled.triggerRunId)
+        .catch(() => undefined)
+      const finalize =
+        !triggerRun || triggerRun.isCompleted
+          ? api.codexRuns.finishDeadTriggerCancel
+          : api.codexRuns.finishQueuedCancel
+      await client.mutation(finalize, {
+        runId: canceled.runId,
+        sandboxId: discoveredSandbox?.sandboxId,
+        sandboxState: discoveredSandbox?.state,
+        triggerRunId: canceled.triggerRunId,
+      })
+    }
+
     return NextResponse.json({
       canceled: Boolean(canceled),
       runId: canceled?.runId,

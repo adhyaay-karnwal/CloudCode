@@ -449,9 +449,12 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
   } finally {
     stopDaytonaActivityHeartbeat?.()
     await stopDesktopAgentRecording()
+    // Best effort only: once the signal is aborted these throw immediately,
+    // and a throwing finally would replace the error already unwinding (e.g.
+    // turning a cancel into a cleanup failure).
     await Promise.all([
-      cleanupRunFiles(sandbox, paths, input.signal),
-      gitAuth?.cleanup() ?? Promise.resolve(),
+      cleanupRunFiles(sandbox, paths, input.signal).catch(() => undefined),
+      gitAuth?.cleanup().catch(() => undefined) ?? Promise.resolve(),
     ])
   }
 }

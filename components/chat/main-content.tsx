@@ -11,6 +11,8 @@ import {
   SandboxTerminalPanel,
 } from "@/components/chat/lazy-panels"
 import { MessageBlock } from "@/components/chat/message"
+import { logsForMessage } from "@/components/chat/message-model"
+import { RunSetupSummary } from "@/components/chat/message-setup"
 import { AllDiffsPanel, NotesPanel } from "@/components/chat/panels"
 import type { SettingsSectionId } from "@/components/settings/sections"
 import { SettingsScreen } from "@/components/settings/screen"
@@ -201,6 +203,18 @@ function ChatThreadContent({
   composer: ComposerContent
   thread: ThreadContent
 }) {
+  /* The thread owns a single setup line, rendered in place of the last
+     pending assistant message and keyed by the thread. Message identity
+     changes during send (optimistic -> server) therefore never remount it,
+     and finished messages can never flash a setup line of their own. */
+  const lastMessage = thread.messages.at(-1)
+  const setupMessage =
+    lastMessage?.role === "assistant" &&
+    lastMessage.pending &&
+    !lastMessage.content.trim()
+      ? lastMessage
+      : null
+
   return (
     <div
       key={thread.activeRunKey}
@@ -217,16 +231,24 @@ function ChatThreadContent({
           <ChatEmptyState composer={composer} thread={thread} />
         ) : (
           <div className="mx-auto w-full max-w-2xl space-y-6 md:space-y-8">
-            {thread.messages.map((message) => (
-              <MessageBlock
-                key={message.id}
-                message={message}
-                repoName={thread.activeRepoName}
-                sandboxId={thread.activeSandboxId}
-                onOpenFile={thread.onOpenFile}
-                onOpenFileDiff={thread.onOpenFileDiff}
-              />
-            ))}
+            {thread.messages.map((message) =>
+              message === setupMessage ? (
+                <RunSetupSummary
+                  key={`setup-${thread.activeRunKey}`}
+                  createdAt={message.createdAt}
+                  logs={logsForMessage(message.id, message.meta?.logs)}
+                />
+              ) : (
+                <MessageBlock
+                  key={message.id}
+                  message={message}
+                  repoName={thread.activeRepoName}
+                  sandboxId={thread.activeSandboxId}
+                  onOpenFile={thread.onOpenFile}
+                  onOpenFileDiff={thread.onOpenFileDiff}
+                />
+              )
+            )}
           </div>
         )}
         <div

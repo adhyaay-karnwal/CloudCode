@@ -195,6 +195,42 @@
   }
 }
 
+/* In-progress status text (e.g. run setup). Each letter runs this animation
+   with a per-letter delay, so a brighten-and-lift wave travels across the
+   text. The peak is narrow (10% of the cycle) so the wave reads as a streak
+   followed by a calm pause. Static muted text under reduced motion. */
+@keyframes letter-shimmer {
+  0%,
+  22%,
+  100% {
+    color: var(--muted-foreground);
+    transform: translateY(0);
+  }
+  8% {
+    color: var(--foreground);
+    transform: translateY(-3px);
+  }
+  14% {
+    transform: translateY(1px);
+  }
+  18% {
+    transform: translateY(-0.5px);
+  }
+}
+
+.shimmer-letter {
+  display: inline-block;
+  color: var(--muted-foreground);
+  animation: letter-shimmer 2.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shimmer-letter {
+    animation: none;
+    transform: none;
+  }
+}
+
 /* iOS zooms the page when focused editable text is under 16px. Floor every
    editable control at 16px on touch devices so focusing text never triggers a
    zoom. `!important` is required to beat Tailwind's `text-xs`/`text-sm` utility

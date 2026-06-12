@@ -1,6 +1,7 @@
-import { v } from "convex/values"
+import { v, type Infer } from "convex/values"
 
-import { mutation, query } from "./_generated/server"
+import type { Id } from "./_generated/dataModel"
+import { mutation, query, type MutationCtx } from "./_generated/server"
 import { compactMessageMeta, compactRunLogs } from "./lib/codexRunLogs"
 import {
   activeRunForThread,
@@ -212,54 +213,78 @@ export const attachTriggerRun = mutation({
   },
 })
 
-export const finishQueuedCancel = mutation({
-  args: {
-    runId: v.id("codexRuns"),
-    sandboxId: v.optional(v.string()),
-    sandboxState: v.optional(sandboxState),
-    triggerRunId: v.string(),
-  },
-  handler: async (ctx, args) => {
-    const [userId, run] = await Promise.all([
-      ensureCurrentUser(ctx),
-      ctx.db.get(args.runId),
-    ])
-    if (!run || run.userId !== userId) throw new Error("Run not found.")
-    if (run.triggerRunId !== args.triggerRunId) return { canceled: false }
-    if (run.status === "canceled") {
-      if (args.sandboxId && run.sandboxId !== args.sandboxId) {
-        const now = Date.now()
-        await Promise.all([
-          ctx.db.patch(run._id, {
-            sandboxId: args.sandboxId,
-            ...(args.sandboxState ? { sandboxState: args.sandboxState } : {}),
-            updatedAt: now,
-          }),
-          ctx.db.patch(run.threadId, {
-            sandboxId: args.sandboxId,
-            ...(args.sandboxState ? { sandboxState: args.sandboxState } : {}),
-            updatedAt: now,
-          }),
-        ])
-      }
-      return { canceled: true }
-    }
-    if (run.status !== "canceling" || run.startedAt) {
-      return { canceled: false }
-    }
+const finalizeCancelArgs = {
+  runId: v.id("codexRuns"),
+  sandboxId: v.optional(v.string()),
+  sandboxState: v.optional(sandboxState),
+  triggerRunId: v.string(),
+}
 
-    await markRunCanceled(
-      ctx,
-      {
-        ...run,
-        ...(args.sandboxId ? { sandboxId: args.sandboxId } : {}),
-        ...(args.sandboxState ? { sandboxState: args.sandboxState } : {}),
-      },
-      "_Stopped._",
-      args.sandboxId
-    )
-    return { canceled: true }
+async function finalizeCancelForTriggerRun(
+  ctx: MutationCtx,
+  args: {
+    runId: Id<"codexRuns">
+    sandboxId?: string
+    sandboxState?: Infer<typeof sandboxState>
+    triggerRunId: string
   },
+  options: { allowStarted: boolean }
+) {
+  const [userId, run] = await Promise.all([
+    ensureCurrentUser(ctx),
+    ctx.db.get(args.runId),
+  ])
+  if (!run || run.userId !== userId) throw new Error("Run not found.")
+  if (run.triggerRunId !== args.triggerRunId) return { canceled: false }
+  if (run.status === "canceled") {
+    if (args.sandboxId && run.sandboxId !== args.sandboxId) {
+      const now = Date.now()
+      await Promise.all([
+        ctx.db.patch(run._id, {
+          sandboxId: args.sandboxId,
+          ...(args.sandboxState ? { sandboxState: args.sandboxState } : {}),
+          updatedAt: now,
+        }),
+        ctx.db.patch(run.threadId, {
+          sandboxId: args.sandboxId,
+          ...(args.sandboxState ? { sandboxState: args.sandboxState } : {}),
+          updatedAt: now,
+        }),
+      ])
+    }
+    return { canceled: true }
+  }
+  if (run.status !== "canceling") return { canceled: false }
+  if (run.startedAt && !options.allowStarted) return { canceled: false }
+
+  await markRunCanceled(
+    ctx,
+    {
+      ...run,
+      ...(args.sandboxId ? { sandboxId: args.sandboxId } : {}),
+      ...(args.sandboxState ? { sandboxState: args.sandboxState } : {}),
+    },
+    "_Stopped._",
+    args.sandboxId
+  )
+  return { canceled: true }
+}
+
+export const finishQueuedCancel = mutation({
+  args: finalizeCancelArgs,
+  handler: async (ctx, args) =>
+    finalizeCancelForTriggerRun(ctx, args, { allowStarted: false }),
+})
+
+// For a "canceling" run whose Trigger run is already terminal (canceled while
+// queued, crashed, or finished before observing the cancel): no worker exists
+// anymore to call workerCancel, so the cancel endpoint finalizes directly.
+// Safe to race a live worker — worker mutations no-op once the run is
+// canceled.
+export const finishDeadTriggerCancel = mutation({
+  args: finalizeCancelArgs,
+  handler: async (ctx, args) =>
+    finalizeCancelForTriggerRun(ctx, args, { allowStarted: true }),
 })
 
 export const syncRunSandbox = mutation({

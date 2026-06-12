@@ -243,8 +243,9 @@ export async function requestCodexAppServerDaemon({
     flush()
     return { events, result }
   } finally {
+    // No signal here: after an abort the payload file should still be removed,
+    // and an aborted signal would make this cleanup throw before running.
     await runDaytonaCommand(sandbox, `rm -f ${shellQuote(payloadPath)}`, {
-      signal,
       timeoutMs: 10_000,
     }).catch(() => undefined)
   }

@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useRef } from "react"
+import { useEffect, useMemo, useRef } from "react"
 
 import {
   cachedStateFromLiveRun,
@@ -29,6 +29,13 @@ type UseChatRunViewStateParams = {
 
 type LiveRunRef = {
   current: LiveRunRecord | null
+}
+
+type FinishedLiveRunSnapshot = {
+  branch?: string
+  content: string
+  logs: LiveRunRecord["logs"]
+  status?: string
 }
 
 export function useChatRunViewState({
@@ -103,31 +110,83 @@ export function useChatRunViewState({
       ? undefined
       : rawActiveSandboxState
   const baseServerMessages = active?.messages ?? EMPTY_MESSAGES
+
+  /* A run's streamed content/logs reach the UI through the live-run merge
+     below, but the merge only targets the *current* live run's message. A
+     finishing run stays `pending` server-side for a while (diff capture,
+     branch push), so when a newer run takes over the live slot the previous
+     message would briefly render raw — pending with empty content — and
+     flash its setup line. Snapshot every live run by assistant message id and
+     keep applying it to that message until the server finalizes it. */
+  const finishedLiveRunsRef = useRef(new Map<string, FinishedLiveRunSnapshot>())
+  if (visibleLiveRun) {
+    finishedLiveRunsRef.current.set(visibleLiveRun.assistantMessageId, {
+      ...(visibleLiveRun.branch ? { branch: visibleLiveRun.branch } : {}),
+      content: visibleLiveRun.content,
+      logs: visibleLiveRun.logs,
+      ...(visibleLiveRun.status ? { status: visibleLiveRun.status } : {}),
+    })
+  }
+  useEffect(() => {
+    const snapshots = finishedLiveRunsRef.current
+    if (snapshots.size === 0) return
+    for (const message of baseServerMessages) {
+      if (!message.pending) snapshots.delete(message.id)
+    }
+  }, [baseServerMessages])
+
   const serverMessages = useMemo(() => {
-    if (!visibleLiveRun) return baseServerMessages
-    const liveRunKey = visibleLiveRun.runId as string
+    if (!visibleLiveRun && finishedLiveRunsRef.current.size === 0) {
+      return baseServerMessages
+    }
+    const liveRunKey = visibleLiveRun ? (visibleLiveRun.runId as string) : ""
     const revealedContent = revealedLiveRunContent[liveRunKey] ?? ""
 
     return baseServerMessages.map((message) => {
-      if (message.id !== visibleLiveRun.assistantMessageId) return message
+      if (visibleLiveRun && message.id === visibleLiveRun.assistantMessageId) {
+        const liveMeta = {
+          ...message.meta,
+          ...(visibleLiveRun.branch ? { branch: visibleLiveRun.branch } : {}),
+          ...(visibleLiveRun.logs.length ? { logs: visibleLiveRun.logs } : {}),
+          ...(visibleLiveRun.status ? { status: visibleLiveRun.status } : {}),
+        }
+        /* While the run is current, an empty reveal means "animate from the
+           start". Once the run is only visible through the cache (a newer
+           send is taking over), show the full content immediately — an empty
+           frame here would flash the setup line on a finished message. */
+        const settledContent =
+          liveRun === visibleLiveRun ? "" : visibleLiveRun.content
 
-      const liveMeta = {
-        ...message.meta,
-        ...(visibleLiveRun.branch ? { branch: visibleLiveRun.branch } : {}),
-        ...(visibleLiveRun.logs.length ? { logs: visibleLiveRun.logs } : {}),
-        ...(visibleLiveRun.status ? { status: visibleLiveRun.status } : {}),
+        return {
+          ...message,
+          content:
+            revealedContent ||
+            (visibleLiveRun.content ? settledContent : message.content),
+          error: Boolean(visibleLiveRun.error) || message.error,
+          meta: liveMeta,
+          pending: true,
+        }
       }
 
-      return {
-        ...message,
-        content:
-          revealedContent || (visibleLiveRun.content ? "" : message.content),
-        error: Boolean(visibleLiveRun.error) || message.error,
-        meta: liveMeta,
-        pending: true,
+      if (message.pending && !message.content.trim()) {
+        const snapshot = finishedLiveRunsRef.current.get(message.id)
+        if (snapshot?.content) {
+          return {
+            ...message,
+            content: snapshot.content,
+            meta: {
+              ...message.meta,
+              ...(snapshot.branch ? { branch: snapshot.branch } : {}),
+              ...(snapshot.logs.length ? { logs: snapshot.logs } : {}),
+              ...(snapshot.status ? { status: snapshot.status } : {}),
+            },
+          }
+        }
       }
+
+      return message
     })
-  }, [baseServerMessages, revealedLiveRunContent, visibleLiveRun])
+  }, [baseServerMessages, liveRun, revealedLiveRunContent, visibleLiveRun])
   const optimisticRun = optimisticRuns[activeRunKey]
   const optimisticMessages =
     optimisticRun &&

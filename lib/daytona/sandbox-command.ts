@@ -210,6 +210,36 @@ function wait(ms: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, ms))
 }
 
+/**
+ * Daytona's synchronous executeSessionCommand has no abort support, so a
+ * cancel during a long setup command would otherwise block the worker's
+ * unwind until the command or its timeout finishes. Racing the abort signal
+ * returns control immediately; the caller's session cleanup then kills the
+ * remote command.
+ */
+async function raceWithAbort<T>(
+  promise: Promise<T>,
+  signal?: AbortSignal
+): Promise<T> {
+  if (!signal) return await promise
+  if (signal.aborted) {
+    promise.catch(() => undefined)
+    throw new Error("Run was canceled.")
+  }
+
+  let onAbort: (() => void) | undefined
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(new Error("Run was canceled."))
+    signal.addEventListener("abort", onAbort, { once: true })
+  })
+  try {
+    return await Promise.race([promise, aborted])
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort)
+    promise.catch(() => undefined)
+  }
+}
+
 function waitForPoll(ms: number, signal?: AbortSignal) {
   if (!signal) return wait(ms)
   if (signal.aborted) return Promise.resolve()
@@ -236,6 +266,10 @@ export async function runDaytonaCommand(
   const timeout = timeoutSeconds(options.timeoutMs)
   const wrappedCommand = buildSessionCommand(command, options)
 
+  if (options.signal?.aborted) {
+    throw new Error("Run was canceled.")
+  }
+
   await sandbox.process.createSession(sessionId)
 
   try {
@@ -244,14 +278,17 @@ export async function runDaytonaCommand(
     }
 
     if (options.onStdout || options.onStderr) {
-      const response = await sandbox.process.executeSessionCommand(
-        sessionId,
-        {
-          command: wrappedCommand,
-          runAsync: true,
-          suppressInputEcho: true,
-        },
-        timeout
+      const response = await raceWithAbort(
+        sandbox.process.executeSessionCommand(
+          sessionId,
+          {
+            command: wrappedCommand,
+            runAsync: true,
+            suppressInputEcho: true,
+          },
+          timeout
+        ),
+        options.signal
       )
       const commandId = response.cmdId
       let stdout = ""
@@ -309,17 +346,16 @@ export async function runDaytonaCommand(
       }
     }
 
-    if (options.signal?.aborted) {
-      throw new Error("Run was canceled.")
-    }
-
-    const response = await sandbox.process.executeSessionCommand(
-      sessionId,
-      {
-        command: wrappedCommand,
-        suppressInputEcho: true,
-      },
-      timeout
+    const response = await raceWithAbort(
+      sandbox.process.executeSessionCommand(
+        sessionId,
+        {
+          command: wrappedCommand,
+          suppressInputEcho: true,
+        },
+        timeout
+      ),
+      options.signal
     )
     return {
       exitCode: response.exitCode ?? 0,

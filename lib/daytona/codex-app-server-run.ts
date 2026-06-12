@@ -11,6 +11,7 @@ import {
   appServerTurnParams,
 } from "@/lib/codex/app-server-run-params"
 import { codexAppServerStderrLogForLine } from "@/lib/codex/app-server-stderr"
+import { isWorkerRunCanceledError } from "@/lib/codex/run-cancel-error"
 import {
   codexAppServerNotificationMatchesActiveRoute,
   codexAppServerNotificationRoute,
@@ -285,6 +286,10 @@ export async function runCodexViaAppServer({
       updatedAuthJson: daemonResult.updatedAuthJson,
     }
   } catch (error) {
+    // Cancellation must reach the worker unchanged: wrapping would both lose
+    // the WorkerRunCanceledError type and bloat the error with the full
+    // daemon event stream captured in stdout.
+    if (isWorkerRunCanceledError(error) || input.signal?.aborted) throw error
     const message =
       error instanceof CodexAppServerError && error.code !== undefined
         ? `${error.message} (${error.code})`
