@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react"
 
+import { readBrowserStorage, writeBrowserStorage } from "@/lib/browser-storage"
+
 export type ResizeEdge = "left" | "right"
 
 interface UseResizablePanelOptions {
@@ -83,7 +85,7 @@ export function useResizablePanel({
   useEffect(() => {
     if (hydratedRef.current) return
     hydratedRef.current = true
-    const stored = window.localStorage.getItem(storageKey)
+    const stored = readBrowserStorage(storageKey)
     if (stored === null) {
       setHydrated(true)
       return
@@ -97,7 +99,7 @@ export function useResizablePanel({
   // overwrites the desktop preference.
   useEffect(() => {
     if (!enabled || !hydrated) return
-    window.localStorage.setItem(storageKey, String(Math.round(width)))
+    writeBrowserStorage(storageKey, String(Math.round(width)))
   }, [enabled, hydrated, storageKey, width])
 
   // Re-clamp if the viewport shrinks so a wide panel can't trap the content.

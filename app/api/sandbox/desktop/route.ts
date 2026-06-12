@@ -12,6 +12,12 @@ import {
   startDaytonaDesktop,
   stopDaytonaDesktop,
 } from "@/lib/daytona-desktop"
+import {
+  jsonError,
+  jsonStringField,
+  readJsonRecord,
+  searchStringParam,
+} from "@/lib/api-route"
 import { readDaytonaSandboxInfo } from "@/lib/daytona-sandbox"
 import { requireSameOrigin } from "@/lib/request-security"
 import { requireCurrentUserSandbox } from "@/lib/sandbox-authorization"
@@ -21,28 +27,11 @@ export const maxDuration = 300
 
 type DesktopAction = "open-browser" | "start" | "stop"
 
-async function parseBody(request: Request) {
-  try {
-    return (await request.json()) as {
-      action?: unknown
-      sandboxId?: unknown
-      url?: unknown
-    }
-  } catch {
-    return {}
-  }
-}
-
-function jsonError(message: string, status: number) {
-  return NextResponse.json({ error: message }, { status })
-}
-
 export async function GET(request: Request) {
   const blocked = requireSameOrigin(request)
   if (blocked) return blocked
 
-  const { searchParams } = new URL(request.url)
-  const sandboxId = searchParams.get("sandboxId")
+  const sandboxId = searchStringParam(request, "sandboxId")
 
   if (!sandboxId) {
     return jsonError("sandboxId required", 400)
@@ -65,9 +54,9 @@ export async function POST(request: Request) {
   const blocked = requireSameOrigin(request)
   if (blocked) return blocked
 
-  const body = await parseBody(request)
-  const sandboxId = typeof body.sandboxId === "string" ? body.sandboxId : ""
-  const action = typeof body.action === "string" ? body.action : ""
+  const body = await readJsonRecord(request)
+  const sandboxId = jsonStringField(body, "sandboxId")
+  const action = jsonStringField(body, "action")
 
   if (!sandboxId) {
     return jsonError("sandboxId required", 400)
@@ -86,7 +75,7 @@ export async function POST(request: Request) {
         : typedAction === "open-browser"
           ? await openDaytonaDesktopBrowser(
               sandboxId,
-              typeof body.url === "string" ? body.url : undefined
+              jsonStringField(body, "url")
             )
           : await stopDaytonaDesktop(sandboxId)
     await readDaytonaSandboxInfo(sandboxId)

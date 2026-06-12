@@ -1,5 +1,6 @@
 import type { Sandbox } from "@daytona/sdk"
 
+import { compactLine } from "@/lib/compact-line"
 import { runDaytonaCommand, shellQuote } from "@/lib/daytona-sandbox"
 
 type CloneGitRepositoryInSandboxInput = {
@@ -11,11 +12,6 @@ type CloneGitRepositoryInSandboxInput = {
   sandbox: Sandbox
   signal?: AbortSignal
   username?: string
-}
-
-function compactLine(value: string, max = 220) {
-  const line = value.replace(/\s+/g, " ").trim()
-  return line.length > max ? `${line.slice(0, max - 3)}...` : line
 }
 
 async function cloneableBranch({

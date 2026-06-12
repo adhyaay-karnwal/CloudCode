@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server"
 
+import {
+  jsonError,
+  jsonStringField,
+  readJsonRecordOrNull,
+} from "@/lib/api-route"
 import { requireSameOrigin } from "@/lib/request-security"
 import {
   getCurrentSandboxBranch,
@@ -15,19 +20,14 @@ export async function POST(request: Request) {
   const blocked = requireSameOrigin(request)
   if (blocked) return blocked
 
-  let body: { sandboxId?: unknown }
-  try {
-    body = await request.json()
-  } catch {
-    return NextResponse.json(
-      { error: "Invalid request body." },
-      { status: 400 }
-    )
+  const body = await readJsonRecordOrNull(request)
+  if (!body) {
+    return jsonError("Invalid request body.", 400)
   }
 
-  const sandboxId = typeof body.sandboxId === "string" ? body.sandboxId : ""
+  const sandboxId = jsonStringField(body, "sandboxId")
   if (!sandboxId) {
-    return NextResponse.json({ error: "sandboxId required" }, { status: 400 })
+    return jsonError("sandboxId required", 400)
   }
 
   try {

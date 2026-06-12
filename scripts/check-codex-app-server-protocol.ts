@@ -44,20 +44,31 @@ try {
     generatedDir,
   ])
 
-  const [notificationsSource, requestsSource, implementationSource] =
-    await Promise.all([
-      readFile(join(generatedDir, "ServerNotification.ts"), "utf8"),
-      readFile(join(generatedDir, "ServerRequest.ts"), "utf8"),
-      readFile(new URL("../lib/codex-app-server.ts", import.meta.url), "utf8"),
-    ])
+  const [
+    notificationsSource,
+    requestsSource,
+    requestHandlerSource,
+    turnReducerSource,
+  ] = await Promise.all([
+    readFile(join(generatedDir, "ServerNotification.ts"), "utf8"),
+    readFile(join(generatedDir, "ServerRequest.ts"), "utf8"),
+    readFile(
+      new URL("../lib/codex-app-server-requests.ts", import.meta.url),
+      "utf8"
+    ),
+    readFile(
+      new URL("../lib/codex-app-server-turn-reducer.ts", import.meta.url),
+      "utf8"
+    ),
+  ])
 
   const generatedNotifications = extractGeneratedMethods(notificationsSource)
   const generatedRequests = extractGeneratedMethods(requestsSource)
-  const reducerCases = extractSwitchCases(implementationSource)
+  const reducerCases = extractSwitchCases(turnReducerSource)
   const requestHandlerCases = extractSwitchCases(
     sourceSlice(
-      implementationSource,
-      "async function serverRequestResult",
+      requestHandlerSource,
+      "export async function codexAppServerRequestResult",
       "function emptyToolInputAnswers"
     )
   )

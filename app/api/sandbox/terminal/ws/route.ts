@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server"
 
+import { observeCurrentUserDaytonaBillingInfo } from "@/lib/billing-server"
 import {
-  BillingRequiredError,
-  observeCurrentUserDaytonaBillingInfo,
-  pauseCurrentUserSandboxForBilling,
-  requireCurrentUserInfraAccess,
-} from "@/lib/billing-server"
+  jsonError,
+  jsonNumberField,
+  jsonStringField,
+  readJsonRecord,
+  searchStringParam,
+} from "@/lib/api-route"
 import {
   daytonaTerminalHasCurrentGitHubAuth,
   killDaytonaTerminal,
@@ -16,69 +18,29 @@ import {
   resizeDaytonaTerminalWebSocket,
 } from "@/lib/daytona-terminal-websocket"
 import { readDaytonaSandboxInfo } from "@/lib/daytona-sandbox"
+import {
+  TERMINAL_DEFAULT_COLS,
+  TERMINAL_DEFAULT_ROWS,
+} from "@/lib/daytona-terminal-params"
 import { maybeGetCurrentGitHubRepoCredential } from "@/lib/github-auth"
 import { requireSameOrigin } from "@/lib/request-security"
-import { requireCurrentUserSandbox } from "@/lib/sandbox-authorization"
+import {
+  numberParam,
+  requireTerminalAccess,
+  terminalRequiredResponse,
+} from "@/lib/sandbox-terminal-route"
 
 export const runtime = "nodejs"
-
-function numberParam(value: string | null, fallback: number) {
-  if (!value) return fallback
-  const number = Number(value)
-  return Number.isFinite(number) ? number : fallback
-}
-
-async function requireTerminalAccess(sandboxId: string) {
-  const [sandboxAccessResult, infraAccessResult] = await Promise.allSettled([
-    requireCurrentUserSandbox(sandboxId),
-    requireCurrentUserInfraAccess(),
-  ])
-
-  if (sandboxAccessResult.status === "rejected") {
-    return {
-      response: NextResponse.json(
-        { error: "Sandbox not found." },
-        { status: 404 }
-      ),
-    }
-  }
-
-  if (infraAccessResult.status === "rejected") {
-    const error = infraAccessResult.reason
-    if (error instanceof BillingRequiredError) {
-      await pauseCurrentUserSandboxForBilling(sandboxId)
-      return {
-        response: NextResponse.json({ error: error.message }, { status: 402 }),
-      }
-    }
-
-    return {
-      response: NextResponse.json(
-        { error: "Sandbox not found." },
-        { status: 404 }
-      ),
-    }
-  }
-
-  return { sandboxAccess: sandboxAccessResult.value }
-}
-
-function terminalRequiredResponse() {
-  return NextResponse.json(
-    { error: "sandboxId and terminalId required" },
-    { status: 400 }
-  )
-}
 
 export async function GET(request: Request) {
   const blocked = requireSameOrigin(request)
   if (blocked) return blocked
 
   const { searchParams } = new URL(request.url)
-  const sandboxId = searchParams.get("sandboxId")
-  const terminalId = searchParams.get("terminalId")
-  const cols = numberParam(searchParams.get("cols"), 100)
-  const rows = numberParam(searchParams.get("rows"), 30)
+  const sandboxId = searchStringParam(request, "sandboxId")
+  const terminalId = searchStringParam(request, "terminalId")
+  const cols = numberParam(searchParams.get("cols"), TERMINAL_DEFAULT_COLS)
+  const rows = numberParam(searchParams.get("rows"), TERMINAL_DEFAULT_ROWS)
 
   if (!sandboxId || !terminalId) {
     return terminalRequiredResponse()
@@ -131,14 +93,11 @@ export async function GET(request: Request) {
       headers: { "Cache-Control": "no-store" },
     })
   } catch (error) {
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Unable to connect Daytona terminal.",
-      },
-      { status: 500 }
+    return jsonError(
+      error instanceof Error
+        ? error.message
+        : "Unable to connect Daytona terminal.",
+      500
     )
   }
 }
@@ -147,15 +106,10 @@ export async function POST(request: Request) {
   const blocked = requireSameOrigin(request)
   if (blocked) return blocked
 
-  const body = (await request.json().catch(() => ({}))) as {
-    action?: unknown
-    cols?: unknown
-    rows?: unknown
-    sandboxId?: unknown
-    terminalId?: unknown
-  }
-  const sandboxId = typeof body.sandboxId === "string" ? body.sandboxId : ""
-  const terminalId = typeof body.terminalId === "string" ? body.terminalId : ""
+  const body = await readJsonRecord(request)
+  const action = jsonStringField(body, "action")
+  const sandboxId = jsonStringField(body, "sandboxId")
+  const terminalId = jsonStringField(body, "terminalId")
 
   if (!sandboxId || !terminalId) {
     return terminalRequiredResponse()
@@ -164,14 +118,14 @@ export async function POST(request: Request) {
   const access = await requireTerminalAccess(sandboxId)
   if ("response" in access) return access.response
 
-  if (body.action !== "resize") {
-    return NextResponse.json({ error: "Unsupported action." }, { status: 400 })
+  if (action !== "resize") {
+    return jsonError("Unsupported action.", 400)
   }
 
   try {
     await resizeDaytonaTerminalWebSocket({
-      cols: typeof body.cols === "number" ? body.cols : 100,
-      rows: typeof body.rows === "number" ? body.rows : 30,
+      cols: jsonNumberField(body, "cols") ?? TERMINAL_DEFAULT_COLS,
+      rows: jsonNumberField(body, "rows") ?? TERMINAL_DEFAULT_ROWS,
       sandboxId,
       terminalId,
     })
@@ -182,14 +136,11 @@ export async function POST(request: Request) {
       })
     return NextResponse.json({ ok: true })
   } catch (error) {
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Unable to resize Daytona terminal.",
-      },
-      { status: 500 }
+    return jsonError(
+      error instanceof Error
+        ? error.message
+        : "Unable to resize Daytona terminal.",
+      500
     )
   }
 }
@@ -198,12 +149,9 @@ export async function DELETE(request: Request) {
   const blocked = requireSameOrigin(request)
   if (blocked) return blocked
 
-  const body = (await request.json().catch(() => ({}))) as {
-    sandboxId?: unknown
-    terminalId?: unknown
-  }
-  const sandboxId = typeof body.sandboxId === "string" ? body.sandboxId : ""
-  const terminalId = typeof body.terminalId === "string" ? body.terminalId : ""
+  const body = await readJsonRecord(request)
+  const sandboxId = jsonStringField(body, "sandboxId")
+  const terminalId = jsonStringField(body, "terminalId")
 
   if (!sandboxId || !terminalId) {
     return terminalRequiredResponse()

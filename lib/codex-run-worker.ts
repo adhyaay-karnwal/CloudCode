@@ -2,17 +2,19 @@ import { ConvexHttpClient } from "convex/browser"
 
 import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
+import { requireConvexUrl } from "@/lib/convex-env"
+import { getWorkerSecret } from "@/lib/worker-secret"
 import {
   buildCodexAuthJson,
   saveCodexAuthJsonForWorker,
 } from "@/lib/codex-auth"
 import type {
-  McpDiscoveredServer,
-  McpServerInput,
   RunCodexInSandboxInput,
   RunCodexInSandboxResult,
-  RunCodexLog,
-} from "@/lib/daytona-codex-agent"
+} from "@/lib/daytona-codex-agent-types"
+import type { McpServerInput } from "@/lib/daytona-codex-runtime"
+import type { CodexRunLog as RunCodexLog } from "@/lib/codex-run-log"
+import type { McpDiscoveredServer } from "@/lib/mcp-discovery"
 import {
   extractInlineToolMarkers,
   stripInlineToolMarkers,
@@ -25,6 +27,9 @@ import type {
   DaytonaBillingResources,
   DaytonaBillingState,
 } from "@/lib/billing"
+
+const WORKER_CONVEX_URL_ERROR =
+  "Set NEXT_PUBLIC_CONVEX_URL before running Trigger tasks."
 
 export type WorkerRunPayload = {
   runId: Id<"codexRuns">
@@ -117,29 +122,13 @@ function throwIfCanceled(response: unknown) {
   }
 }
 
-function getConvexUrl() {
-  const url = process.env.NEXT_PUBLIC_CONVEX_URL
-
-  if (!url) {
-    throw new Error("Set NEXT_PUBLIC_CONVEX_URL before running Trigger tasks.")
-  }
-
-  return url
-}
-
-export function getWorkerSecret() {
-  const workerSecret = process.env.TRIGGER_WORKER_SECRET
-
-  if (!workerSecret) {
-    throw new Error("Set TRIGGER_WORKER_SECRET before running Trigger tasks.")
-  }
-
-  return workerSecret
-}
+export { getWorkerSecret }
 
 export function workerConvexClient() {
-  return new ConvexHttpClient(getConvexUrl())
+  return new ConvexHttpClient(requireConvexUrl(WORKER_CONVEX_URL_ERROR))
 }
+
+export type WorkerConvexClient = ReturnType<typeof workerConvexClient>
 
 function decryptPreset(
   preset: WorkerPresetRecord | undefined
@@ -206,7 +195,7 @@ export async function startAndLoadWorkerRun(
       githubUsername: response.run.githubUsername,
       imageAttachments: response.run.imageAttachments,
       model: response.run.model,
-      convexUrl: getConvexUrl(),
+      convexUrl: requireConvexUrl(WORKER_CONVEX_URL_ERROR),
       mcpServers,
       notesAccessToken: response.run.notesAccessToken,
       previousDiff: response.run.previousDiff,

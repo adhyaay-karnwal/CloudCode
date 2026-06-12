@@ -1,8 +1,5 @@
 /**
- * Shared surface treatments — the design language distilled from the context
- * menu and sandbox dropdown the user blessed as "perfect": generous rounding,
- * a hairline border, a calm neutral fill, and soft elevation only when a thing
- * actually floats.
+ * Shared surface treatments for floating controls and inline content panels.
  */
 
 /** Floating surface: menus, dropdowns, popovers, dialogs. Flat; hairline border defines the edge. */

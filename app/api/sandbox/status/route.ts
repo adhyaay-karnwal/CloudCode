@@ -1,4 +1,5 @@
 import { readDaytonaSandboxInfo } from "@/lib/daytona-sandbox"
+import { searchStringParam } from "@/lib/api-route"
 import { requireCurrentUserSandbox } from "@/lib/sandbox-authorization"
 
 export const runtime = "nodejs"
@@ -8,8 +9,7 @@ const STATUS_POLL_INTERVAL_MS = 1_000
 const HEARTBEAT_INTERVAL_MS = 15_000
 
 export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url)
-  const sandboxId = searchParams.get("sandboxId")
+  const sandboxId = searchStringParam(request, "sandboxId")
 
   if (!sandboxId) {
     return new Response("sandboxId required", { status: 400 })

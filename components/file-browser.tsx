@@ -1,131 +1,21 @@
 "use client"
 
-import { FileTree, useFileTree } from "@pierre/trees/react"
-import type {
-  FileTreeRowDecorationRenderer,
-  GitStatusEntry,
-} from "@pierre/trees"
-import { Columns2, Loader2, RefreshCw, Rows2, X } from "lucide-react"
+import { Columns2, RefreshCw, Rows2 } from "lucide-react"
 import { useTheme } from "next-themes"
-import {
-  type CSSProperties,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react"
 
-import {
-  diffTypeToGitStatus,
-  formatDiffStat,
-  getDiffStats,
-  type DiffFileStat,
-} from "@/lib/diff-metadata"
-import {
-  readCachedFileList,
-  writeCachedFileList,
-} from "@/lib/sandbox-file-cache"
 import { EnvironmentPanel } from "@/components/environment-panel"
-import { ResizeHandle } from "@/components/resize-handle"
-import { Button } from "@/components/ui/button"
+import type { FileBrowserOpenMode } from "@/components/file-browser-model"
+import {
+  FileBrowserEmptyState,
+  FileTreeWrapper,
+} from "@/components/file-browser-ui"
+import { ResizableSidePanel } from "@/components/resizable-side-panel"
+import { SidePanelTabButton } from "@/components/side-panel-tabs"
 import { IconButton } from "@/components/ui/icon-button"
 import { SegmentedControl } from "@/components/ui/segmented-control"
-import { useIsMobile } from "@/hooks/use-is-mobile"
-import { useResizablePanel } from "@/hooks/use-resizable-panel"
+import { useFileBrowserController } from "@/hooks/use-file-browser-controller"
 
-type FileEntry = { path: string; type: "file" | "dir" }
-export type FileBrowserOpenMode = "diff" | "file" | "preview"
-type BrowserView = "diffs" | "env" | "files"
-
-type ListResponse = {
-  root: string
-  entries: FileEntry[]
-  truncated?: boolean
-  error?: string
-}
-
-const fileListCache = new Map<
-  string,
-  { entries: FileEntry[]; truncated: boolean }
->()
-
-function applyLiveDiffToEntries(
-  entries: readonly FileEntry[],
-  changedFiles: readonly DiffFileStat[],
-  {
-    includeMissingChangedFiles,
-  }: {
-    includeMissingChangedFiles: boolean
-  }
-): FileEntry[] {
-  const byPath = new Map(entries.map((entry) => [entry.path, entry]))
-
-  for (const file of changedFiles) {
-    if (file.prevPath && file.prevPath !== file.path) {
-      byPath.delete(file.prevPath)
-    }
-
-    if (file.type === "deleted") {
-      byPath.delete(file.path)
-      continue
-    }
-
-    if (!includeMissingChangedFiles && !byPath.has(file.path)) {
-      continue
-    }
-
-    byPath.set(file.path, { path: file.path, type: "file" })
-  }
-
-  return Array.from(byPath.values()).sort((a, b) =>
-    a.path.localeCompare(b.path)
-  )
-}
-
-const TREE_SCROLLBAR_CSS = `
-[data-file-tree-virtualized-scroll='true'],
-[data-file-tree-scrollbar-measure='true'] {
-  scrollbar-color: var(--trees-scrollbar-thumb) transparent;
-  scrollbar-width: thin;
-}
-
-[data-file-tree-virtualized-scroll='true']::-webkit-scrollbar,
-[data-file-tree-scrollbar-measure='true']::-webkit-scrollbar {
-  width: var(--trees-scrollbar-gutter);
-  height: var(--trees-scrollbar-gutter);
-}
-
-[data-file-tree-virtualized-scroll='true']::-webkit-scrollbar-track,
-[data-file-tree-scrollbar-measure='true']::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-[data-file-tree-virtualized-scroll='true']::-webkit-scrollbar-thumb,
-[data-file-tree-scrollbar-measure='true']::-webkit-scrollbar-thumb {
-  background-color: var(--trees-scrollbar-thumb);
-  background-clip: content-box;
-  border: 0.5px solid transparent;
-  border-radius: 999px;
-}
-
-[data-file-tree-virtualized-scroll='true']::-webkit-scrollbar-thumb:vertical,
-[data-file-tree-scrollbar-measure='true']::-webkit-scrollbar-thumb:vertical {
-  border-block: 14px solid transparent;
-  border-inline: 0.5px solid transparent;
-}
-
-[data-file-tree-virtualized-scroll='true']::-webkit-scrollbar-thumb:horizontal,
-[data-file-tree-scrollbar-measure='true']::-webkit-scrollbar-thumb:horizontal {
-  border-block: 0.5px solid transparent;
-  border-inline: 14px solid transparent;
-}
-
-[data-file-tree-virtualized-scroll='true']::-webkit-scrollbar-corner,
-[data-file-tree-scrollbar-measure='true']::-webkit-scrollbar-corner {
-  background: transparent;
-}
-`
+export type { FileBrowserOpenMode } from "@/components/file-browser-model"
 
 export function FileBrowser({
   sandboxId,
@@ -148,10 +38,7 @@ export function FileBrowser({
   onDiffStyleChange?: (style: "unified" | "split") => void
   /**
    * The file path currently shown in the editor, or `null` when the editor is
-   * closed. Used to keep the tree's internal selection in sync — without this,
-   * closing the editor would leave the path "selected" inside the tree and a
-   * subsequent click on the same row would not fire `onSelectionChange`
-   * (see `arePathSetsEqual` in `@pierre/trees`).
+   * closed. Used to keep the tree's internal selection in sync.
    */
   activePath: string | null
   activeMode: FileBrowserOpenMode
@@ -159,331 +46,45 @@ export function FileBrowser({
   onOpenFile: (path: string, mode: FileBrowserOpenMode) => void
   onOpenAllDiffs?: () => void
 }) {
-  const [entries, setEntries] = useState<FileEntry[]>([])
-  const [entriesAuthoritative, setEntriesAuthoritative] = useState(false)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [truncated, setTruncated] = useState(false)
-  const [view, setView] = useState<BrowserView>("files")
-  const isMobile = useIsMobile()
-  const { width, resizing, onResizeStart, resetWidth } = useResizablePanel({
-    storageKey: "cloudcode:fileBrowserWidth",
-    defaultWidth: 304,
-    minWidth: 240,
-    maxWidth: 560,
-    edge: "left",
-    enabled: !isMobile,
+  const { resolvedTheme } = useTheme()
+  const {
+    error,
+    fetchList,
+    filePaths,
+    loading,
+    model,
+    setView,
+    truncated,
+    view,
+  } = useFileBrowserController({
+    activeMode,
+    activePath,
+    cacheScope,
+    diff,
+    onOpenFile,
+    open,
+    sandboxId,
   })
-
-  const diffStats = useMemo(() => getDiffStats(diff), [diff])
-  const liveEntries = useMemo(
-    () =>
-      applyLiveDiffToEntries(entries, diffStats.files, {
-        includeMissingChangedFiles: !entriesAuthoritative,
-      }),
-    [diffStats.files, entries, entriesAuthoritative]
-  )
-
-  const sandboxFilePaths = useMemo(() => {
-    // @pierre/trees expects paths; directories should end with "/" so they
-    // are explicitly recognised even when empty.
-    return liveEntries.map((e) => (e.type === "dir" ? `${e.path}/` : e.path))
-  }, [liveEntries])
-
-  const diffFilePaths = useMemo(
-    () => diffStats.files.map((file) => file.path),
-    [diffStats.files]
-  )
-
-  const filePaths = view === "diffs" ? diffFilePaths : sandboxFilePaths
-
-  const diffStatsByPath = useMemo(() => {
-    const map = new Map<string, DiffFileStat>()
-    for (const file of diffStats.files) {
-      map.set(file.path, file)
-      if (file.prevPath) map.set(file.prevPath, file)
-    }
-    return map
-  }, [diffStats.files])
-
-  const diffStatsByDirectory = useMemo(() => {
-    const map = new Map<string, { additions: number; deletions: number }>()
-    for (const file of diffStats.files) {
-      const segments = file.path.split("/").filter(Boolean)
-      for (let i = 1; i < segments.length; i++) {
-        const dirPath = segments.slice(0, i).join("/")
-        const current = map.get(dirPath) ?? { additions: 0, deletions: 0 }
-        map.set(dirPath, {
-          additions: current.additions + file.additions,
-          deletions: current.deletions + file.deletions,
-        })
-      }
-    }
-    return map
-  }, [diffStats.files])
-
-  // In the diffs view we want every ancestor folder of a changed file open by
-  // default so the user can see all changes at a glance. The files view keeps
-  // the tree's default `initialExpansion: "closed"` behaviour.
-  const expandedDirPaths = useMemo<readonly string[] | undefined>(() => {
-    if (view !== "diffs") return undefined
-    return Array.from(diffStatsByDirectory.keys())
-  }, [view, diffStatsByDirectory])
-
-  const gitStatus = useMemo<GitStatusEntry[]>(
-    () =>
-      diffStats.files.flatMap((file) => {
-        const status = diffTypeToGitStatus(file.type)
-        return file.prevPath && view === "files"
-          ? [
-              { path: file.path, status },
-              { path: file.prevPath, status },
-            ]
-          : [{ path: file.path, status }]
-      }),
-    [diffStats.files, view]
-  )
-
-  const treePaths = filePaths.length > 0 ? filePaths : ["__empty__"]
-
-  // Keep the selection handler referentially stable while letting it observe
-  // the latest entry list and `onOpenFile` callback through refs.
-  const fileEntryPathsRef = useRef<Set<string> | null>(null)
-  useEffect(() => {
-    const set = new Set<string>()
-    if (view === "diffs") {
-      for (const file of diffStats.files) set.add(file.path)
-    } else {
-      for (const e of liveEntries) if (e.type === "file") set.add(e.path)
-    }
-    fileEntryPathsRef.current = set
-  }, [diffStats.files, liveEntries, view])
-
-  const onOpenFileRef = useRef(onOpenFile)
-  const syncingSelectionRef = useRef(false)
-  const viewRef = useRef(view)
-  useEffect(() => {
-    onOpenFileRef.current = onOpenFile
-    viewRef.current = view
-  }, [onOpenFile, view])
-
-  const handleSelectionChange = useCallback((paths: readonly string[]) => {
-    if (syncingSelectionRef.current) return
-    const path = paths[0]
-    if (!path || path === "__empty__") return
-    if (!fileEntryPathsRef.current?.has(path)) return
-    onOpenFileRef.current(path, viewRef.current === "diffs" ? "diff" : "file")
-  }, [])
-
-  const diffStatsByPathRef = useRef(diffStatsByPath)
-  const diffStatsByDirectoryRef = useRef(diffStatsByDirectory)
-  useEffect(() => {
-    diffStatsByPathRef.current = diffStatsByPath
-    diffStatsByDirectoryRef.current = diffStatsByDirectory
-  }, [diffStatsByDirectory, diffStatsByPath])
-
-  const renderRowDecoration = useCallback<FileTreeRowDecorationRenderer>(
-    ({ item }) => {
-      const stat =
-        item.kind === "directory"
-          ? diffStatsByDirectoryRef.current.get(item.path)
-          : diffStatsByPathRef.current.get(item.path)
-      if (!stat) return null
-      return {
-        text: formatDiffStat(stat.additions, stat.deletions),
-        title: `${stat.additions} additions, ${stat.deletions} deletions`,
-      }
-    },
-    []
-  )
-
-  const { model } = useFileTree({
-    paths: treePaths,
-    flattenEmptyDirectories: false,
-    gitStatus,
-    initialExpansion: "closed",
-    renderRowDecoration,
-    search: true,
-    unsafeCSS: TREE_SCROLLBAR_CSS,
-    onSelectionChange: handleSelectionChange,
-  })
-
-  // Keep tree in sync with the entry list. When viewing diffs we hand the
-  // tree the full set of ancestor directory paths so it rebuilds with every
-  // folder pre-expanded; otherwise we let the tree fall back to its
-  // `initialExpansion: "closed"` default.
-  useEffect(() => {
-    if (!model) return
-    if (filePaths.length === 0) return
-    model.resetPaths(
-      filePaths,
-      expandedDirPaths !== undefined
-        ? { initialExpandedPaths: expandedDirPaths }
-        : undefined
-    )
-  }, [model, filePaths, expandedDirPaths])
-
-  useEffect(() => {
-    model.setGitStatus(gitStatus)
-  }, [gitStatus, model])
-
-  // Mirror the externally-controlled `activePath` onto the tree's internal
-  // selection. The tree only emits `onSelectionChange` when the selected-path
-  // set actually changes, so if the editor closes (activePath -> null) without
-  // us also clearing the tree's selection, clicking the same row again is a
-  // no-op and the file never reopens.
-  useEffect(() => {
-    if (!model) return
-    syncingSelectionRef.current = true
-    const selected = model.getSelectedPaths()
-    const viewMode: FileBrowserOpenMode = view === "diffs" ? "diff" : "file"
-    if (activePath && activeMode === viewMode) {
-      for (const p of selected) {
-        if (p !== activePath) model.getItem(p)?.deselect()
-      }
-      if (!selected.includes(activePath)) {
-        model.getItem(activePath)?.select()
-      }
-    } else {
-      for (const p of selected) {
-        model.getItem(p)?.deselect()
-      }
-    }
-    queueMicrotask(() => {
-      syncingSelectionRef.current = false
-    })
-  }, [activeMode, activePath, model, view])
-
-  const fetchList = useCallback(
-    async ({
-      force = false,
-      signal,
-    }: {
-      force?: boolean
-      signal?: AbortSignal
-    } = {}) => {
-      if (!sandboxId) return
-      const sourceKey = cacheScope ?? `sandbox:${sandboxId}`
-      let cached = force ? undefined : fileListCache.get(sourceKey)
-      if (!force && !cached && cacheScope) {
-        const stored = await readCachedFileList(cacheScope)
-        if (signal?.aborted) return
-        if (stored) {
-          cached = {
-            entries: stored.entries,
-            truncated: stored.truncated,
-          }
-          fileListCache.set(sourceKey, cached)
-        }
-      }
-      if (cached) {
-        setEntries(cached.entries)
-        setEntriesAuthoritative(false)
-        setTruncated(cached.truncated)
-      }
-      setLoading(force || !cached)
-      setError(null)
-      try {
-        const res = await fetch(
-          `/api/sandbox/files/list?${new URLSearchParams({
-            sandboxId,
-          })}`,
-          { cache: "no-store", signal }
-        )
-        const data: ListResponse = await res.json()
-        if (signal?.aborted) return
-        if (!res.ok) {
-          throw new Error(data.error ?? `Request failed (${res.status})`)
-        }
-        const nextEntries = data.entries ?? []
-        const nextTruncated = Boolean(data.truncated)
-        fileListCache.set(sourceKey, {
-          entries: nextEntries,
-          truncated: nextTruncated,
-        })
-        if (cacheScope) {
-          void writeCachedFileList(cacheScope, {
-            entries: nextEntries,
-            sandboxId,
-            truncated: nextTruncated,
-          })
-        }
-        setEntries(nextEntries)
-        setEntriesAuthoritative(true)
-        setTruncated(nextTruncated)
-      } catch (err) {
-        if (signal?.aborted) return
-        if (!cached) {
-          setError(err instanceof Error ? err.message : "Failed to load files")
-          if (!force) setEntriesAuthoritative(false)
-          setEntries((current) => (force && current.length > 0 ? current : []))
-        }
-      } finally {
-        if (!signal?.aborted) setLoading(false)
-      }
-    },
-    [cacheScope, sandboxId]
-  )
-
-  useEffect(() => {
-    if (!open || !cacheScope) return
-    let cancelled = false
-    void readCachedFileList(cacheScope).then((cached) => {
-      if (cancelled || !cached) return
-      fileListCache.set(cacheScope, {
-        entries: cached.entries,
-        truncated: cached.truncated,
-      })
-      setEntries(cached.entries)
-      setEntriesAuthoritative(false)
-      setTruncated(cached.truncated)
-      setError(null)
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [cacheScope, open])
-
-  useEffect(() => {
-    if (!open || !sandboxId) return
-    const controller = new AbortController()
-    const id = window.setTimeout(
-      () => void fetchList({ signal: controller.signal }),
-      0
-    )
-    return () => {
-      window.clearTimeout(id)
-      controller.abort()
-    }
-  }, [open, sandboxId, fetchList])
 
   if (!open) return null
 
   return (
-    <aside
-      className="fixed inset-0 z-40 flex h-full min-h-0 w-full flex-col overflow-hidden border-l border-border/60 bg-sidebar pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] text-sidebar-foreground md:relative md:inset-auto md:z-auto md:w-[var(--panel-width)] md:shrink-0 md:pt-0 md:pb-0"
-      style={{ "--panel-width": `${width}px` } as CSSProperties}
-      data-file-browser
-    >
-      <ResizeHandle
-        edge="left"
-        resizing={resizing}
-        onResizeStart={onResizeStart}
-        onReset={resetWidth}
-        ariaLabel="Resize file browser"
-      />
-      <header className="flex h-[3.25rem] shrink-0 items-center gap-2 border-b border-border/60 px-3">
-        <span className="text-sm font-medium text-foreground/85">
-          {view === "diffs"
-            ? "Diffs"
-            : view === "env"
-              ? "Environment"
-              : "Files"}
-        </span>
-        {loading ? (
-          <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
-        ) : null}
-        <div className="ml-auto flex items-center gap-1">
+    <ResizableSidePanel
+      open={open}
+      title={
+        view === "diffs" ? "Diffs" : view === "env" ? "Environment" : "Files"
+      }
+      busy={loading}
+      onClose={onClose}
+      closeLabel="Close file browser"
+      resizeLabel="Resize file browser"
+      storageKey="cloudcode:fileBrowserWidth"
+      defaultWidth={304}
+      minWidth={240}
+      maxWidth={560}
+      dataAttributes={{ "data-file-browser": true }}
+      headerActions={
+        <>
           {view === "diffs" && diffStyle && onDiffStyleChange ? (
             <SegmentedControl<"unified" | "split">
               value={diffStyle}
@@ -516,20 +117,17 @@ export function FileBrowser({
               <RefreshCw className="size-3.5" />
             </IconButton>
           ) : null}
-          <IconButton onClick={onClose} aria-label="Close file browser">
-            <X />
-          </IconButton>
-        </div>
-      </header>
-
+        </>
+      }
+    >
       <div className="flex h-[3.25rem] shrink-0 items-stretch border-b border-border/60">
-        <ViewButton
+        <SidePanelTabButton
           active={view === "files"}
           label="Files"
           onClick={() => setView("files")}
         />
         <div aria-hidden className="w-px self-stretch bg-border/60" />
-        <ViewButton
+        <SidePanelTabButton
           active={view === "diffs"}
           label="Diffs"
           onClick={() => {
@@ -538,7 +136,7 @@ export function FileBrowser({
           }}
         />
         <div aria-hidden className="w-px self-stretch bg-border/60" />
-        <ViewButton
+        <SidePanelTabButton
           active={view === "env"}
           label="Environment"
           onClick={() => setView("env")}
@@ -552,15 +150,15 @@ export function FileBrowser({
             sandboxId={sandboxId}
           />
         ) : !sandboxId && filePaths.length === 0 ? (
-          <EmptyState message="No cached files yet." />
+          <FileBrowserEmptyState message="No cached files yet." />
         ) : error ? (
-          <EmptyState
+          <FileBrowserEmptyState
             message={error}
             actionLabel="Retry"
             onAction={() => void fetchList({ force: true })}
           />
         ) : filePaths.length === 0 && !loading ? (
-          <EmptyState
+          <FileBrowserEmptyState
             message={view === "diffs" ? "No changed files." : "No files yet."}
             actionLabel={view === "diffs" ? undefined : "Refresh"}
             onAction={
@@ -570,7 +168,7 @@ export function FileBrowser({
             }
           />
         ) : (
-          <FileTreeWrapper model={model} />
+          <FileTreeWrapper dark={resolvedTheme === "dark"} model={model} />
         )}
         {truncated ? (
           <div className="pointer-events-none absolute inset-x-0 bottom-0 border-t border-border/60 bg-sidebar/95 px-3 py-1.5 text-[10px] tracking-wide text-muted-foreground uppercase">
@@ -578,95 +176,6 @@ export function FileBrowser({
           </div>
         ) : null}
       </div>
-    </aside>
-  )
-}
-
-// `@pierre/trees` resolves its defaults through `light-dark()` which keys off
-// the host's `color-scheme` CSS property, so we declare it explicitly and
-// then map every override to the same design tokens used by the rest of the
-// app (sidebar, foreground, muted, accent, border).
-function FileTreeWrapper({
-  model,
-}: {
-  model: ReturnType<typeof useFileTree>["model"]
-}) {
-  const { resolvedTheme } = useTheme()
-  const dark = resolvedTheme === "dark"
-
-  const style = useMemo<CSSProperties>(
-    () =>
-      ({
-        height: "100%",
-        width: "100%",
-        paddingTop: "8px",
-        colorScheme: dark ? "dark" : "light",
-        "--trees-bg-override": "var(--sidebar)",
-        "--trees-fg-override": "var(--sidebar-foreground)",
-        "--trees-fg-muted-override": "var(--muted-foreground)",
-        "--trees-bg-muted-override": "var(--sidebar-accent)",
-        "--trees-selected-bg-override": "var(--sidebar-accent)",
-        "--trees-selected-fg-override": "var(--sidebar-accent-foreground)",
-        "--trees-selected-focused-border-color-override":
-          "var(--sidebar-border)",
-        "--trees-border-color-override": "var(--sidebar-border)",
-        "--trees-indent-guide-bg-override": "var(--sidebar-border)",
-        "--trees-scrollbar-thumb-override": "var(--scrollbar-thumb)",
-        "--trees-scrollbar-gutter-override": "2px",
-        "--trees-focus-ring-color-override": "var(--ring)",
-        "--trees-font-family-override": "var(--font-sans)",
-        "--trees-font-size-override": "12.5px",
-        "--trees-item-padding-x-override": "8px",
-        "--trees-padding-inline-override": "6px",
-      }) as CSSProperties,
-    [dark]
-  )
-
-  return <FileTree model={model} style={style} />
-}
-
-function ViewButton({
-  active,
-  label,
-  onClick,
-}: {
-  active: boolean
-  label: string
-  onClick: () => void
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={active}
-      className={
-        active
-          ? "flex-1 text-center text-xs font-medium text-foreground transition-colors"
-          : "flex-1 text-center text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-      }
-    >
-      {label}
-    </button>
-  )
-}
-
-function EmptyState({
-  message,
-  actionLabel,
-  onAction,
-}: {
-  message: string
-  actionLabel?: string
-  onAction?: () => void
-}) {
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
-      <p className="text-xs text-muted-foreground">{message}</p>
-      {actionLabel && onAction ? (
-        <Button type="button" variant="outline" size="xs" onClick={onAction}>
-          {actionLabel}
-        </Button>
-      ) : null}
-    </div>
+    </ResizableSidePanel>
   )
 }

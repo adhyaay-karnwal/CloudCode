@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 
+import { jsonError, searchStringParam } from "@/lib/api-route"
 import {
   readSandboxGitStatus,
   resolveSandboxGitContext,
@@ -9,9 +10,9 @@ import { gitApiErrorResponse } from "@/lib/sandbox-git-route"
 export const runtime = "nodejs"
 
 export async function GET(request: Request) {
-  const sandboxId = new URL(request.url).searchParams.get("sandboxId")
+  const sandboxId = searchStringParam(request, "sandboxId")
   if (!sandboxId) {
-    return NextResponse.json({ error: "sandboxId required" }, { status: 400 })
+    return jsonError("sandboxId required", 400)
   }
 
   try {

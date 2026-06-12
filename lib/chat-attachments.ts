@@ -1,3 +1,5 @@
+import { positiveNumberValue, stringValue } from "@/lib/unknown-values"
+
 export const CHAT_IMAGE_ATTACHMENT_MIME_TYPES = [
   "image/gif",
   "image/jpeg",
@@ -7,7 +9,7 @@ export const CHAT_IMAGE_ATTACHMENT_MIME_TYPES = [
 
 export const MAX_CHAT_IMAGE_ATTACHMENTS = 6
 export const MAX_CHAT_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024
-export const MAX_CHAT_IMAGE_ATTACHMENT_NAME_LENGTH = 120
+const MAX_CHAT_IMAGE_ATTACHMENT_NAME_LENGTH = 120
 
 export type ChatImageAttachment = {
   id: string
@@ -51,7 +53,7 @@ export function parseChatImageAttachments(value: unknown) {
     const kind = record.kind === "image" ? record.kind : undefined
     const mimeType = stringValue(record.mimeType)?.toLowerCase()
     const name = stringValue(record.name)
-    const size = numberValue(record.size)
+    const size = positiveNumberValue(record.size)
     const url = stringValue(record.url)
 
     if (
@@ -98,16 +100,6 @@ export function buildImageAttachmentPromptBlock(
     ...lines,
     "Use these image files as context for the user's request.",
   ].join("\n")
-}
-
-function stringValue(value: unknown) {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined
-}
-
-function numberValue(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) && value > 0
-    ? value
-    : undefined
 }
 
 function isHttpUrl(value: string) {

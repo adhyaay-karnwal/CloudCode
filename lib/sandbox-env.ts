@@ -6,10 +6,12 @@ export const CLOUDCODE_LEGACY_PRESET_ENV_PATH = "/tmp/cloudcode-preset-env.sh"
 
 const ENV_LINE_PATTERN = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=/
 
-export type SandboxPresetEnvVar = {
+export type SandboxEnvVar = {
   name: string
   value: string
 }
+
+export type SandboxPresetEnvVar = SandboxEnvVar
 
 export type SandboxEnvTarget = {
   readTextFile: (path: string) => Promise<string>

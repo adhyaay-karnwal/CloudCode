@@ -8,6 +8,7 @@ import {
   type CloudcodeCommand,
   type CloudcodeYamlConfig,
 } from "@/lib/cloudcode-yaml"
+import { compactAnsiLine } from "@/lib/compact-line"
 import {
   daytonaTerminalPath,
   runDaytonaCommand,
@@ -114,14 +115,6 @@ class CloudcodeCommandError extends Error {
   }
 }
 
-function compactLine(value: string, max = 260) {
-  const line = value
-    .replace(ANSI_ESCAPE_PATTERN, "")
-    .replace(/\s+/g, " ")
-    .trim()
-  return line.length > max ? `${line.slice(0, max - 3)}...` : line
-}
-
 function compactTail(value: string, max = 900) {
   const line = value
     .replace(ANSI_ESCAPE_PATTERN, "")
@@ -168,7 +161,7 @@ async function runCloudcodeCommandList({
     if (index < startIndex) continue
     const name = command.name ?? `${label} ${index + 1}`
     await emit({
-      detail: compactLine(command.run, 500),
+      detail: compactAnsiLine(command.run, 500),
       kind: "command",
       message: `Downloading ${name}`,
     })

@@ -1,5 +1,5 @@
 import { auth } from "@clerk/nextjs/server"
-import { ConvexHttpClient } from "convex/browser"
+import type { ConvexHttpClient } from "convex/browser"
 
 import { api } from "@/convex/_generated/api"
 import {
@@ -9,7 +9,7 @@ import {
   stopDaytonaSandbox,
   type DaytonaSandboxInfo,
 } from "@/lib/daytona-sandbox"
-import { getConvexAuthTokenForSession } from "@/lib/codex-auth"
+import { convexHttpClientForSession } from "@/lib/convex-http"
 import type { CurrentUserSandbox } from "@/lib/sandbox-authorization"
 import { requireCurrentUserSandbox } from "@/lib/sandbox-authorization"
 import type {
@@ -27,23 +27,11 @@ export class BillingRequiredError extends Error {
 const INFRA_ACCESS_CACHE_TTL_MS = 15_000
 const INFRA_ACCESS_CACHE_MAX_ENTRIES = 500
 
-function getConvexUrl() {
-  const url = process.env.NEXT_PUBLIC_CONVEX_URL
-
-  if (!url) {
-    throw new Error("Set NEXT_PUBLIC_CONVEX_URL before using Convex storage.")
-  }
-
-  return url
-}
-
 async function currentUserConvexClient() {
   const session = await auth()
   if (!session.userId) throw new Error("Not authenticated.")
 
-  const client = new ConvexHttpClient(getConvexUrl())
-  client.setAuth(await getConvexAuthTokenForSession(session))
-  return client
+  return await convexHttpClientForSession(session)
 }
 
 async function checkCurrentUserInfraAccess(client: ConvexHttpClient) {
@@ -108,9 +96,7 @@ export async function requireCurrentUserInfraAccess() {
   if (cached && cached.expiresAt > now) return await cached.promise
   if (cached) infraAccessCache.delete(session.userId)
 
-  const client = new ConvexHttpClient(getConvexUrl())
-  client.setAuth(await getConvexAuthTokenForSession(session))
-
+  const client = await convexHttpClientForSession(session)
   const promise = checkCurrentUserInfraAccess(client)
   infraAccessCache.set(session.userId, {
     expiresAt: now + INFRA_ACCESS_CACHE_TTL_MS,

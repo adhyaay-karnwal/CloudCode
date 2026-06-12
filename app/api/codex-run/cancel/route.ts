@@ -1,52 +1,32 @@
 import { runs } from "@trigger.dev/sdk"
-import { ConvexHttpClient } from "convex/browser"
 import { NextResponse } from "next/server"
 
 import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
-import { getConvexAuthToken } from "@/lib/codex-auth"
+import { currentUserConvexHttpClient } from "@/lib/convex-http"
 import { syncDiscoveredSandbox } from "@/lib/codex-run-sandbox-sync"
+import { jsonError, jsonStringField, readJsonRecord } from "@/lib/api-route"
 import { requireSameOrigin } from "@/lib/request-security"
 
 export const runtime = "nodejs"
-
-function getConvexUrl() {
-  const url = process.env.NEXT_PUBLIC_CONVEX_URL
-
-  if (!url) {
-    throw new Error("Set NEXT_PUBLIC_CONVEX_URL before using Convex storage.")
-  }
-
-  return url
-}
-
-async function convexClient() {
-  const client = new ConvexHttpClient(getConvexUrl())
-  client.setAuth(await getConvexAuthToken())
-  return client
-}
 
 export async function POST(request: Request) {
   const blocked = requireSameOrigin(request)
   if (blocked) return blocked
 
   try {
-    const body = (await request.json()) as {
-      threadId?: unknown
+    const body = await readJsonRecord(request)
+    const threadId = jsonStringField(body, "threadId")
+
+    if (!threadId) {
+      return jsonError("threadId is required.", 400)
     }
 
-    if (typeof body.threadId !== "string" || !body.threadId.trim()) {
-      return NextResponse.json(
-        { error: "threadId is required." },
-        { status: 400 }
-      )
-    }
-
-    const client = await convexClient()
+    const client = await currentUserConvexHttpClient()
     const canceled = await client.mutation(
       api.codexRuns.cancelActiveForThread,
       {
-        threadId: body.threadId as Id<"threads">,
+        threadId: threadId as Id<"threads">,
       }
     )
 
@@ -72,11 +52,9 @@ export async function POST(request: Request) {
   } catch (error) {
     console.error("/api/codex-run/cancel failed", error)
 
-    return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : "Unable to cancel run.",
-      },
-      { status: 500 }
+    return jsonError(
+      error instanceof Error ? error.message : "Unable to cancel run.",
+      500
     )
   }
 }

@@ -1,7 +1,6 @@
 export const BILLING_INFRA_USAGE_FEATURE_ID = "infra_usage"
-export const BILLING_USAGE_UNIT = "micro_usd"
-export const BILLING_MICRO_USD_PER_USD = 1_000_000
-export const BILLING_MICRO_USD_PER_CENT = BILLING_MICRO_USD_PER_USD / 100
+const BILLING_MICRO_USD_PER_USD = 1_000_000
+const BILLING_MICRO_USD_PER_CENT = BILLING_MICRO_USD_PER_USD / 100
 
 export const BILLING_FREE_PLAN_ID = "free"
 export const BILLING_HOBBY_PLAN_ID = "hobby"
@@ -51,8 +50,19 @@ export type DaytonaBillingRates = {
   storageMicroUsdPerGibSecond: number
 }
 
+export type UsageHoursInfo = {
+  depleted: boolean
+  fractionRemaining: number
+  nextResetAt: number | null
+  runningHoursLeft: number
+  runningMinutesLeft: number
+  stoppedHoursLeft: number
+  stoppedMinutesLeft: number
+  unlimited: boolean
+}
+
 export const DAYTONA_BILLING_RATE_VERSION = "daytona-2026-06-09"
-export const DAYTONA_BILLING_RATES: DaytonaBillingRates = {
+const DAYTONA_BILLING_RATES: DaytonaBillingRates = {
   cpuMicroUsdPerVcpuSecond: 14,
   memoryMicroUsdPerGibSecond: 4.5,
   storageMicroUsdPerGibSecond: 0.03,
@@ -61,11 +71,6 @@ export const DAYTONA_BILLING_RATES: DaytonaBillingRates = {
 export const BILLING_DAYTONA_CHECKPOINT_MS = 60_000
 export const BILLING_TRIGGER_CHECKPOINT_MS = 30_000
 export const BILLING_MINIMUM_START_BALANCE_MICRO_USD = 10_000
-export const BILLING_MAX_SETTLEMENT_DELAY_MS = 48 * 60 * 60 * 1000
-
-export function billingPlanForId(planId: string | undefined | null) {
-  return BILLING_PLANS.find((plan) => plan.planId === planId)
-}
 
 export function microUsdFromTriggerCents(costInCents: number) {
   if (!Number.isFinite(costInCents) || costInCents <= 0) return 0
@@ -77,14 +82,6 @@ export function ceilMicroUsd(value: number) {
   const nearest = Math.round(value)
   if (Math.abs(value - nearest) < 1e-9) return nearest
   return Math.ceil(value)
-}
-
-export function microUsdToUsd(value: number) {
-  return value / BILLING_MICRO_USD_PER_USD
-}
-
-export function formatMicroUsd(value: number) {
-  return `$${microUsdToUsd(value).toFixed(4)}`
 }
 
 export function daytonaBillingState(rawState: string | undefined | null) {
@@ -201,7 +198,7 @@ export function microUsdMinutesLeft(
  * Whole hours of running sandbox time a plan's included allowance buys, using
  * the same reference sandbox as the "hours left" meter so the figures align.
  */
-export function planIncludedHours(includedMicroUsd: number) {
+function planIncludedHours(includedMicroUsd: number) {
   return Math.floor(
     microUsdHoursLeft(
       includedMicroUsd,
@@ -213,19 +210,7 @@ export function planIncludedHours(includedMicroUsd: number) {
   )
 }
 
-export function planIncludedMinutes(includedMicroUsd: number) {
-  return Math.floor(
-    microUsdMinutesLeft(
-      includedMicroUsd,
-      daytonaBurnRateMicroUsdPerSecond({
-        resources: DAYTONA_REFERENCE_SANDBOX_RESOURCES,
-        state: "running",
-      })
-    )
-  )
-}
-
-export function planIncludedDisplayMinutes(includedMicroUsd: number) {
+function planIncludedDisplayMinutes(includedMicroUsd: number) {
   const exactMinutes = microUsdMinutesLeft(
     includedMicroUsd,
     daytonaBurnRateMicroUsdPerSecond({
@@ -243,29 +228,4 @@ export function planIncludedTimeLabel(includedMicroUsd: number) {
 
   const minutes = planIncludedDisplayMinutes(includedMicroUsd)
   return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`
-}
-
-export function readDaytonaBillingRatesFromEnv(
-  env: Record<string, string | undefined> = process.env
-): DaytonaBillingRates {
-  return {
-    cpuMicroUsdPerVcpuSecond: readPositiveEnvNumber(
-      env.DAYTONA_BILLING_CPU_MICRO_USD_PER_VCPU_SECOND,
-      DAYTONA_BILLING_RATES.cpuMicroUsdPerVcpuSecond
-    ),
-    memoryMicroUsdPerGibSecond: readPositiveEnvNumber(
-      env.DAYTONA_BILLING_MEMORY_MICRO_USD_PER_GIB_SECOND,
-      DAYTONA_BILLING_RATES.memoryMicroUsdPerGibSecond
-    ),
-    storageMicroUsdPerGibSecond: readPositiveEnvNumber(
-      env.DAYTONA_BILLING_STORAGE_MICRO_USD_PER_GIB_SECOND,
-      DAYTONA_BILLING_RATES.storageMicroUsdPerGibSecond
-    ),
-  }
-}
-
-function readPositiveEnvNumber(value: string | undefined, fallback: number) {
-  if (!value) return fallback
-  const parsed = Number(value)
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback
 }

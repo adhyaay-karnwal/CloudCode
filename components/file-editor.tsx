@@ -1,206 +1,32 @@
 "use client"
 
-import {
-  FileDiff,
-  File as PierreFile,
-  type FileContents,
-  type FileOptions,
-  type ThemeTypes,
-} from "@pierre/diffs/react"
-import {
-  parseDiffFromFile,
-  type FileDiffMetadata,
-  type FileDiffOptions,
-} from "@pierre/diffs"
-import { ImageIcon, Loader2, RefreshCw, X } from "lucide-react"
-import NextImage from "next/image"
-import { useTheme } from "next-themes"
-import {
-  type CSSProperties,
-  type MouseEvent as ReactMouseEvent,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react"
+import { RefreshCw, X } from "lucide-react"
+import { useMemo, useState } from "react"
 
-import { Markdown } from "@/components/chat-markdown"
+import { FileViewer } from "@/components/file-editor-content"
+import { ImageDimensionsLabel } from "@/components/file-editor-image"
+import {
+  basename,
+  diffStat,
+  isImagePath,
+  isMarkdownPath,
+  type FileViewMode,
+} from "@/components/file-editor-model"
+import { ResizeHandle } from "@/components/resize-handle"
 import { IconButton } from "@/components/ui/icon-button"
 import {
   SegmentedControl,
   type SegmentedOption,
 } from "@/components/ui/segmented-control"
+import { useIsMobile } from "@/hooks/use-is-mobile"
+import { useResizablePanel } from "@/hooks/use-resizable-panel"
 import { findDiffForPath } from "@/lib/diff-metadata"
-import {
-  diffCacheKey,
-  fetchSandboxTextFileIntoCache,
-  readCachedTextFile,
-  writeCachedTextFile,
-} from "@/lib/sandbox-file-cache"
+import { diffCacheKey } from "@/lib/sandbox-file-cache"
 import { cn } from "@/lib/utils"
-
-const IMAGE_EXTENSIONS = new Set([
-  "avif",
-  "bmp",
-  "gif",
-  "ico",
-  "jpeg",
-  "jpg",
-  "png",
-  "svg",
-  "webp",
-])
-
-const PIERRE_CODE_THEMES = {
-  dark: "pierre-dark",
-  light: "pierre-light",
-} as const
-
-const PIERRE_FILE_STYLE: CSSProperties = {
-  "--diffs-font-family": "var(--font-mono)",
-  "--diffs-font-size": "13px",
-  "--diffs-line-height": "1.6",
-  "--diffs-gap-block": "16px",
-  "--diffs-gap-inline": "16px",
-} as CSSProperties
-
-const PIERRE_LANGUAGE_ALIASES: Record<string, string> = {
-  js: "javascript",
-  jsx: "javascript",
-  md: "markdown",
-  mdx: "markdown",
-  plaintext: "text",
-  py: "python",
-  sh: "bash",
-  shell: "bash",
-  text: "text",
-  ts: "typescript",
-  tsx: "typescript",
-  yml: "yaml",
-}
-
-function getPierreLanguageFromPath(path: string): string {
-  const ext = path.split(".").pop()?.toLowerCase() ?? "text"
-  return PIERRE_LANGUAGE_ALIASES[ext] ?? ext
-}
-
-function basename(path: string): string {
-  return path.split("/").pop() ?? path
-}
-
-function isImagePath(path: string): boolean {
-  const ext = path.split(".").pop()?.toLowerCase()
-  return ext ? IMAGE_EXTENSIONS.has(ext) : false
-}
-
-function isMarkdownPath(path: string): boolean {
-  const ext = path.split(".").pop()?.toLowerCase()
-  return ext === "md" || ext === "mdx" || ext === "markdown"
-}
-
-/**
- * Reverse-apply the parsed patch to the *current* file contents to recover
- * the file as it looked before the changes. This lets us hand both old/new
- * full-file blobs to `parseDiffFromFile`, producing a non-partial
- * `FileDiffMetadata` that `<FileDiff>` can render with `expandUnchanged: true`
- * — i.e. the same diff styling as the Diffs view, but with every unchanged
- * line still visible around the hunks.
- *
- * NOTE on line splitting: `@pierre/diffs` splits with the lookbehind
- * `/(?<=\n)/`, which keeps the trailing newline attached to each entry of
- * `additionLines` / `deletionLines`. We mirror that so the lines we splice in
- * are byte-for-byte compatible (then join with `""`, not `"\n"`). Splitting
- * with `"\n"` and joining with `"\n"` here produces doubled newlines around
- * every replaced line and corrupts the reconstructed file.
- */
-const SPLIT_KEEP_NEWLINES = /(?<=\n)/
-
-function reconstructOldContent(
-  newContent: string,
-  fileDiff: FileDiffMetadata
-): string {
-  const oldLines = newContent.split(SPLIT_KEEP_NEWLINES)
-
-  // Walk hunks back-to-front so earlier indices stay valid as we splice.
-  for (let i = fileDiff.hunks.length - 1; i >= 0; i--) {
-    const hunk = fileDiff.hunks[i]
-    const oldHunkLines: string[] = []
-
-    for (const block of hunk.hunkContent) {
-      if (block.type === "context") {
-        for (let j = 0; j < block.lines; j++) {
-          oldHunkLines.push(fileDiff.deletionLines[block.deletionLineIndex + j])
-        }
-      } else {
-        for (let j = 0; j < block.deletions; j++) {
-          oldHunkLines.push(fileDiff.deletionLines[block.deletionLineIndex + j])
-        }
-      }
-    }
-
-    const start = Math.max(0, hunk.additionStart - 1)
-    oldLines.splice(start, hunk.additionCount, ...oldHunkLines)
-  }
-
-  return oldLines.join("")
-}
-
-function contentFromAdditionLines(fileDiff: FileDiffMetadata) {
-  const lines: string[] = []
-
-  for (const hunk of fileDiff.hunks) {
-    for (const block of hunk.hunkContent) {
-      if (block.type === "context") {
-        for (let j = 0; j < block.lines; j += 1) {
-          lines.push(fileDiff.additionLines[block.additionLineIndex + j])
-        }
-      } else {
-        for (let j = 0; j < block.additions; j += 1) {
-          lines.push(fileDiff.additionLines[block.additionLineIndex + j])
-        }
-      }
-    }
-  }
-
-  return lines.join("")
-}
-
-function applyDiffToOldContent(
-  oldContent: string,
-  fileDiff: FileDiffMetadata
-): string | null {
-  if (fileDiff.type === "deleted") return null
-  if (fileDiff.type === "new") return contentFromAdditionLines(fileDiff)
-  if (fileDiff.hunks.length === 0) return oldContent
-
-  const nextLines = oldContent.split(SPLIT_KEEP_NEWLINES)
-
-  for (let i = fileDiff.hunks.length - 1; i >= 0; i -= 1) {
-    const hunk = fileDiff.hunks[i]
-    const newHunkLines: string[] = []
-
-    for (const block of hunk.hunkContent) {
-      if (block.type === "context") {
-        for (let j = 0; j < block.lines; j += 1) {
-          newHunkLines.push(fileDiff.additionLines[block.additionLineIndex + j])
-        }
-      } else {
-        for (let j = 0; j < block.additions; j += 1) {
-          newHunkLines.push(fileDiff.additionLines[block.additionLineIndex + j])
-        }
-      }
-    }
-
-    const start = Math.max(0, hunk.deletionStart - 1)
-    nextLines.splice(start, hunk.deletionCount, ...newHunkLines)
-  }
-
-  return nextLines.join("")
-}
 
 const MIN_PANEL_WIDTH = 280
 const DEFAULT_PANEL_WIDTH = 640
-type FileViewMode = "diff" | "file" | "preview"
+const MAX_PANEL_WIDTH = 960
 
 export function FileEditorPanel({
   sandboxId,
@@ -223,60 +49,30 @@ export function FileEditorPanel({
   onModeChange?: (mode: FileViewMode) => void
   placement?: "main" | "side"
 }) {
-  // Panel width persists across mounts so the user's preferred size sticks
-  // when they switch files.
-  const [width, setWidth] = useState<number>(DEFAULT_PANEL_WIDTH)
+  const isMobile = useIsMobile()
   const [refreshNonce, setRefreshNonce] = useState(0)
-  const dragStartRef = useRef<{ x: number; w: number } | null>(null)
-
-  function handleResizeStart(e: ReactMouseEvent<HTMLButtonElement>) {
-    e.preventDefault()
-    dragStartRef.current = { x: e.clientX, w: width }
-
-    function onMove(ev: MouseEvent) {
-      const ctx = dragStartRef.current
-      if (!ctx) return
-      const dx = ev.clientX - ctx.x
-      // Dragging the LEFT edge: moving the cursor right shrinks the panel,
-      // moving left enlarges it. Clamp against viewport so neighbouring
-      // columns keep at least 360 px.
-      const maxWidth = Math.max(MIN_PANEL_WIDTH, window.innerWidth - 360)
-      const next = Math.min(maxWidth, Math.max(MIN_PANEL_WIDTH, ctx.w - dx))
-      setWidth(next)
-    }
-    function onUp() {
-      dragStartRef.current = null
-      window.removeEventListener("mousemove", onMove)
-      window.removeEventListener("mouseup", onUp)
-      document.body.style.removeProperty("cursor")
-      document.body.style.removeProperty("user-select")
-    }
-
-    document.body.style.cursor = "col-resize"
-    document.body.style.userSelect = "none"
-    window.addEventListener("mousemove", onMove)
-    window.addEventListener("mouseup", onUp)
-  }
+  const sidePlacement = placement === "side"
+  const { width, resizing, onResizeStart, resetWidth } = useResizablePanel({
+    storageKey: "cloudcode:fileEditorWidth",
+    defaultWidth: DEFAULT_PANEL_WIDTH,
+    minWidth: MIN_PANEL_WIDTH,
+    maxWidth: MAX_PANEL_WIDTH,
+    edge: "left",
+    enabled: sidePlacement && !isMobile,
+  })
 
   const fileDiff = useMemo(
     () => (activePath ? findDiffForPath(diff, activePath) : undefined),
     [activePath, diff]
   )
   const activeDiffKey = useMemo(() => diffCacheKey(diff), [diff])
-  const diffStat = useMemo(() => {
-    if (!fileDiff) return null
-    return fileDiff.hunks.reduce(
-      (acc, hunk) => ({
-        additions: acc.additions + hunk.additionLines,
-        deletions: acc.deletions + hunk.deletionLines,
-      }),
-      { additions: 0, deletions: 0 }
-    )
-  }, [fileDiff])
+  const diffStats = useMemo(
+    () => (fileDiff ? diffStat(fileDiff) : null),
+    [fileDiff]
+  )
 
   if (!activePath) return null
 
-  const sidePlacement = placement === "side"
   const markdownPreview = isMarkdownPath(activePath)
 
   return (
@@ -288,18 +84,12 @@ export function FileEditorPanel({
       style={sidePlacement ? { width } : undefined}
     >
       {sidePlacement ? (
-        // Drag handle on the left edge: an invisible lane that shows a subtle
-        // divider accent on hover.
-        <button
-          type="button"
-          aria-label="Resize file viewer"
-          onMouseDown={handleResizeStart}
-          className={cn(
-            "absolute top-0 bottom-0 -left-1 z-10 w-2 cursor-col-resize",
-            "border-0 bg-transparent p-0",
-            "before:absolute before:inset-y-0 before:left-1 before:w-px",
-            "before:bg-transparent hover:before:bg-border"
-          )}
+        <ResizeHandle
+          edge="left"
+          resizing={resizing}
+          onResizeStart={onResizeStart}
+          onReset={resetWidth}
+          ariaLabel="Resize file viewer"
         />
       ) : null}
 
@@ -332,14 +122,14 @@ export function FileEditorPanel({
             ] as SegmentedOption<FileViewMode>[]
           }
         />
-        {diffStat ? (
+        {diffStats ? (
           <span
             className="shrink-0 font-mono text-[11px] tabular-nums"
-            title={`${diffStat.additions} additions, ${diffStat.deletions} deletions`}
+            title={`${diffStats.additions} additions, ${diffStats.deletions} deletions`}
           >
-            <span className="text-success">+{diffStat.additions}</span>
+            <span className="text-success">+{diffStats.additions}</span>
             <span className="text-muted-foreground/60"> / </span>
-            <span className="text-destructive">-{diffStat.deletions}</span>
+            <span className="text-destructive">-{diffStats.deletions}</span>
           </span>
         ) : null}
         <IconButton
@@ -361,8 +151,7 @@ export function FileEditorPanel({
 
       <div className="min-h-0 flex-1">
         <FileViewer
-          // Remount per (sandbox, file) so each viewer starts crisp without
-          // effect-driven state resets.
+          // Remount per file so loading/content state cannot bleed across paths.
           key={`${mode}:${sandboxId ?? ""}:${activePath}`}
           fileDiff={fileDiff}
           cacheScope={cacheScope}
@@ -375,458 +164,5 @@ export function FileEditorPanel({
         />
       </div>
     </section>
-  )
-}
-
-type FileViewerProps = {
-  fileDiff?: FileDiffMetadata
-  cacheScope: string | null
-  diffKey: string
-  mode: FileViewMode
-  onOpenFile?: (path: string) => void
-  refreshNonce: number
-  sandboxId: string | null
-  path: string
-}
-
-function useTextFileContent({
-  cacheScope,
-  diffKey,
-  fileDiff,
-  imagePreview,
-  mode,
-  path,
-  refreshNonce,
-  sandboxId,
-}: FileViewerProps & { imagePreview: boolean }) {
-  const [content, setContent] = useState<string | null>(null)
-  const [loading, setLoading] = useState(!imagePreview)
-  const [error, setError] = useState<string | null>(null)
-  const handledRefreshNonceRef = useRef(refreshNonce)
-
-  useEffect(() => {
-    if (mode === "diff" || imagePreview) {
-      return
-    }
-    let cancelled = false
-    void (async () => {
-      const forceFresh = refreshNonce !== handledRefreshNonceRef.current
-      if (forceFresh) {
-        handledRefreshNonceRef.current = refreshNonce
-      }
-      if (forceFresh) {
-        setLoading(true)
-        setError(null)
-      }
-
-      const cached =
-        !forceFresh && cacheScope
-          ? await readCachedTextFile(cacheScope, path)
-          : null
-      if (cancelled) return
-
-      if (cached) {
-        let displayedContent = cached.content
-        if (fileDiff && cached.diffKey !== diffKey) {
-          const patchedContent = applyDiffToOldContent(cached.content, fileDiff)
-          if (patchedContent !== null) {
-            displayedContent = patchedContent
-            void writeCachedTextFile(cacheScope!, path, {
-              content: patchedContent,
-              diffKey,
-              modifiedTime: cached.modifiedTime,
-              sandboxId: sandboxId ?? cached.sandboxId,
-              size: new Blob([patchedContent]).size,
-            })
-          }
-        }
-        setContent(displayedContent)
-        setLoading(false)
-        setError(null)
-      }
-
-      if (!cached && fileDiff?.type === "new") {
-        const newFileContent = contentFromAdditionLines(fileDiff)
-        setContent(newFileContent)
-        setLoading(false)
-        setError(null)
-        if (cacheScope) {
-          void writeCachedTextFile(cacheScope, path, {
-            content: newFileContent,
-            diffKey,
-            modifiedTime: null,
-            sandboxId: sandboxId ?? undefined,
-            size: new Blob([newFileContent]).size,
-          })
-        }
-        return
-      }
-
-      const changedInCurrentDiff = Boolean(fileDiff)
-      const cacheIsCurrent =
-        cached &&
-        !forceFresh &&
-        (!changedInCurrentDiff || cached.diffKey === diffKey)
-      if (cacheIsCurrent) return
-
-      if (!sandboxId) {
-        if (!cached) {
-          setLoading(false)
-          setError("No sandbox yet.")
-        }
-        return
-      }
-
-      try {
-        const fresh = await fetchSandboxTextFileIntoCache({
-          diffKey,
-          force: forceFresh,
-          path,
-          sandboxId,
-          scope: cacheScope ?? `sandbox:${sandboxId}`,
-        })
-        if (cancelled) return
-        setContent(fresh.content)
-      } catch (err) {
-        if (cancelled) return
-        if (!cached) {
-          setError(err instanceof Error ? err.message : "Failed to read file")
-        }
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [
-    cacheScope,
-    diffKey,
-    fileDiff,
-    imagePreview,
-    mode,
-    refreshNonce,
-    sandboxId,
-    path,
-  ])
-
-  return { content, error, loading }
-}
-
-function FileViewer({
-  fileDiff,
-  cacheScope,
-  diffKey,
-  mode,
-  onOpenFile,
-  refreshNonce,
-  sandboxId,
-  path,
-}: FileViewerProps) {
-  const imagePreview = useMemo(() => isImagePath(path), [path])
-  const markdownPreview = useMemo(() => isMarkdownPath(path), [path])
-  const { content, error, loading } = useTextFileContent({
-    cacheScope,
-    diffKey,
-    fileDiff,
-    imagePreview,
-    mode,
-    onOpenFile,
-    path,
-    refreshNonce,
-    sandboxId,
-  })
-  const { resolvedTheme } = useTheme()
-  const themeType: ThemeTypes = resolvedTheme === "dark" ? "dark" : "light"
-
-  const language = useMemo(() => getPierreLanguageFromPath(path), [path])
-
-  const file = useMemo<FileContents | null>(() => {
-    if (content === null) return null
-    return {
-      cacheKey: `${path}:${content}`,
-      contents: content,
-      lang: language,
-      name: basename(path),
-    }
-  }, [content, language, path])
-
-  const options = useMemo<FileOptions<undefined>>(
-    () => ({
-      disableFileHeader: true,
-      disableLineNumbers: false,
-      overflow: "wrap",
-      theme: PIERRE_CODE_THEMES,
-      themeType,
-    }),
-    [themeType]
-  )
-
-  const diffOptions = useMemo<FileDiffOptions<undefined>>(
-    () => ({
-      diffIndicators: "bars",
-      diffStyle: "unified",
-      disableFileHeader: true,
-      disableLineNumbers: false,
-      hunkSeparators: "line-info-basic",
-      lineDiffType: "word",
-      overflow: "wrap",
-      theme: PIERRE_CODE_THEMES,
-      themeType,
-    }),
-    [themeType]
-  )
-
-  // In file mode, if the file actually changed, build a *non-partial*
-  // FileDiffMetadata so `<FileDiff>` can render the hunks against the full
-  // file (every unchanged line stays visible). Returns null when there's no
-  // current content yet, no patch for this path, or reconstruction fails —
-  // in any of those cases we fall back to the plain `<PierreFile>` viewer.
-  const fileModeDiff = useMemo<FileDiffMetadata | null>(() => {
-    if (mode !== "file") return null
-    if (!fileDiff || content === null) return null
-    try {
-      const oldContent = reconstructOldContent(content, fileDiff)
-      const oldFile: FileContents = {
-        cacheKey: `${path}:old:${fileDiff.cacheKey ?? ""}`,
-        contents: oldContent,
-        lang: language,
-        name: basename(path),
-      }
-      const newFile: FileContents = {
-        cacheKey: `${path}:new:${content.length}`,
-        contents: content,
-        lang: language,
-        name: basename(path),
-      }
-      return parseDiffFromFile(oldFile, newFile)
-    } catch {
-      return null
-    }
-  }, [content, fileDiff, language, mode, path])
-
-  const fileModeDiffOptions = useMemo<FileDiffOptions<undefined>>(
-    () => ({
-      ...diffOptions,
-      // Show every line of the file, not just hunks + a few context lines.
-      expandUnchanged: true,
-    }),
-    [diffOptions]
-  )
-
-  if (imagePreview) {
-    if (!sandboxId) {
-      return (
-        <div className="flex h-full flex-col items-center justify-center gap-2 bg-background px-6 text-center">
-          <p className="text-xs text-destructive">No sandbox yet.</p>
-        </div>
-      )
-    }
-
-    return (
-      <ImageViewer
-        key={`${sandboxId}:${path}:${refreshNonce}`}
-        sandboxId={sandboxId}
-        path={path}
-        refreshNonce={refreshNonce}
-      />
-    )
-  }
-
-  if (mode === "diff") {
-    if (!fileDiff) {
-      return (
-        <div className="flex h-full flex-col items-center justify-center gap-2 bg-background px-6 text-center">
-          <p className="text-xs text-muted-foreground">
-            No saved diff for this file.
-          </p>
-        </div>
-      )
-    }
-
-    return (
-      <div className="h-full min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-background">
-        <FileDiff
-          fileDiff={fileDiff}
-          options={diffOptions}
-          disableWorkerPool
-          style={PIERRE_FILE_STYLE}
-        />
-      </div>
-    )
-  }
-
-  if (!sandboxId && content === null) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 bg-background px-6 text-center">
-        <p className="text-xs text-destructive">{error ?? "No sandbox yet."}</p>
-      </div>
-    )
-  }
-
-  if (loading) {
-    return (
-      <div className="flex h-full items-center justify-center bg-background">
-        <Loader2 className="size-4 animate-spin text-muted-foreground" />
-      </div>
-    )
-  }
-
-  if (error) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 bg-background px-6 text-center">
-        <p className="text-xs text-destructive">{error}</p>
-      </div>
-    )
-  }
-
-  if (!file) return null
-
-  if (mode === "preview" && markdownPreview) {
-    return (
-      <div className="h-full min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-background">
-        <Markdown
-          text={content ?? ""}
-          repoName={null}
-          onOpenFile={onOpenFile ?? (() => undefined)}
-          className="mx-auto max-w-3xl px-4 py-5 text-sm leading-6 md:px-6"
-        />
-      </div>
-    )
-  }
-
-  // File has changes — render the full file as a diff (same component the
-  // Diffs view uses) so removals/additions look identical. `expandUnchanged`
-  // keeps every line visible, so the user sees the whole file plus the diff.
-  if (fileModeDiff) {
-    return (
-      <div className="h-full min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-background">
-        <FileDiff
-          fileDiff={fileModeDiff}
-          options={fileModeDiffOptions}
-          disableWorkerPool
-          style={PIERRE_FILE_STYLE}
-        />
-      </div>
-    )
-  }
-
-  return (
-    <div className="h-full min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-background">
-      <PierreFile<undefined>
-        file={file}
-        options={options}
-        disableWorkerPool
-        style={PIERRE_FILE_STYLE}
-      />
-    </div>
-  )
-}
-
-function ImageDimensionsLabel({
-  sandboxId,
-  path,
-  refreshNonce,
-}: {
-  sandboxId: string | null
-  path: string
-  refreshNonce: number
-}) {
-  const [dimensions, setDimensions] = useState<{
-    width: number
-    height: number
-  } | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    const image = new window.Image()
-    image.onload = () => {
-      if (cancelled) return
-      setDimensions({
-        width: image.naturalWidth,
-        height: image.naturalHeight,
-      })
-    }
-    image.onerror = () => {
-      if (!cancelled) setDimensions(null)
-    }
-    const params = new URLSearchParams({
-      path,
-      format: "raw",
-      refresh: String(refreshNonce),
-      ...(sandboxId ? { sandboxId } : {}),
-    })
-    image.src = `/api/sandbox/files/read?${params}`
-
-    return () => {
-      cancelled = true
-      image.onload = null
-      image.onerror = null
-    }
-  }, [path, refreshNonce, sandboxId])
-
-  if (!dimensions) return null
-
-  return (
-    <span className="shrink-0 font-sans text-[11px] text-muted-foreground tabular-nums">
-      {dimensions.width} x {dimensions.height}
-    </span>
-  )
-}
-
-function ImageViewer({
-  sandboxId,
-  path,
-  refreshNonce,
-}: {
-  sandboxId: string | null
-  path: string
-  refreshNonce: number
-}) {
-  const [loaded, setLoaded] = useState(false)
-  const [error, setError] = useState(false)
-
-  const src = useMemo(() => {
-    const params = new URLSearchParams({
-      path,
-      format: "raw",
-      refresh: String(refreshNonce),
-      ...(sandboxId ? { sandboxId } : {}),
-    })
-    return `/api/sandbox/files/read?${params}`
-  }, [path, refreshNonce, sandboxId])
-
-  if (error) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 bg-background px-6 text-center">
-        <ImageIcon className="size-5 text-muted-foreground" />
-        <p className="text-xs text-destructive">Failed to load image.</p>
-      </div>
-    )
-  }
-
-  return (
-    <div className="relative h-full min-h-0 overflow-auto bg-background">
-      {!loaded ? (
-        <div className="absolute inset-0 flex items-center justify-center">
-          <Loader2 className="size-4 animate-spin text-muted-foreground" />
-        </div>
-      ) : null}
-      <NextImage
-        src={src}
-        alt={basename(path)}
-        width={0}
-        height={0}
-        sizes="100vw"
-        unoptimized
-        onError={() => setError(true)}
-        onLoad={() => setLoaded(true)}
-        className={cn(
-          "mx-auto block max-h-none max-w-none p-6",
-          loaded ? "opacity-100" : "opacity-0"
-        )}
-        style={{ width: "auto", height: "auto" }}
-      />
-    </div>
   )
 }

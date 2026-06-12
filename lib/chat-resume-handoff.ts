@@ -1,13 +1,13 @@
 import { getDiffStats } from "./diff-metadata"
 import { stripInlineToolMarkers } from "./codex-run-log"
 
-type Role = "user" | "assistant"
+type HandoffRole = "user" | "assistant"
 
 type HandoffMessage = {
   content: string
   id?: unknown
   pending?: boolean
-  role: Role
+  role: HandoffRole
 }
 
 const HANDOFF_CONTENT_LIMIT = 1_200
@@ -27,7 +27,7 @@ function truncateHandoffContent(
   return `${trimmed.slice(0, limit)}\n[truncated]`
 }
 
-function latestCompletedMessage(messages: HandoffMessage[], role: Role) {
+function latestCompletedMessage(messages: HandoffMessage[], role: HandoffRole) {
   return messages
     .toReversed()
     .find((message) => message.role === role && !message.pending)

@@ -1,24 +1,14 @@
 import { auth, clerkClient } from "@clerk/nextjs/server"
-import { ConvexHttpClient } from "convex/browser"
 import { NextResponse } from "next/server"
 
 import { api } from "@/convex/_generated/api"
-import { getConvexAuthTokenForSession } from "@/lib/codex-auth"
+import { convexHttpClientForSession } from "@/lib/convex-http"
 import { deleteDaytonaSandboxQuietly } from "@/lib/daytona-sandbox"
 import { disconnectCurrentGitHubAppUser } from "@/lib/github-app"
+import { jsonError } from "@/lib/api-route"
 import { requireSameOrigin } from "@/lib/request-security"
 
 export const runtime = "nodejs"
-
-function getConvexUrl() {
-  const url = process.env.NEXT_PUBLIC_CONVEX_URL
-
-  if (!url) {
-    throw new Error("Set NEXT_PUBLIC_CONVEX_URL before using Convex storage.")
-  }
-
-  return url
-}
 
 export async function DELETE(request: Request) {
   const blocked = requireSameOrigin(request)
@@ -27,7 +17,7 @@ export async function DELETE(request: Request) {
   const session = await auth()
 
   if (!session.userId) {
-    return NextResponse.json({ error: "Not authenticated." }, { status: 401 })
+    return jsonError("Not authenticated.", 401)
   }
 
   try {
@@ -39,8 +29,7 @@ export async function DELETE(request: Request) {
       // Revocation is best-effort; account deletion must not depend on it.
     }
 
-    const client = new ConvexHttpClient(getConvexUrl())
-    client.setAuth(await getConvexAuthTokenForSession(session))
+    const client = await convexHttpClientForSession(session)
     const { sandboxIds } = await client.mutation(api.users.deleteAccount, {})
 
     await Promise.all(
@@ -52,12 +41,9 @@ export async function DELETE(request: Request) {
 
     return NextResponse.json({ ok: true })
   } catch (error) {
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error ? error.message : "Unable to delete account.",
-      },
-      { status: 500 }
+    return jsonError(
+      error instanceof Error ? error.message : "Unable to delete account.",
+      500
     )
   }
 }

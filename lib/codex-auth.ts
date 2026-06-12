@@ -14,9 +14,10 @@ import {
   normalizeCodexProfile,
   type CodexAuthOverview,
 } from "@/lib/codex-auth-types"
+import { requireConvexUrl } from "@/lib/convex-env"
 
 const CONVEX_JWT_TEMPLATE = "convex"
-type ClerkAuthSession = Awaited<ReturnType<typeof auth>>
+type CodexClerkAuthSession = Awaited<ReturnType<typeof auth>>
 
 export type CodexChatGptAuth = {
   accessToken: string
@@ -53,23 +54,15 @@ export type SaveCodexAuthJsonForWorkerInput = {
   workerSecret: string
 }
 
-function getConvexUrl() {
-  const url = process.env.NEXT_PUBLIC_CONVEX_URL
-
-  if (!url) {
-    throw new Error("Set NEXT_PUBLIC_CONVEX_URL before using Convex storage.")
-  }
-
-  return url
-}
-
 function createClient(convexToken: string) {
-  const client = new ConvexHttpClient(getConvexUrl())
+  const client = new ConvexHttpClient(requireConvexUrl())
   client.setAuth(convexToken)
   return client
 }
 
-export async function getConvexAuthTokenForSession(session: ClerkAuthSession) {
+export async function getConvexAuthTokenForSession(
+  session: CodexClerkAuthSession
+) {
   if (!session.userId) {
     throw new Error("Sign in with Clerk before using Codex OAuth storage.")
   }
@@ -183,7 +176,7 @@ export async function saveCodexAuthJsonForWorker(
   const parsed = parseCodexAuthJson(input.authJson)
   const profile = normalizeCodexProfile(input.profile)
   const lastRefresh = new Date().toISOString()
-  const client = new ConvexHttpClient(getConvexUrl())
+  const client = new ConvexHttpClient(requireConvexUrl())
 
   return await client.mutation(api.codexAuth.saveOAuthTokensForWorker, {
     accessToken: parsed.accessToken,

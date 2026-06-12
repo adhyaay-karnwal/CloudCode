@@ -1,10 +1,16 @@
-import { NextResponse } from "next/server"
 import type { Sandbox } from "@daytona/sdk"
 
 import {
   BillingRequiredError,
   getStartedCurrentUserDaytonaSandbox,
 } from "@/lib/billing-server"
+import {
+  jsonStringField,
+  noStoreJson,
+  noStoreJsonError,
+  readJsonRecord,
+  searchStringParam,
+} from "@/lib/api-route"
 import {
   getStartedDaytonaSandbox,
   readDaytonaTextFile,
@@ -13,24 +19,16 @@ import {
 } from "@/lib/daytona-sandbox"
 import { requireSameOrigin } from "@/lib/request-security"
 import { requireCurrentUserSandbox } from "@/lib/sandbox-authorization"
-import { CLOUDCODE_ENV_END, CLOUDCODE_ENV_START } from "@/lib/sandbox-env"
+import {
+  CLOUDCODE_ENV_END,
+  CLOUDCODE_ENV_START,
+  type SandboxEnvVar,
+} from "@/lib/sandbox-env"
 
 export const runtime = "nodejs"
 
-type EnvVar = { name: string; value: string }
-
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
 const envPathCache = new Map<string, string>()
-
-function json(data: unknown, init?: ResponseInit) {
-  return NextResponse.json(data, {
-    ...init,
-    headers: {
-      "Cache-Control": "no-store, private",
-      ...init?.headers,
-    },
-  })
-}
 
 function splitManagedBlock(content: string): {
   managedBlock: string | null
@@ -63,8 +61,8 @@ function unquoteValue(raw: string): string {
   return raw
 }
 
-function parseEntries(userContent: string): EnvVar[] {
-  const entries: EnvVar[] = []
+function parseEntries(userContent: string): SandboxEnvVar[] {
+  const entries: SandboxEnvVar[] = []
 
   for (const rawLine of userContent.split(/\r?\n/)) {
     const trimmed = rawLine.trim()
@@ -85,7 +83,10 @@ function parseEntries(userContent: string): EnvVar[] {
   return entries
 }
 
-function serialize(entries: EnvVar[], managedBlock: string | null): string {
+function serialize(
+  entries: SandboxEnvVar[],
+  managedBlock: string | null
+): string {
   const userText = entries
     .map((entry) => `${entry.name}=${JSON.stringify(entry.value)}`)
     .join("\n")
@@ -122,35 +123,35 @@ async function readEnvFile(sandboxId: string, providedSandbox?: Sandbox) {
   }
 }
 
-function validateEntries(rawEntries: unknown): EnvVar[] | Response {
+function validateEntries(rawEntries: unknown): SandboxEnvVar[] | Response {
   if (!Array.isArray(rawEntries)) {
-    return json({ error: "entries required" }, { status: 400 })
+    return noStoreJsonError("entries required", 400)
   }
 
-  const entries: EnvVar[] = []
+  const entries: SandboxEnvVar[] = []
   const seen = new Set<string>()
 
   for (const item of rawEntries) {
     if (
       !item ||
-      typeof (item as EnvVar).name !== "string" ||
-      typeof (item as EnvVar).value !== "string"
+      typeof (item as SandboxEnvVar).name !== "string" ||
+      typeof (item as SandboxEnvVar).value !== "string"
     ) {
-      return json({ error: "invalid entry" }, { status: 400 })
+      return noStoreJsonError("invalid entry", 400)
     }
 
-    const name = (item as EnvVar).name.trim()
-    const value = (item as EnvVar).value
+    const name = (item as SandboxEnvVar).name.trim()
+    const value = (item as SandboxEnvVar).value
 
     if (!ENV_NAME_PATTERN.test(name)) {
-      return json(
-        { error: `Invalid variable name: ${name || "(empty)"}` },
-        { status: 400 }
+      return noStoreJsonError(
+        `Invalid variable name: ${name || "(empty)"}`,
+        400
       )
     }
 
     if (seen.has(name)) {
-      return json({ error: `Duplicate variable: ${name}` }, { status: 400 })
+      return noStoreJsonError(`Duplicate variable: ${name}`, 400)
     }
 
     seen.add(name)
@@ -161,29 +162,25 @@ function validateEntries(rawEntries: unknown): EnvVar[] | Response {
 }
 
 export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url)
-  const sandboxId = searchParams.get("sandboxId")
+  const sandboxId = searchStringParam(request, "sandboxId")
 
   if (!sandboxId) {
-    return json({ error: "sandboxId required" }, { status: 400 })
+    return noStoreJsonError("sandboxId required", 400)
   }
 
   try {
     const { sandbox } = await getStartedCurrentUserDaytonaSandbox(sandboxId)
     const { content } = await readEnvFile(sandboxId, sandbox)
     const { userContent } = splitManagedBlock(content)
-    return json({ entries: parseEntries(userContent) })
+    return noStoreJson({ entries: parseEntries(userContent) })
   } catch (error) {
     if (error instanceof BillingRequiredError) {
-      return json({ error: error.message }, { status: 402 })
+      return noStoreJsonError(error.message, 402)
     }
 
-    return json(
-      {
-        error:
-          error instanceof Error ? error.message : "Failed to read .env.local",
-      },
-      { status: 500 }
+    return noStoreJsonError(
+      error instanceof Error ? error.message : "Failed to read .env.local",
+      500
     )
   }
 }
@@ -192,18 +189,14 @@ async function save(request: Request) {
   const blocked = requireSameOrigin(request)
   if (blocked) return blocked
 
-  const body = (await request.json().catch(() => null)) as {
-    entries?: unknown
-    sandboxId?: unknown
-  } | null
-  const sandboxId =
-    typeof body?.sandboxId === "string" ? body.sandboxId : undefined
+  const body = await readJsonRecord(request)
+  const sandboxId = jsonStringField(body, "sandboxId")
 
   if (!sandboxId) {
-    return json({ error: "sandboxId required" }, { status: 400 })
+    return noStoreJsonError("sandboxId required", 400)
   }
 
-  const entries = validateEntries(body?.entries)
+  const entries = validateEntries(body.entries)
   if (entries instanceof Response) return entries
 
   try {
@@ -218,18 +211,15 @@ async function save(request: Request) {
       serialize(entries, managedBlock)
     )
 
-    return json({ entries, ok: true })
+    return noStoreJson({ entries, ok: true })
   } catch (error) {
     if (error instanceof BillingRequiredError) {
-      return json({ error: error.message }, { status: 402 })
+      return noStoreJsonError(error.message, 402)
     }
 
-    return json(
-      {
-        error:
-          error instanceof Error ? error.message : "Failed to write .env.local",
-      },
-      { status: 500 }
+    return noStoreJsonError(
+      error instanceof Error ? error.message : "Failed to write .env.local",
+      500
     )
   }
 }

@@ -1,239 +1,34 @@
 import { v } from "convex/values"
 
 import { mutation, query } from "./_generated/server"
-import type { MutationCtx, QueryCtx } from "./_generated/server"
+import type { QueryCtx } from "./_generated/server"
 import type { Doc, Id } from "./_generated/dataModel"
+import { compactMessageMeta } from "./lib/codexRunLogs"
+import {
+  branchMode,
+  imageAttachment,
+  messageMeta,
+  model,
+  speed,
+  thinking,
+  threadSandboxState as sandboxState,
+} from "./lib/codexRunValidators"
 import { resolveOwnedPresetOrAutoDefault } from "./lib/sandboxPresets"
+import { requireOwnedThread } from "./lib/threadAccess"
+import {
+  MAX_NOTES_LENGTH,
+  appendNotes,
+  normalizeNotes,
+  notesResponse,
+  notesRevision,
+  patchNotesValue,
+  requireRunThreadNotesAccess,
+  setTodoStatus,
+  todoLine,
+} from "./lib/threadNotes"
 import { ensureCurrentUser, getCurrentUser } from "./lib/users"
 
-const model = v.union(
-  v.literal("gpt-5.5"),
-  v.literal("gpt-5.4"),
-  v.literal("gpt-5.4-mini")
-)
-const speed = v.union(v.literal("standard"), v.literal("fast"))
-const branchMode = v.union(
-  v.literal("auto"),
-  v.literal("custom"),
-  v.literal("base")
-)
-const thinking = v.union(
-  v.literal("none"),
-  v.literal("low"),
-  v.literal("medium"),
-  v.literal("high"),
-  v.literal("xhigh")
-)
-const sandboxState = v.union(
-  v.literal("running"),
-  v.literal("paused"),
-  v.literal("killed"),
-  v.literal("stopped"),
-  v.literal("deleted"),
-  v.literal("error")
-)
-
-const runLog = v.object({
-  detail: v.optional(v.string()),
-  kind: v.union(
-    v.literal("setup"),
-    v.literal("command"),
-    v.literal("reasoning"),
-    v.literal("stdout"),
-    v.literal("stderr"),
-    v.literal("result")
-  ),
-  message: v.string(),
-  time: v.number(),
-})
-
-const messageMeta = v.object({
-  branch: v.optional(v.string()),
-  diff: v.optional(v.string()),
-  logs: v.optional(v.array(runLog)),
-  status: v.optional(v.string()),
-})
-
-const imageAttachment = v.object({
-  id: v.string(),
-  kind: v.literal("image"),
-  mimeType: v.string(),
-  name: v.string(),
-  size: v.number(),
-  url: v.string(),
-})
-
 const THREAD_LIST_LIMIT = 80
-const MAX_NOTES_LENGTH = 20_000
-const MAX_STORED_RUN_LOGS = 80
-const MAX_STORED_LOG_MESSAGE_LENGTH = 500
-const MAX_STORED_LOG_DETAIL_LENGTH = 1_500
-const STORED_LOG_KINDS = new Set<string>([
-  "setup",
-  "command",
-  "reasoning",
-  "result",
-  "stderr",
-] as const)
-
-type StoredRunLog = {
-  detail?: string
-  kind: "setup" | "command" | "reasoning" | "stdout" | "stderr" | "result"
-  message: string
-  time: number
-}
-
-function truncate(value: string | undefined, max: number) {
-  if (!value) return undefined
-  return value.length > max ? `${value.slice(0, max - 3)}...` : value
-}
-
-function compactRunLog(log: StoredRunLog) {
-  if (!STORED_LOG_KINDS.has(log.kind)) return null
-  return {
-    ...(truncate(log.detail, MAX_STORED_LOG_DETAIL_LENGTH)
-      ? { detail: truncate(log.detail, MAX_STORED_LOG_DETAIL_LENGTH) }
-      : {}),
-    kind: log.kind,
-    message: truncate(log.message, MAX_STORED_LOG_MESSAGE_LENGTH) ?? "",
-    time: log.time,
-  }
-}
-
-function compactRunLogs(logs: StoredRunLog[] | undefined) {
-  return (logs ?? [])
-    .flatMap((log) => {
-      const compacted = compactRunLog(log)
-      return compacted ? [compacted] : []
-    })
-    .slice(-MAX_STORED_RUN_LOGS)
-}
-
-function compactMessageMeta(
-  meta: Doc<"messages">["meta"]
-): Doc<"messages">["meta"] {
-  if (!meta) return undefined
-  const logs = compactRunLogs(meta.logs)
-  const { logs: _logs, ...rest } = meta
-  void _logs
-  return {
-    ...rest,
-    ...(logs.length ? { logs } : {}),
-  }
-}
-
-async function requireOwnedThread(
-  ctx: MutationCtx,
-  threadId: Id<"threads">,
-  userId: Id<"users">
-) {
-  const thread = await ctx.db.get(threadId)
-
-  if (!thread || thread.userId !== userId) {
-    throw new Error("Thread not found.")
-  }
-
-  return thread
-}
-
-async function requireRunThreadNotesAccess(
-  ctx: QueryCtx | MutationCtx,
-  args: {
-    notesAccessToken: string
-    runId: Id<"codexRuns">
-    threadId: Id<"threads">
-  }
-) {
-  const [run, thread] = await Promise.all([
-    ctx.db.get(args.runId),
-    ctx.db.get(args.threadId),
-  ])
-
-  if (
-    !run ||
-    !thread ||
-    run.threadId !== args.threadId ||
-    thread.userId !== run.userId ||
-    !run.notesAccessToken ||
-    run.notesAccessToken !== args.notesAccessToken
-  ) {
-    throw new Error("Shared notes are unavailable for this run.")
-  }
-
-  return thread
-}
-
-function notesChecksum(notes: string) {
-  let hash = 2166136261
-  for (let index = 0; index < notes.length; index += 1) {
-    hash ^= notes.charCodeAt(index)
-    hash = Math.imul(hash, 16777619) >>> 0
-  }
-  return hash.toString(36)
-}
-
-function notesRevision(notes: string) {
-  return `v1:${notes.length}:${notesChecksum(notes)}`
-}
-
-function notesResponse(thread: Doc<"threads">) {
-  const notes = thread.notes ?? ""
-  return {
-    maxLength: MAX_NOTES_LENGTH,
-    notes,
-    revision: notesRevision(notes),
-  }
-}
-
-function normalizeNotes(notes: string) {
-  return notes.replace(/\r\n/g, "\n").slice(0, MAX_NOTES_LENGTH)
-}
-
-function patchNotesValue(notes: string) {
-  return notes.length > 0 ? notes : undefined
-}
-
-function appendNotes(current: string, addition: string) {
-  const text = addition.replace(/\r\n/g, "\n").trim()
-  if (!text) return current
-
-  const base = current.replace(/\r\n/g, "\n").trimEnd()
-  return normalizeNotes(base ? `${base}\n\n${text}` : text)
-}
-
-function todoLine(text: string, checked: boolean) {
-  return `- [${checked ? "x" : " "}] ${text.replace(/\s+/g, " ").trim()}`
-}
-
-function setTodoStatus(
-  current: string,
-  text: string,
-  checked: boolean,
-  occurrence: number
-) {
-  const target = text.trim()
-  if (!target) return { notes: current, updated: false }
-
-  const targetOccurrence = Math.max(1, Math.floor(occurrence || 1))
-  let seen = 0
-  let updated = false
-  const lines = current.replace(/\r\n/g, "\n").split("\n")
-  const next = lines.map((line) => {
-    const match = line.match(/^(\s*[-*]\s+\[)( |x|X)(\]\s?)(.*)$/)
-    if (!match || match[4].trim() !== target) return line
-
-    seen += 1
-    if (seen !== targetOccurrence) return line
-
-    updated = true
-    return `${match[1]}${checked ? "x" : " "}${match[3]}${match[4]}`
-  })
-
-  return {
-    notes: updated ? normalizeNotes(next.join("\n")) : current,
-    updated,
-  }
-}
 
 async function presetNameForThread(
   ctx: QueryCtx,

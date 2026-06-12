@@ -13,7 +13,7 @@ import {
   CODEX_APP_SERVER_DAEMON_CLIENT_SCRIPT,
   CODEX_APP_SERVER_DAEMON_SCRIPT,
 } from "@/lib/codex-app-server-daemon-script"
-import { appServerThreadParams } from "@/lib/daytona-codex-agent"
+import { appServerThreadParams } from "@/lib/codex-app-server-run-params"
 
 const REQUEST_TIMEOUT_MS = 45_000
 

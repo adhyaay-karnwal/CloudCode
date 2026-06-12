@@ -4,6 +4,7 @@ import {
   BillingRequiredError,
   getStartedCurrentUserDaytonaSandbox,
 } from "@/lib/billing-server"
+import { jsonError, searchStringParam } from "@/lib/api-route"
 import {
   resolveDaytonaPaths,
   runDaytonaCommand,
@@ -53,11 +54,11 @@ function toEntries(stdout: string) {
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url)
-  const sandboxId = searchParams.get("sandboxId")
+  const sandboxId = searchStringParam(request, "sandboxId")
   const requestedRoot = searchParams.get("root")
 
   if (!sandboxId) {
-    return NextResponse.json({ error: "sandboxId required" }, { status: 400 })
+    return jsonError("sandboxId required", 400)
   }
 
   try {
@@ -90,14 +91,12 @@ export async function GET(request: Request) {
     })
   } catch (error) {
     if (error instanceof BillingRequiredError) {
-      return NextResponse.json({ error: error.message }, { status: 402 })
+      return jsonError(error.message, 402)
     }
 
-    return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : "Failed to list files",
-      },
-      { status: 500 }
+    return jsonError(
+      error instanceof Error ? error.message : "Failed to list files",
+      500
     )
   }
 }

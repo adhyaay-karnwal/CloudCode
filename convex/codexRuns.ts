@@ -1,190 +1,33 @@
 import { v } from "convex/values"
 
 import { mutation, query } from "./_generated/server"
-import type { Doc, Id } from "./_generated/dataModel"
-import type { MutationCtx, QueryCtx } from "./_generated/server"
+import { compactMessageMeta, compactRunLogs } from "./lib/codexRunLogs"
+import {
+  activeRunForThread,
+  markRunCanceled,
+  markRunCanceling,
+  sandboxIdFromLog,
+  TERMINAL_RUN_STATUSES,
+} from "./lib/codexRunLifecycle"
+import { requireCodexAuth } from "./lib/codexRunAuth"
+import { workerInputForRun } from "./lib/codexRunWorkerInput"
+import {
+  branchMode,
+  imageAttachment,
+  model,
+  runLog,
+  speed,
+  thinking,
+  workerSandboxState as sandboxState,
+} from "./lib/codexRunValidators"
 import { sandboxAccessForUser } from "./lib/sandboxAccess"
 import { resolveOwnedPresetOrAutoDefault } from "./lib/sandboxPresets"
+import {
+  requireOwnedAssistantMessage,
+  requireOwnedThread,
+} from "./lib/threadAccess"
 import { ensureCurrentUser, getCurrentUser } from "./lib/users"
 import { requireWorkerSecret } from "./lib/workerAuth"
-
-const model = v.union(
-  v.literal("gpt-5.5"),
-  v.literal("gpt-5.4"),
-  v.literal("gpt-5.4-mini")
-)
-const speed = v.union(v.literal("standard"), v.literal("fast"))
-const branchMode = v.union(
-  v.literal("auto"),
-  v.literal("custom"),
-  v.literal("base")
-)
-const thinking = v.union(
-  v.literal("none"),
-  v.literal("low"),
-  v.literal("medium"),
-  v.literal("high"),
-  v.literal("xhigh")
-)
-const sandboxState = v.union(
-  v.literal("running"),
-  v.literal("stopped"),
-  v.literal("deleted"),
-  v.literal("error")
-)
-const runLog = v.object({
-  detail: v.optional(v.string()),
-  kind: v.union(
-    v.literal("setup"),
-    v.literal("command"),
-    v.literal("reasoning"),
-    v.literal("stdout"),
-    v.literal("stderr"),
-    v.literal("result")
-  ),
-  message: v.string(),
-  time: v.number(),
-})
-const imageAttachment = v.object({
-  id: v.string(),
-  kind: v.literal("image"),
-  mimeType: v.string(),
-  name: v.string(),
-  size: v.number(),
-  url: v.string(),
-})
-const MAX_STORED_RUN_LOGS = 80
-const MAX_STORED_LOG_MESSAGE_LENGTH = 500
-const MAX_STORED_LOG_DETAIL_LENGTH = 1_500
-const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "canceled"])
-const ACTIVE_RUN_STATUSES = new Set(["queued", "running", "canceling"])
-const STORED_LOG_KINDS = new Set<string>([
-  "setup",
-  "command",
-  "reasoning",
-  "result",
-  "stderr",
-] as const)
-
-type StoredRunLog = {
-  detail?: string
-  kind: "setup" | "command" | "reasoning" | "stdout" | "stderr" | "result"
-  message: string
-  time: number
-}
-
-async function requireCodexAuth(
-  ctx: MutationCtx | QueryCtx,
-  userId: Id<"users">,
-  profile: string | undefined,
-  options?: { fallbackToActive?: boolean }
-) {
-  const user = options?.fallbackToActive ? await ctx.db.get(userId) : null
-  const authProfile =
-    profile ??
-    (options?.fallbackToActive ? user?.activeCodexProfile : undefined) ??
-    "default"
-  const auth = await ctx.db
-    .query("codexAuth")
-    .withIndex("by_user_profile", (q) =>
-      q.eq("userId", userId).eq("profile", authProfile)
-    )
-    .unique()
-
-  if (!auth) {
-    throw new Error(
-      `No Codex ChatGPT OAuth credentials are stored for profile "${authProfile}".`
-    )
-  }
-
-  return auth
-}
-
-function truncate(value: string | undefined, max: number) {
-  if (!value) return undefined
-  return value.length > max ? `${value.slice(0, max - 3)}...` : value
-}
-
-function compactRunLog(log: StoredRunLog) {
-  if (!STORED_LOG_KINDS.has(log.kind)) return null
-  return {
-    ...(truncate(log.detail, MAX_STORED_LOG_DETAIL_LENGTH)
-      ? { detail: truncate(log.detail, MAX_STORED_LOG_DETAIL_LENGTH) }
-      : {}),
-    kind: log.kind,
-    message: truncate(log.message, MAX_STORED_LOG_MESSAGE_LENGTH) ?? "",
-    time: log.time,
-  }
-}
-
-function compactRunLogs(logs: StoredRunLog[] | undefined) {
-  return (logs ?? [])
-    .flatMap((log) => {
-      const compacted = compactRunLog(log)
-      return compacted ? [compacted] : []
-    })
-    .slice(-MAX_STORED_RUN_LOGS)
-}
-
-function compactMessageMeta(
-  meta: Doc<"messages">["meta"]
-): Doc<"messages">["meta"] {
-  if (!meta) return undefined
-  const logs = compactRunLogs(meta.logs)
-  const { logs: _logs, ...rest } = meta
-  void _logs
-  return {
-    ...rest,
-    ...(logs.length ? { logs } : {}),
-  }
-}
-
-async function requireOwnedThread(
-  ctx: MutationCtx,
-  threadId: Id<"threads">,
-  userId: Id<"users">
-) {
-  const thread = await ctx.db.get(threadId)
-
-  if (!thread || thread.userId !== userId) {
-    throw new Error("Thread not found.")
-  }
-
-  return thread
-}
-
-async function requireOwnedAssistantMessage(
-  ctx: MutationCtx | QueryCtx,
-  messageId: Id<"messages">,
-  threadId: Id<"threads">,
-  userId: Id<"users">
-) {
-  const message = await ctx.db.get(messageId)
-
-  if (
-    !message ||
-    message.threadId !== threadId ||
-    message.userId !== userId ||
-    message.role !== "assistant"
-  ) {
-    throw new Error("Message not found.")
-  }
-
-  return message
-}
-
-async function activeRunForThread(
-  ctx: QueryCtx | MutationCtx,
-  threadId: Id<"threads">
-) {
-  const runs = await ctx.db
-    .query("codexRuns")
-    .withIndex("by_thread_updated", (q) => q.eq("threadId", threadId))
-    .order("desc")
-    .take(12)
-
-  return runs.find((run) => ACTIVE_RUN_STATUSES.has(run.status))
-}
 
 export const liveForThread = query({
   args: {
@@ -246,127 +89,6 @@ export const sandboxAccess = query({
     return await sandboxAccessForUser(ctx, args.sandboxId, user._id)
   },
 })
-
-function sandboxIdFromLog(log: StoredRunLog) {
-  if (log.kind !== "setup" || !log.detail) {
-    return undefined
-  }
-
-  return log.message === "Daytona sandbox ready" ||
-    log.message === "Recovered with a fresh Daytona sandbox"
-    ? log.detail
-    : undefined
-}
-
-function latestSandboxIdForRun(
-  run: Pick<Doc<"codexRuns">, "logs" | "sandboxId">
-) {
-  if (run.sandboxId) return run.sandboxId
-
-  for (let index = (run.logs?.length ?? 0) - 1; index >= 0; index -= 1) {
-    const sandboxId = sandboxIdFromLog(run.logs![index])
-    if (sandboxId) return sandboxId
-  }
-
-  return undefined
-}
-
-async function markRunCanceled(
-  ctx: MutationCtx,
-  run: Doc<"codexRuns">,
-  content = "_Stopped._",
-  sandboxIdOverride?: string
-) {
-  const now = Date.now()
-  const sandboxId = sandboxIdOverride ?? latestSandboxIdForRun(run)
-  const sandboxState =
-    run.sandboxState ?? (sandboxId ? ("running" as const) : undefined)
-  const canceledContent = run.content?.trim()
-    ? `${run.content.trimEnd()}\n\n${content}`
-    : content
-
-  const sandboxPatch = {
-    ...(sandboxId ? { sandboxId } : {}),
-    ...(sandboxState ? { sandboxState } : {}),
-  }
-
-  if (!TERMINAL_RUN_STATUSES.has(run.status)) {
-    await ctx.db.patch(run._id, {
-      content: canceledContent,
-      finishedAt: now,
-      ...sandboxPatch,
-      status: "canceled",
-      updatedAt: now,
-    })
-  } else if (sandboxId && run.sandboxId !== sandboxId) {
-    await ctx.db.patch(run._id, {
-      ...sandboxPatch,
-      updatedAt: now,
-    })
-  }
-
-  const message = await ctx.db.get(run.assistantMessageId)
-  if (
-    message &&
-    message.threadId === run.threadId &&
-    message.userId === run.userId &&
-    message.role === "assistant" &&
-    message.pending
-  ) {
-    const existingMeta = compactMessageMeta(message.meta)
-    const runLogs = compactRunLogs(run.logs)
-    await ctx.db.patch(message._id, {
-      content: canceledContent,
-      error: false,
-      meta:
-        existingMeta || runLogs.length
-          ? {
-              ...existingMeta,
-              ...(runLogs.length ? { logs: runLogs } : {}),
-            }
-          : undefined,
-      pending: false,
-    })
-  }
-
-  await ctx.db.patch(run.threadId, {
-    hasPendingMessage: false,
-    ...sandboxPatch,
-    updatedAt: now,
-  })
-
-  return {
-    sandboxId,
-    sandboxState,
-  }
-}
-
-async function markRunCanceling(ctx: MutationCtx, run: Doc<"codexRuns">) {
-  const now = Date.now()
-  const sandboxId = latestSandboxIdForRun(run)
-  const sandboxState =
-    run.sandboxState ?? (sandboxId ? ("running" as const) : undefined)
-
-  await Promise.all([
-    ctx.db.patch(run._id, {
-      ...(sandboxId ? { sandboxId } : {}),
-      ...(sandboxState ? { sandboxState } : {}),
-      status: "canceling",
-      updatedAt: now,
-    }),
-    ctx.db.patch(run.threadId, {
-      hasPendingMessage: true,
-      ...(sandboxId ? { sandboxId } : {}),
-      ...(sandboxState ? { sandboxState } : {}),
-      updatedAt: now,
-    }),
-  ])
-
-  return {
-    sandboxId,
-    sandboxState,
-  }
-}
 
 export const create = mutation({
   args: {
@@ -631,119 +353,6 @@ export const cancelActiveForThread = mutation({
     }
   },
 })
-
-async function mcpServersForRun(
-  ctx: MutationCtx | QueryCtx,
-  userId: Id<"users">
-) {
-  const servers = await ctx.db
-    .query("mcpServers")
-    .withIndex("by_user_updated", (q) => q.eq("userId", userId))
-    .collect()
-  const enabledServers = servers.filter((server) => server.enabled)
-
-  const loadedServers = await Promise.all(
-    enabledServers.map(async (server) => {
-      const [serverSecrets, serverTools] = await Promise.all([
-        ctx.db
-          .query("mcpServerSecrets")
-          .withIndex("by_server", (q) => q.eq("serverId", server._id))
-          .collect(),
-        ctx.db
-          .query("mcpServerTools")
-          .withIndex("by_server", (q) => q.eq("serverId", server._id))
-          .collect(),
-      ])
-
-      return {
-        args: server.args,
-        bearerTokenEnvVar: server.bearerTokenEnvVar,
-        command: server.command,
-        cwd: server.cwd,
-        envVars: server.envVars,
-        name: server.serverName,
-        secrets: serverSecrets
-          .map((secret) => ({
-            kind: secret.kind,
-            name: secret.name,
-            value: secret.value,
-          }))
-          .sort((a, b) => a.name.localeCompare(b.name)),
-        startupTimeoutSec: server.startupTimeoutSec,
-        toolTimeoutSec: server.toolTimeoutSec,
-        tools: serverTools
-          .map((tool) => ({
-            description: tool.description,
-            name: tool.name,
-            policy: tool.policy,
-            title: tool.title,
-          }))
-          .sort((a, b) => a.name.localeCompare(b.name)),
-        transport: server.transport,
-        url: server.url,
-      }
-    })
-  )
-
-  return loadedServers.sort((a, b) => a.name.localeCompare(b.name))
-}
-
-async function workerInputForRun(
-  ctx: MutationCtx | QueryCtx,
-  run: Doc<"codexRuns">
-) {
-  const [auth, mcpServers] = await Promise.all([
-    requireCodexAuth(ctx, run.userId, run.profile),
-    mcpServersForRun(ctx, run.userId),
-  ])
-
-  let sandboxPreset:
-    | {
-        daytonaSnapshot?: string
-        environmentSlug?: string
-        id: Id<"sandboxPresets">
-        installScript?: string
-        mode?: "manual" | "auto"
-        name: string
-        pathInstallScript?: string
-        secrets: Array<{ name: string; value: string }>
-      }
-    | undefined
-  if (run.sandboxPresetId) {
-    const preset = await ctx.db.get(run.sandboxPresetId)
-    if (!preset || preset.userId !== run.userId) {
-      throw new Error("Preset not found.")
-    }
-    const secrets = await ctx.db
-      .query("sandboxPresetSecrets")
-      .withIndex("by_preset", (q) => q.eq("presetId", preset._id))
-      .collect()
-
-    sandboxPreset = {
-      daytonaSnapshot: preset.daytonaSnapshot,
-      environmentSlug: preset.environmentSlug,
-      id: preset._id,
-      installScript: preset.installScript,
-      mode: preset.mode ?? "manual",
-      name: preset.name,
-      pathInstallScript: preset.pathInstallScript,
-      secrets: secrets
-        .map((secret) => ({
-          name: secret.name,
-          value: secret.value,
-        }))
-        .sort((a, b) => a.name.localeCompare(b.name)),
-    }
-  }
-
-  return {
-    auth,
-    canceled: false as const,
-    mcpServers,
-    run,
-    sandboxPreset,
-  }
-}
 
 export const workerStartAndGetInput = mutation({
   args: {

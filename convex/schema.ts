@@ -1,32 +1,17 @@
 import { defineSchema, defineTable } from "convex/server"
 import { v } from "convex/values"
 
-const model = v.union(
-  v.literal("gpt-5.5"),
-  v.literal("gpt-5.4"),
-  v.literal("gpt-5.4-mini")
-)
-const speed = v.union(v.literal("standard"), v.literal("fast"))
-const branchMode = v.union(
-  v.literal("auto"),
-  v.literal("custom"),
-  v.literal("base")
-)
-const thinking = v.union(
-  v.literal("none"),
-  v.literal("low"),
-  v.literal("medium"),
-  v.literal("high"),
-  v.literal("xhigh")
-)
-const sandboxState = v.union(
-  v.literal("running"),
-  v.literal("paused"),
-  v.literal("killed"),
-  v.literal("stopped"),
-  v.literal("deleted"),
-  v.literal("error")
-)
+import {
+  branchMode,
+  imageAttachment,
+  messageMeta,
+  model,
+  runLog,
+  speed,
+  thinking,
+  threadSandboxState as sandboxState,
+} from "./lib/codexRunValidators"
+
 const sandboxPresetMode = v.union(v.literal("manual"), v.literal("auto"))
 const mcpTransport = v.union(v.literal("stdio"), v.literal("http"))
 const mcpToolPolicy = v.union(
@@ -81,36 +66,6 @@ const daytonaBillingState = v.union(
   v.literal("deleted"),
   v.literal("unknown")
 )
-
-const runLog = v.object({
-  detail: v.optional(v.string()),
-  kind: v.union(
-    v.literal("setup"),
-    v.literal("command"),
-    v.literal("reasoning"),
-    v.literal("stdout"),
-    v.literal("stderr"),
-    v.literal("result")
-  ),
-  message: v.string(),
-  time: v.number(),
-})
-
-const messageMeta = v.object({
-  branch: v.optional(v.string()),
-  diff: v.optional(v.string()),
-  logs: v.optional(v.array(runLog)),
-  status: v.optional(v.string()),
-})
-
-const imageAttachment = v.object({
-  id: v.string(),
-  kind: v.literal("image"),
-  mimeType: v.string(),
-  name: v.string(),
-  size: v.number(),
-  url: v.string(),
-})
 
 export default defineSchema({
   codexAuth: defineTable({

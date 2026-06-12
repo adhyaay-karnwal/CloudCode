@@ -17,21 +17,19 @@ import {
   inlineToolMarker,
   shouldPersistRunLog,
   stripInlineToolMarkers,
+  type CodexRunLog as RunCodexLog,
 } from "@/lib/codex-run-log"
 import { workerRunFinalContent } from "@/lib/codex-run-worker"
 import { cloudcodeContextCodexConfig } from "@/lib/daytona-context"
 import {
   codexAppServerDaemonCommand,
-  appServerThreadParams,
   codexAppServerNotificationRoute,
-  codexAppServerStderrLogForLine,
   codexAppServerStdioCommand,
   parseCodexAppServerDaemonEventLine,
-} from "@/lib/daytona-codex-agent"
-import type {
-  RunCodexInSandboxResult,
-  RunCodexLog,
-} from "@/lib/daytona-codex-agent"
+} from "@/lib/codex-app-server-daemon"
+import { appServerThreadParams } from "@/lib/codex-app-server-run-params"
+import { codexAppServerStderrLogForLine } from "@/lib/codex-app-server-stderr"
+import type { RunCodexInSandboxResult } from "@/lib/daytona-codex-agent-types"
 
 const testPaths = {
   baseRefPath: "/tmp/base-ref",
@@ -108,6 +106,10 @@ const daytonaCodexAgentSource = await readFile(
   new URL("../lib/daytona-codex-agent.ts", import.meta.url),
   "utf8"
 )
+const daytonaCodexAppServerRunSource = await readFile(
+  new URL("../lib/daytona-codex-app-server-run.ts", import.meta.url),
+  "utf8"
+)
 assert.ok(!daytonaCodexAgentSource.includes("restoredConversationPrompt"))
 assert.ok(!daytonaCodexAgentSource.includes("resumeFallbackPrompt"))
 assert.ok(!daytonaCodexAgentSource.includes("restoring conversation context"))
@@ -117,7 +119,9 @@ assert.ok(
   !daytonaCodexAgentSource.includes("Codex app-server daemon already running")
 )
 assert.ok(!daytonaCodexAgentSource.includes("Repo already prepared"))
-assert.ok(daytonaCodexAgentSource.includes("authHash: sha256(input.authJson)"))
+assert.ok(
+  daytonaCodexAppServerRunSource.includes("authHash: sha256(input.authJson)")
+)
 const daemonScriptSource = await readFile(
   new URL("../lib/codex-app-server-daemon-script.ts", import.meta.url),
   "utf8"

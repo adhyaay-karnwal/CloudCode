@@ -1,58 +1,11 @@
+import {
+  persistedTerminalIdsForSandbox,
+  removePersistedTerminalSessions,
+} from "@/components/sandbox-terminal-storage"
+import { requestJson } from "@/lib/client-json"
+
 const terminalClosers = new Map<string, Set<() => void>>()
 const terminalIds = new Map<string, Set<string>>()
-const TERMINAL_DOCK_KEY = "cloudcode:terminalDock:v1"
-const TERMINAL_ID_PATTERN = /^[A-Za-z0-9._:-]{1,120}$/
-
-function persistedTerminalIdsForSandbox(sandboxId: string) {
-  if (typeof window === "undefined") return []
-
-  try {
-    const raw = localStorage.getItem(TERMINAL_DOCK_KEY)
-    if (!raw) return []
-
-    const parsed = JSON.parse(raw) as {
-      sessionsBySandbox?: Record<string, Array<{ id?: unknown }>>
-    }
-    const sessions = parsed.sessionsBySandbox?.[sandboxId]
-    if (!Array.isArray(sessions)) return []
-
-    return sessions
-      .map((session) => (typeof session.id === "string" ? session.id : ""))
-      .filter((id) => TERMINAL_ID_PATTERN.test(id))
-  } catch {
-    return []
-  }
-}
-
-function removePersistedTerminalSessions(sandboxId: string) {
-  if (typeof window === "undefined") return
-
-  try {
-    const raw = localStorage.getItem(TERMINAL_DOCK_KEY)
-    if (!raw) return
-
-    const parsed = JSON.parse(raw) as {
-      activeBySandbox?: Record<string, string>
-      sessionsBySandbox?: Record<string, unknown>
-    }
-    const activeBySandbox = { ...parsed.activeBySandbox }
-    const sessionsBySandbox = { ...parsed.sessionsBySandbox }
-    delete activeBySandbox[sandboxId]
-    delete sessionsBySandbox[sandboxId]
-
-    if (Object.keys(sessionsBySandbox).length === 0) {
-      localStorage.removeItem(TERMINAL_DOCK_KEY)
-      return
-    }
-
-    localStorage.setItem(
-      TERMINAL_DOCK_KEY,
-      JSON.stringify({ activeBySandbox, sessionsBySandbox })
-    )
-  } catch {
-    // Persistence cleanup is best-effort; sandbox cleanup continues below.
-  }
-}
 
 function rememberTerminalSession(sandboxId: string, terminalId: string) {
   const ids = terminalIds.get(sandboxId) ?? new Set<string>()
@@ -76,12 +29,12 @@ export function killBrowserTerminalSession(
     forgetTerminalSession(sandboxId, terminalId)
   }
 
-  return fetch("/api/sandbox/terminal/ws", {
-    body: JSON.stringify({ sandboxId, terminalId }),
-    cache: "no-store",
-    headers: { "Content-Type": "application/json" },
-    method: "DELETE",
-  }).catch(() => undefined)
+  return requestJson<void>(
+    "/api/sandbox/terminal/ws",
+    "DELETE",
+    { sandboxId, terminalId },
+    { init: { cache: "no-store" } }
+  ).catch(() => undefined)
 }
 
 export function registerTerminalCloser(

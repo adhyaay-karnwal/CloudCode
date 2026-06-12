@@ -7,6 +7,10 @@ import {
   resolveDaytonaPaths,
 } from "./daytona-sandbox"
 import { refreshDaytonaTerminalGitHubAuth } from "./daytona-terminal-sessions"
+import {
+  cleanTerminalDimensions,
+  cleanTerminalId,
+} from "./daytona-terminal-params"
 
 type SandboxClientConfig = {
   clientConfig?: {
@@ -26,7 +30,7 @@ type DaytonaTerminalSandbox = Awaited<
   ReturnType<typeof getStartedDaytonaSandbox>
 >
 
-type DaytonaTerminalContext = {
+type DaytonaTerminalWebSocketContext = {
   paths: Awaited<ReturnType<typeof resolveDaytonaPaths>>
   sandbox: DaytonaTerminalSandbox
 }
@@ -45,23 +49,9 @@ const terminalContextCache = new Map<
   string,
   {
     expiresAt: number
-    promise: Promise<DaytonaTerminalContext>
+    promise: Promise<DaytonaTerminalWebSocketContext>
   }
 >()
-
-function cleanTerminalId(terminalId: string) {
-  const trimmed = terminalId.trim()
-  if (!/^[A-Za-z0-9._:-]{1,120}$/.test(trimmed)) {
-    throw new Error("Invalid terminal id.")
-  }
-  return trimmed
-}
-
-function cleanSize(value: unknown, fallback: number, min: number, max: number) {
-  const number = typeof value === "number" ? value : Number(value)
-  if (!Number.isFinite(number)) return fallback
-  return Math.min(max, Math.max(min, Math.round(number)))
-}
 
 function toolboxBasePath(sandbox: Sandbox) {
   let baseUrl = sandbox.toolboxProxyUrl
@@ -242,8 +232,7 @@ export async function prepareDaytonaTerminalWebSocket({
   terminalId: string
 }): Promise<DaytonaTerminalWebSocket> {
   const cleanId = cleanTerminalId(terminalId)
-  const safeCols = cleanSize(cols, 100, 20, 300)
-  const safeRows = cleanSize(rows, 30, 8, 120)
+  const size = cleanTerminalDimensions({ cols, rows })
   const sandbox = await getTerminalSandbox(sandboxId)
   const previewTokenPromise = sandbox.getPreviewLink(1)
   const { paths } = await getTerminalContext(sandboxId)
@@ -260,10 +249,10 @@ export async function prepareDaytonaTerminalWebSocket({
   }
 
   const terminalSession = await createPtySession({
-    cols: safeCols,
+    cols: size.cols,
     cwd: paths.repoPath,
     envs,
-    rows: safeRows,
+    rows: size.rows,
     sandbox,
     terminalId: cleanId,
   }).catch(async (error: unknown) => {
@@ -273,7 +262,7 @@ export async function prepareDaytonaTerminalWebSocket({
     if (!racedSession) throw error
 
     void sandbox.process
-      .resizePtySession(cleanId, safeCols, safeRows)
+      .resizePtySession(cleanId, size.cols, size.rows)
       .catch(() => undefined)
 
     return {
@@ -284,7 +273,7 @@ export async function prepareDaytonaTerminalWebSocket({
 
   if (!terminalSession.created) {
     void sandbox.process
-      .resizePtySession(cleanId, safeCols, safeRows)
+      .resizePtySession(cleanId, size.cols, size.rows)
       .catch(() => undefined)
   }
 
@@ -348,20 +337,14 @@ export async function resizeDaytonaTerminalWebSocket({
   terminalId: string
 }) {
   const { sandbox } = await getTerminalContext(sandboxId)
+  const cleanId = cleanTerminalId(terminalId)
+  const size = cleanTerminalDimensions({ cols, rows })
 
   try {
-    await sandbox.process.resizePtySession(
-      cleanTerminalId(terminalId),
-      cleanSize(cols, 100, 20, 300),
-      cleanSize(rows, 30, 8, 120)
-    )
+    await sandbox.process.resizePtySession(cleanId, size.cols, size.rows)
   } catch {
     invalidateTerminalCaches(sandboxId)
     const freshSandbox = await getStartedDaytonaSandbox(sandboxId)
-    await freshSandbox.process.resizePtySession(
-      cleanTerminalId(terminalId),
-      cleanSize(cols, 100, 20, 300),
-      cleanSize(rows, 30, 8, 120)
-    )
+    await freshSandbox.process.resizePtySession(cleanId, size.cols, size.rows)
   }
 }

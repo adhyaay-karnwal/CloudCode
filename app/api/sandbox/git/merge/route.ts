@@ -1,5 +1,12 @@
 import { NextResponse } from "next/server"
 
+import {
+  jsonBooleanField,
+  jsonError,
+  jsonNumberField,
+  jsonStringField,
+  readJsonRecordOrNull,
+} from "@/lib/api-route"
 import { maybeGetCurrentGitHubRepoCredential } from "@/lib/github-auth"
 import {
   deleteBranchRef,
@@ -19,45 +26,30 @@ export async function POST(request: Request) {
   const blocked = requireSameOrigin(request)
   if (blocked) return blocked
 
-  let body: {
-    deleteBranch?: unknown
-    method?: unknown
-    number?: unknown
-    sandboxId?: unknown
-  }
-  try {
-    body = await request.json()
-  } catch {
-    return NextResponse.json(
-      { error: "Invalid request body." },
-      { status: 400 }
-    )
+  const body = await readJsonRecordOrNull(request)
+  if (!body) {
+    return jsonError("Invalid request body.", 400)
   }
 
-  const sandboxId = typeof body.sandboxId === "string" ? body.sandboxId : ""
-  const number = typeof body.number === "number" ? body.number : NaN
-  const method: MergeMethod = MERGE_METHODS.has(body.method as MergeMethod)
-    ? (body.method as MergeMethod)
+  const sandboxId = jsonStringField(body, "sandboxId")
+  const number = jsonNumberField(body, "number") ?? NaN
+  const rawMethod = jsonStringField(body, "method")
+  const method: MergeMethod = MERGE_METHODS.has(rawMethod as MergeMethod)
+    ? (rawMethod as MergeMethod)
     : "squash"
-  const deleteBranch = body.deleteBranch === true
+  const deleteBranch = jsonBooleanField(body, "deleteBranch") === true
 
   if (!sandboxId) {
-    return NextResponse.json({ error: "sandboxId required" }, { status: 400 })
+    return jsonError("sandboxId required", 400)
   }
   if (!Number.isInteger(number)) {
-    return NextResponse.json(
-      { error: "A pull request number is required." },
-      { status: 400 }
-    )
+    return jsonError("A pull request number is required.", 400)
   }
 
   try {
     const ctx = await resolveSandboxGitContext(sandboxId)
     if (!ctx.repo) {
-      return NextResponse.json(
-        { error: "This sandbox is not a GitHub repository." },
-        { status: 400 }
-      )
+      return jsonError("This sandbox is not a GitHub repository.", 400)
     }
 
     const token = (await maybeGetCurrentGitHubRepoCredential(ctx.repoUrl))

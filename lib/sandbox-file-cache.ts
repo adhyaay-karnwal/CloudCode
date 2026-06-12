@@ -1,6 +1,6 @@
 "use client"
 
-type FileEntry = { path: string; type: "file" | "dir" }
+export type SandboxFileEntry = { path: string; type: "file" | "dir" }
 type ReadResponse = {
   content?: string
   error?: string
@@ -10,7 +10,7 @@ type ReadResponse = {
 }
 
 export type CachedFileList = {
-  entries: FileEntry[]
+  entries: SandboxFileEntry[]
   sandboxId?: string
   truncated: boolean
   updatedAt: number

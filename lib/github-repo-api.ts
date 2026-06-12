@@ -1,6 +1,6 @@
 import { parseGitHubRepoUrl, type GitHubRepo } from "@/lib/github-repo"
 
-type GitHubRepositoryResponse = {
+type GitHubRepoMetadataResponse = {
   default_branch?: unknown
   private?: unknown
 }
@@ -56,7 +56,7 @@ export async function fetchGitHubRepoMetadata(
     }
   }
 
-  const data = (await response.json()) as GitHubRepositoryResponse
+  const data = (await response.json()) as GitHubRepoMetadataResponse
   return {
     metadata: {
       defaultBranch: optionalString(data.default_branch),

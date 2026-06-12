@@ -1,5 +1,12 @@
 import { NextResponse } from "next/server"
 
+import {
+  jsonBooleanField,
+  jsonError,
+  jsonStringField,
+  readJsonRecordOrNull,
+  searchStringParam,
+} from "@/lib/api-route"
 import { maybeGetCurrentGitHubRepoCredential } from "@/lib/github-auth"
 import {
   createPullRequest,
@@ -19,9 +26,9 @@ import { gitApiErrorResponse } from "@/lib/sandbox-git-route"
 export const runtime = "nodejs"
 
 export async function GET(request: Request) {
-  const sandboxId = new URL(request.url).searchParams.get("sandboxId")
+  const sandboxId = searchStringParam(request, "sandboxId")
   if (!sandboxId) {
-    return NextResponse.json({ error: "sandboxId required" }, { status: 400 })
+    return jsonError("sandboxId required", 400)
   }
 
   try {
@@ -77,54 +84,34 @@ export async function POST(request: Request) {
   const blocked = requireSameOrigin(request)
   if (blocked) return blocked
 
-  let body: {
-    base?: unknown
-    body?: unknown
-    draft?: unknown
-    sandboxId?: unknown
-    title?: unknown
-  }
-  try {
-    body = await request.json()
-  } catch {
-    return NextResponse.json(
-      { error: "Invalid request body." },
-      { status: 400 }
-    )
+  const body = await readJsonRecordOrNull(request)
+  if (!body) {
+    return jsonError("Invalid request body.", 400)
   }
 
-  const sandboxId = typeof body.sandboxId === "string" ? body.sandboxId : ""
-  const title = typeof body.title === "string" ? body.title.trim() : ""
-  const base = typeof body.base === "string" ? body.base.trim() : ""
+  const sandboxId = jsonStringField(body, "sandboxId")
+  const title = jsonStringField(body, "title")
+  const base = jsonStringField(body, "base") ?? ""
   const prBody = typeof body.body === "string" ? body.body : ""
-  const draft = body.draft === true
+  const draft = jsonBooleanField(body, "draft") === true
 
   if (!sandboxId) {
-    return NextResponse.json({ error: "sandboxId required" }, { status: 400 })
+    return jsonError("sandboxId required", 400)
   }
   if (!title) {
-    return NextResponse.json(
-      { error: "A pull request title is required." },
-      { status: 400 }
-    )
+    return jsonError("A pull request title is required.", 400)
   }
 
   try {
     const ctx = await resolveSandboxGitContext(sandboxId)
     if (!ctx.repo) {
-      return NextResponse.json(
-        { error: "This sandbox is not a GitHub repository." },
-        { status: 400 }
-      )
+      return jsonError("This sandbox is not a GitHub repository.", 400)
     }
 
     const credential = await maybeGetCurrentGitHubRepoCredential(ctx.repoUrl)
     const branch = await getCurrentSandboxBranch(ctx.sandbox, ctx.paths)
     if (!branch) {
-      return NextResponse.json(
-        { error: "Cannot open a pull request from a detached HEAD." },
-        { status: 400 }
-      )
+      return jsonError("Cannot open a pull request from a detached HEAD.", 400)
     }
 
     let baseBranch = base
@@ -136,9 +123,9 @@ export async function POST(request: Request) {
       baseBranch = (metadata.ok && metadata.metadata.defaultBranch) || ""
     }
     if (!baseBranch) {
-      return NextResponse.json(
-        { error: "Unable to determine a base branch for the pull request." },
-        { status: 400 }
+      return jsonError(
+        "Unable to determine a base branch for the pull request.",
+        400
       )
     }
 

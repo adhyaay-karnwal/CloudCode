@@ -4,6 +4,7 @@ import {
   BillingRequiredError,
   getStartedCurrentUserDaytonaSandbox,
 } from "@/lib/billing-server"
+import { jsonError, searchStringParam } from "@/lib/api-route"
 import {
   readDaytonaFile,
   readDaytonaTextFile,
@@ -34,15 +35,12 @@ function getImageContentType(path: string) {
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url)
-  const sandboxId = searchParams.get("sandboxId")
+  const sandboxId = searchStringParam(request, "sandboxId")
   const relPath = searchParams.get("path")
   const format = searchParams.get("format")
 
   if (!sandboxId || !relPath) {
-    return NextResponse.json(
-      { error: "sandboxId and path required" },
-      { status: 400 }
-    )
+    return jsonError("sandboxId and path required", 400)
   }
 
   const cleaned = relPath.replace(/^\/+/, "")
@@ -52,7 +50,7 @@ export async function GET(request: Request) {
     cleaned.startsWith(".codex/") ||
     cleaned.includes("/.env")
   ) {
-    return NextResponse.json({ error: "invalid path" }, { status: 400 })
+    return jsonError("invalid path", 400)
   }
 
   try {
@@ -64,19 +62,13 @@ export async function GET(request: Request) {
     if (format === "raw") {
       const contentType = getImageContentType(cleaned)
       if (!contentType) {
-        return NextResponse.json(
-          { error: "raw preview is only supported for images" },
-          { status: 415 }
-        )
+        return jsonError("raw preview is only supported for images", 415)
       }
       if (info.size > MAX_RAW_BYTES) {
-        return NextResponse.json(
-          {
-            error: `Image too large (${info.size} bytes). Max ${MAX_RAW_BYTES} bytes.`,
-            size: info.size,
-            tooLarge: true,
-          },
-          { status: 413 }
+        return jsonError(
+          `Image too large (${info.size} bytes). Max ${MAX_RAW_BYTES} bytes.`,
+          413,
+          { size: info.size, tooLarge: true }
         )
       }
 
@@ -93,13 +85,10 @@ export async function GET(request: Request) {
     }
 
     if (info.size > MAX_BYTES) {
-      return NextResponse.json(
-        {
-          error: `File too large (${info.size} bytes). Max ${MAX_BYTES} bytes.`,
-          size: info.size,
-          tooLarge: true,
-        },
-        { status: 413 }
+      return jsonError(
+        `File too large (${info.size} bytes). Max ${MAX_BYTES} bytes.`,
+        413,
+        { size: info.size, tooLarge: true }
       )
     }
 
@@ -111,14 +100,12 @@ export async function GET(request: Request) {
     })
   } catch (error) {
     if (error instanceof BillingRequiredError) {
-      return NextResponse.json({ error: error.message }, { status: 402 })
+      return jsonError(error.message, 402)
     }
 
-    return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : "Failed to read file",
-      },
-      { status: 500 }
+    return jsonError(
+      error instanceof Error ? error.message : "Failed to read file",
+      500
     )
   }
 }

@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server"
 
+import {
+  jsonError,
+  jsonStringField,
+  readJsonRecordOrNull,
+} from "@/lib/api-route"
 import { requireSameOrigin } from "@/lib/request-security"
 import {
   commitSandboxChanges,
@@ -14,26 +19,18 @@ export async function POST(request: Request) {
   const blocked = requireSameOrigin(request)
   if (blocked) return blocked
 
-  let body: { message?: unknown; sandboxId?: unknown }
-  try {
-    body = await request.json()
-  } catch {
-    return NextResponse.json(
-      { error: "Invalid request body." },
-      { status: 400 }
-    )
+  const body = await readJsonRecordOrNull(request)
+  if (!body) {
+    return jsonError("Invalid request body.", 400)
   }
 
-  const sandboxId = typeof body.sandboxId === "string" ? body.sandboxId : ""
-  const message = typeof body.message === "string" ? body.message.trim() : ""
+  const sandboxId = jsonStringField(body, "sandboxId")
+  const message = jsonStringField(body, "message")
   if (!sandboxId) {
-    return NextResponse.json({ error: "sandboxId required" }, { status: 400 })
+    return jsonError("sandboxId required", 400)
   }
   if (!message) {
-    return NextResponse.json(
-      { error: "A commit message is required." },
-      { status: 400 }
-    )
+    return jsonError("A commit message is required.", 400)
   }
 
   try {

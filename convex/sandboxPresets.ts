@@ -1,158 +1,38 @@
 import { v } from "convex/values"
 
 import { mutation, query } from "./_generated/server"
-import type { Id } from "./_generated/dataModel"
-import type { MutationCtx, QueryCtx } from "./_generated/server"
-import { ensureAutoEnvironmentPreset } from "./lib/sandboxPresets"
+import { runLog } from "./lib/codexRunValidators"
+import {
+  appendAutoEnvironmentBuildLogsToBuild,
+  beginAutoEnvironmentBuildForUser,
+  completeAutoEnvironmentBuildForBuild,
+  failAutoEnvironmentBuildForBuild,
+  requireBuildForWorker,
+  requireOwnedBuild,
+} from "./lib/sandboxPresetBuilds"
+import {
+  autoEnvironmentRunRow,
+  isAutoPreset,
+  isLegacyDefaultPreset,
+  sandboxPresetListRow,
+  sandboxPresetRunInput,
+} from "./lib/sandboxPresetRecords"
+import {
+  ensureAutoEnvironmentPreset,
+  requireOwnedPreset,
+} from "./lib/sandboxPresets"
+import {
+  cleanDaytonaSnapshot,
+  cleanEncryptedPresetSecretValue,
+  cleanEnvName,
+  cleanEnvironmentSlug,
+  cleanInstallScript,
+  cleanName,
+} from "./lib/sandboxPresetValidation"
 import { ensureCurrentUser, getCurrentUser } from "./lib/users"
 import { requireWorkerSecret } from "./lib/workerAuth"
 
-const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
-const ENCRYPTED_SECRET_PREFIX = "cloudcode:v1:"
 const ENVIRONMENT_LIST_LIMIT = 80
-const MAX_STORED_BUILD_LOGS = 120
-const MAX_STORED_LOG_MESSAGE_LENGTH = 500
-const MAX_STORED_LOG_DETAIL_LENGTH = 1_500
-const STORED_LOG_KINDS = new Set<string>([
-  "setup",
-  "command",
-  "result",
-  "stderr",
-])
-
-const runLog = v.object({
-  detail: v.optional(v.string()),
-  kind: v.union(
-    v.literal("setup"),
-    v.literal("command"),
-    v.literal("reasoning"),
-    v.literal("stdout"),
-    v.literal("stderr"),
-    v.literal("result")
-  ),
-  message: v.string(),
-  time: v.number(),
-})
-
-type StoredRunLog = {
-  detail?: string
-  kind: "setup" | "command" | "reasoning" | "stdout" | "stderr" | "result"
-  message: string
-  time: number
-}
-
-function truncate(value: string | undefined, max: number) {
-  if (!value) return undefined
-  return value.length > max ? `${value.slice(0, max - 3)}...` : value
-}
-
-function compactRunLog(log: StoredRunLog) {
-  if (!STORED_LOG_KINDS.has(log.kind)) return null
-  return {
-    ...(truncate(log.detail, MAX_STORED_LOG_DETAIL_LENGTH)
-      ? { detail: truncate(log.detail, MAX_STORED_LOG_DETAIL_LENGTH) }
-      : {}),
-    kind: log.kind,
-    message: truncate(log.message, MAX_STORED_LOG_MESSAGE_LENGTH) ?? "",
-    time: log.time,
-  }
-}
-
-function cleanName(name: string) {
-  const trimmed = name.trim()
-  if (!trimmed) throw new Error("Preset name is required.")
-  if (trimmed.length > 80) throw new Error("Preset name is too long.")
-  return trimmed
-}
-
-function cleanDaytonaSnapshot(snapshot?: string) {
-  const trimmed = snapshot?.trim()
-  if (!trimmed) return undefined
-  if (trimmed.length > 160) throw new Error("Snapshot name is too long.")
-  if (!/^[A-Za-z0-9._:/-]+$/.test(trimmed)) {
-    throw new Error(
-      "Snapshot names can only contain letters, numbers, dots, dashes, underscores, slashes, and colons."
-    )
-  }
-  return trimmed
-}
-
-function slugify(value: string, fallback = "environment") {
-  const slug = value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 48)
-
-  return slug || fallback
-}
-
-function repoSlug(repoUrl: string) {
-  const cleaned = repoUrl
-    .trim()
-    .replace(/\.git$/, "")
-    .replace(/\/+$/, "")
-  const parts = cleaned.split("/")
-  return slugify(parts.at(-1) || cleaned, "repo")
-}
-
-function cleanEnvironmentSlug(slug?: string) {
-  return slug ? slugify(slug) : undefined
-}
-
-function cleanInstallScript(script?: string) {
-  const normalized = script?.replace(/\r\n/g, "\n").trim()
-  if (!normalized) return undefined
-  if (normalized.length > 20_000) throw new Error("Install script is too long.")
-  return normalized
-}
-
-function cleanEnvName(name: string) {
-  const trimmed = name.trim()
-  if (!ENV_NAME_RE.test(trimmed)) {
-    throw new Error(
-      "Secret names must start with a letter or underscore and contain only letters, numbers, and underscores."
-    )
-  }
-  return trimmed
-}
-
-async function requireOwnedPreset(
-  ctx: QueryCtx | MutationCtx,
-  presetId: Id<"sandboxPresets">,
-  userId: Id<"users">
-) {
-  const preset = await ctx.db.get(presetId)
-
-  if (!preset || preset.userId !== userId) {
-    throw new Error("Preset not found.")
-  }
-
-  return preset
-}
-
-function isLegacyDefaultPreset(
-  preset: {
-    daytonaSnapshot?: string
-    installScript?: string
-    name: string
-    pathInstallScript?: string
-  },
-  secretCount: number
-) {
-  return (
-    preset.name === "Default Daytona" &&
-    !preset.daytonaSnapshot &&
-    !preset.installScript &&
-    !preset.pathInstallScript &&
-    secretCount === 0
-  )
-}
-
-function isAutoPreset(preset: { mode?: "manual" | "auto" }) {
-  return preset.mode === "auto"
-}
 
 export const list = query({
   args: {},
@@ -175,25 +55,7 @@ export const list = query({
 
         if (isLegacyDefaultPreset(preset, secrets.length)) return null
 
-        return {
-          createdAt: preset.createdAt,
-          daytonaSnapshot: preset.daytonaSnapshot,
-          environmentSlug: preset.environmentSlug,
-          id: preset._id,
-          installScript: preset.installScript,
-          mode: preset.mode ?? "manual",
-          name: preset.name,
-          pathInstallScript: preset.pathInstallScript,
-          secrets: secrets
-            .map((secret) => ({
-              hasValue: Boolean(secret.value),
-              id: secret._id,
-              name: secret.name,
-              updatedAt: secret.updatedAt,
-            }))
-            .sort((a, b) => a.name.localeCompare(b.name)),
-          updatedAt: preset.updatedAt,
-        }
+        return sandboxPresetListRow({ preset, secrets })
       })
     )
 
@@ -229,37 +91,7 @@ export const listWithEnvironments = query({
 
         if (isLegacyDefaultPreset(preset, secrets.length)) return null
 
-        return {
-          createdAt: preset.createdAt,
-          daytonaSnapshot: preset.daytonaSnapshot,
-          environmentSlug: preset.environmentSlug,
-          id: preset._id,
-          installScript: preset.installScript,
-          mode: preset.mode ?? "manual",
-          name: preset.name,
-          pathInstallScript: preset.pathInstallScript,
-          environments: environments
-            .filter((environment) => environment.presetId === preset._id)
-            .slice(0, 8)
-            .map((environment) => ({
-              activeSandboxId: environment.activeSandboxId,
-              builtAt: environment.builtAt,
-              environmentSlug: environment.environmentSlug,
-              id: environment._id,
-              repoUrl: environment.repoUrl,
-              status: environment.status,
-              updatedAt: environment.updatedAt,
-            })),
-          secrets: secrets
-            .map((secret) => ({
-              hasValue: Boolean(secret.value),
-              id: secret._id,
-              name: secret.name,
-              updatedAt: secret.updatedAt,
-            }))
-            .sort((a, b) => a.name.localeCompare(b.name)),
-          updatedAt: preset.updatedAt,
-        }
+        return sandboxPresetListRow({ environments, preset, secrets })
       })
     )
 
@@ -283,21 +115,7 @@ export const getForRun = query({
 
     if (isLegacyDefaultPreset(preset, secrets.length)) return null
 
-    return {
-      daytonaSnapshot: preset.daytonaSnapshot,
-      environmentSlug: preset.environmentSlug,
-      id: preset._id,
-      installScript: preset.installScript,
-      mode: preset.mode ?? "manual",
-      name: preset.name,
-      pathInstallScript: preset.pathInstallScript,
-      secrets: secrets
-        .map((secret) => ({
-          name: secret.name,
-          value: secret.value,
-        }))
-        .sort((a, b) => a.name.localeCompare(b.name)),
-    }
+    return sandboxPresetRunInput(preset, secrets)
   },
 })
 
@@ -398,19 +216,7 @@ export const getAutoEnvironmentForRun = query({
 
     if (!environment) return null
 
-    return {
-      activeSandboxId: environment.activeSandboxId,
-      buildNumber: environment.buildNumber,
-      builtAt: environment.builtAt,
-      cloudcodeYaml: environment.cloudcodeYaml,
-      configHash: environment.configHash,
-      environmentSlug: environment.environmentSlug,
-      id: environment._id,
-      lastError: environment.lastError,
-      repoUrl: environment.repoUrl,
-      status: environment.status,
-      updatedAt: environment.updatedAt,
-    }
+    return autoEnvironmentRunRow(environment)
   },
 })
 
@@ -437,116 +243,9 @@ export const getAutoEnvironmentForRunForWorker = query({
 
     if (!environment) return null
 
-    return {
-      activeSandboxId: environment.activeSandboxId,
-      buildNumber: environment.buildNumber,
-      builtAt: environment.builtAt,
-      cloudcodeYaml: environment.cloudcodeYaml,
-      configHash: environment.configHash,
-      environmentSlug: environment.environmentSlug,
-      id: environment._id,
-      lastError: environment.lastError,
-      repoUrl: environment.repoUrl,
-      status: environment.status,
-      updatedAt: environment.updatedAt,
-    }
+    return autoEnvironmentRunRow(environment)
   },
 })
-
-async function beginAutoEnvironmentBuildForUser(
-  ctx: MutationCtx,
-  args: {
-    baseBranch?: string
-    presetId: Id<"sandboxPresets">
-    repoUrl: string
-  },
-  userId: Id<"users">
-) {
-  const preset = await requireOwnedPreset(ctx, args.presetId, userId)
-  if ((preset.mode ?? "manual") !== "auto") {
-    throw new Error("Preset is not an auto environment preset.")
-  }
-
-  const repoUrl = args.repoUrl.trim()
-  if (!repoUrl) throw new Error("repoUrl is required.")
-
-  const now = Date.now()
-  let environment = await ctx.db
-    .query("sandboxPresetEnvironments")
-    .withIndex("by_preset_repo", (q) =>
-      q
-        .eq("userId", userId)
-        .eq("presetId", args.presetId)
-        .eq("repoUrl", repoUrl)
-    )
-    .unique()
-
-  const environmentSlug = slugify(
-    [
-      preset.environmentSlug && preset.environmentSlug !== "auto"
-        ? preset.environmentSlug
-        : preset.name,
-      repoSlug(repoUrl),
-    ]
-      .filter(Boolean)
-      .join("-")
-  )
-  const buildNumber = (environment?.buildNumber ?? 0) + 1
-
-  if (!environment) {
-    const environmentId = await ctx.db.insert("sandboxPresetEnvironments", {
-      ...(args.baseBranch?.trim()
-        ? { baseBranch: args.baseBranch.trim() }
-        : {}),
-      buildNumber,
-      createdAt: now,
-      environmentSlug,
-      presetId: args.presetId,
-      repoUrl,
-      status: "building",
-      updatedAt: now,
-      userId,
-    })
-    environment = (await ctx.db.get(environmentId))!
-  } else {
-    await ctx.db.patch(environment._id, {
-      ...(args.baseBranch?.trim()
-        ? { baseBranch: args.baseBranch.trim() }
-        : {}),
-      buildNumber,
-      environmentSlug,
-      lastError: undefined,
-      status: "building",
-      updatedAt: now,
-    })
-  }
-
-  const buildId = await ctx.db.insert("sandboxPresetBuilds", {
-    buildNumber,
-    createdAt: now,
-    environmentId: environment._id,
-    logs: [],
-    presetId: args.presetId,
-    repoUrl,
-    startedAt: now,
-    status: "building",
-    updatedAt: now,
-    userId,
-  })
-  await ctx.db.patch(environment._id, {
-    activeBuildId: buildId,
-    activeSandboxId: undefined,
-    activeSnapshot: undefined,
-    updatedAt: now,
-  })
-
-  return {
-    buildId,
-    buildNumber,
-    environmentId: environment._id,
-    environmentSlug,
-  }
-}
 
 export const beginAutoEnvironmentBuild = mutation({
   args: {
@@ -575,49 +274,15 @@ export const beginAutoEnvironmentBuildForWorker = mutation({
   },
 })
 
-async function requireOwnedBuild(
-  ctx: MutationCtx,
-  buildId: Id<"sandboxPresetBuilds">,
-  userId: Id<"users">
-) {
-  const build = await ctx.db.get(buildId)
-  if (!build || build.userId !== userId) {
-    throw new Error("Environment build not found.")
-  }
-  return build
-}
-
-async function requireBuildForWorker(
-  ctx: MutationCtx,
-  buildId: Id<"sandboxPresetBuilds">
-) {
-  const build = await ctx.db.get(buildId)
-  if (!build) {
-    throw new Error("Environment build not found.")
-  }
-  return build
-}
-
 export const appendAutoEnvironmentBuildLogs = mutation({
   args: {
     buildId: v.id("sandboxPresetBuilds"),
     logs: v.array(runLog),
   },
   handler: async (ctx, args) => {
-    if (args.logs.length === 0) return
     const userId = await ensureCurrentUser(ctx)
     const build = await requireOwnedBuild(ctx, args.buildId, userId)
-
-    const logs = args.logs.flatMap((log) => {
-      const compacted = compactRunLog(log)
-      return compacted ? [compacted] : []
-    })
-    if (logs.length === 0) return
-
-    await ctx.db.patch(args.buildId, {
-      logs: [...(build.logs ?? []), ...logs].slice(-MAX_STORED_BUILD_LOGS),
-      updatedAt: Date.now(),
-    })
+    await appendAutoEnvironmentBuildLogsToBuild(ctx, build, args.logs)
   },
 })
 
@@ -629,19 +294,8 @@ export const appendAutoEnvironmentBuildLogsForWorker = mutation({
   },
   handler: async (ctx, args) => {
     requireWorkerSecret(args.workerSecret)
-    if (args.logs.length === 0) return
     const build = await requireBuildForWorker(ctx, args.buildId)
-
-    const logs = args.logs.flatMap((log) => {
-      const compacted = compactRunLog(log)
-      return compacted ? [compacted] : []
-    })
-    if (logs.length === 0) return
-
-    await ctx.db.patch(args.buildId, {
-      logs: [...(build.logs ?? []), ...logs].slice(-MAX_STORED_BUILD_LOGS),
-      updatedAt: Date.now(),
-    })
+    await appendAutoEnvironmentBuildLogsToBuild(ctx, build, args.logs)
   },
 })
 
@@ -655,27 +309,7 @@ export const completeAutoEnvironmentBuild = mutation({
   handler: async (ctx, args) => {
     const userId = await ensureCurrentUser(ctx)
     const build = await requireOwnedBuild(ctx, args.buildId, userId)
-    const now = Date.now()
-
-    await ctx.db.patch(args.buildId, {
-      cloudcodeYaml: args.cloudcodeYaml,
-      configHash: args.configHash,
-      finishedAt: now,
-      sandboxId: args.sandboxId,
-      status: "ready",
-      updatedAt: now,
-    })
-    await ctx.db.patch(build.environmentId, {
-      activeBuildId: args.buildId,
-      activeSandboxId: args.sandboxId,
-      activeSnapshot: undefined,
-      builtAt: now,
-      cloudcodeYaml: args.cloudcodeYaml,
-      configHash: args.configHash,
-      lastError: undefined,
-      status: "ready",
-      updatedAt: now,
-    })
+    await completeAutoEnvironmentBuildForBuild(ctx, build, args)
   },
 })
 
@@ -690,27 +324,7 @@ export const completeAutoEnvironmentBuildForWorker = mutation({
   handler: async (ctx, args) => {
     requireWorkerSecret(args.workerSecret)
     const build = await requireBuildForWorker(ctx, args.buildId)
-    const now = Date.now()
-
-    await ctx.db.patch(args.buildId, {
-      cloudcodeYaml: args.cloudcodeYaml,
-      configHash: args.configHash,
-      finishedAt: now,
-      sandboxId: args.sandboxId,
-      status: "ready",
-      updatedAt: now,
-    })
-    await ctx.db.patch(build.environmentId, {
-      activeBuildId: args.buildId,
-      activeSandboxId: args.sandboxId,
-      activeSnapshot: undefined,
-      builtAt: now,
-      cloudcodeYaml: args.cloudcodeYaml,
-      configHash: args.configHash,
-      lastError: undefined,
-      status: "ready",
-      updatedAt: now,
-    })
+    await completeAutoEnvironmentBuildForBuild(ctx, build, args)
   },
 })
 
@@ -722,19 +336,7 @@ export const failAutoEnvironmentBuild = mutation({
   handler: async (ctx, args) => {
     const userId = await ensureCurrentUser(ctx)
     const build = await requireOwnedBuild(ctx, args.buildId, userId)
-    const now = Date.now()
-
-    await ctx.db.patch(args.buildId, {
-      error: args.error,
-      finishedAt: now,
-      status: "failed",
-      updatedAt: now,
-    })
-    await ctx.db.patch(build.environmentId, {
-      lastError: args.error,
-      status: "failed",
-      updatedAt: now,
-    })
+    await failAutoEnvironmentBuildForBuild(ctx, build, args.error)
   },
 })
 
@@ -747,19 +349,7 @@ export const failAutoEnvironmentBuildForWorker = mutation({
   handler: async (ctx, args) => {
     requireWorkerSecret(args.workerSecret)
     const build = await requireBuildForWorker(ctx, args.buildId)
-    const now = Date.now()
-
-    await ctx.db.patch(args.buildId, {
-      error: args.error,
-      finishedAt: now,
-      status: "failed",
-      updatedAt: now,
-    })
-    await ctx.db.patch(build.environmentId, {
-      lastError: args.error,
-      status: "failed",
-      updatedAt: now,
-    })
+    await failAutoEnvironmentBuildForBuild(ctx, build, args.error)
   },
 })
 
@@ -844,12 +434,7 @@ export const upsertSecret = mutation({
     await requireOwnedPreset(ctx, args.presetId, userId)
 
     const name = cleanEnvName(args.name)
-    const value = args.value
-    if (!value) throw new Error("Secret value is required.")
-    if (value.length > 20_000) throw new Error("Secret value is too long.")
-    if (!value.startsWith(ENCRYPTED_SECRET_PREFIX)) {
-      throw new Error("Preset secrets must be saved through the server.")
-    }
+    const value = cleanEncryptedPresetSecretValue(args.value)
 
     const existing = await ctx.db
       .query("sandboxPresetSecrets")

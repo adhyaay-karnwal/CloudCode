@@ -1,5 +1,5 @@
 import type { Id } from "../_generated/dataModel"
-import type { MutationCtx } from "../_generated/server"
+import type { MutationCtx, QueryCtx } from "../_generated/server"
 
 const AUTO_ENVIRONMENT_PRESET = {
   environmentSlug: "auto",
@@ -42,4 +42,18 @@ export async function resolveOwnedPresetOrAutoDefault(
   }
 
   return preset._id
+}
+
+export async function requireOwnedPreset(
+  ctx: QueryCtx | MutationCtx,
+  presetId: Id<"sandboxPresets">,
+  userId: Id<"users">
+) {
+  const preset = await ctx.db.get(presetId)
+
+  if (!preset || preset.userId !== userId) {
+    throw new Error("Preset not found.")
+  }
+
+  return preset
 }

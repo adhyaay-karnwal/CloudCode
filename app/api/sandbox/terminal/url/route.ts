@@ -4,6 +4,7 @@ import {
   BillingRequiredError,
   getStartedCurrentUserDaytonaSandbox,
 } from "@/lib/billing-server"
+import { jsonError, searchStringParam } from "@/lib/api-route"
 import {
   getDaytonaTerminalUrl,
   resolveDaytonaPaths,
@@ -22,11 +23,10 @@ export async function GET(request: Request) {
   const blocked = requireSameOrigin(request)
   if (blocked) return blocked
 
-  const { searchParams } = new URL(request.url)
-  const sandboxId = searchParams.get("sandboxId")
+  const sandboxId = searchStringParam(request, "sandboxId")
 
   if (!sandboxId) {
-    return NextResponse.json({ error: "sandboxId required" }, { status: 400 })
+    return jsonError("sandboxId required", 400)
   }
 
   try {
@@ -69,17 +69,14 @@ export async function GET(request: Request) {
     })
   } catch (error) {
     if (error instanceof BillingRequiredError) {
-      return NextResponse.json({ error: error.message }, { status: 402 })
+      return jsonError(error.message, 402)
     }
 
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Failed to open Daytona terminal",
-      },
-      { status: 500 }
+    return jsonError(
+      error instanceof Error
+        ? error.message
+        : "Failed to open Daytona terminal",
+      500
     )
   }
 }

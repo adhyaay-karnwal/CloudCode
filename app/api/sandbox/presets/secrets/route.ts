@@ -1,9 +1,14 @@
-import { ConvexHttpClient } from "convex/browser"
-import { NextResponse } from "next/server"
+import type { ConvexHttpClient } from "convex/browser"
 
 import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
-import { getConvexAuthToken } from "@/lib/codex-auth"
+import { currentUserConvexHttpClient } from "@/lib/convex-http"
+import {
+  jsonRawStringField,
+  noStoreJson,
+  noStoreJsonError,
+  readJsonRecord,
+} from "@/lib/api-route"
 import {
   getDaytonaSandbox,
   readDaytonaTextFile,
@@ -43,32 +48,6 @@ type ChatSummary = {
   sandboxId?: string
   sandboxPresetId?: Id<"sandboxPresets">
   sandboxState?: string
-}
-
-function getConvexUrl() {
-  const url = process.env.NEXT_PUBLIC_CONVEX_URL
-
-  if (!url) {
-    throw new Error("Set NEXT_PUBLIC_CONVEX_URL before using Convex storage.")
-  }
-
-  return url
-}
-
-async function convexClient() {
-  const client = new ConvexHttpClient(getConvexUrl())
-  client.setAuth(await getConvexAuthToken())
-  return client
-}
-
-function json(data: unknown, init?: ResponseInit) {
-  return NextResponse.json(data, {
-    ...init,
-    headers: {
-      "Cache-Control": "no-store, private",
-      ...init?.headers,
-    },
-  })
 }
 
 async function removeSecretFromSandboxEnvLocal(
@@ -222,59 +201,54 @@ export async function POST(request: Request) {
   if (blocked) return blocked
 
   try {
-    const body = (await request.json()) as {
-      name?: unknown
-      presetId?: unknown
-      secrets?: unknown
-      value?: unknown
-    }
+    const body = await readJsonRecord(request)
+    const rawPresetId = jsonRawStringField(body, "presetId")
 
-    if (typeof body.presetId !== "string") {
-      return json({ error: "presetId is required." }, { status: 400 })
+    if (rawPresetId === undefined) {
+      return noStoreJsonError("presetId is required.", 400)
     }
-    const presetId = body.presetId as Id<"sandboxPresets">
+    const presetId = rawPresetId as Id<"sandboxPresets">
 
     if (body.secrets !== undefined) {
       const entries = parseSecretEntries(body.secrets)
       if (!entries) {
-        return json(
-          { error: "secrets must be an array of { name, value } pairs." },
-          { status: 400 }
+        return noStoreJsonError(
+          "secrets must be an array of { name, value } pairs.",
+          400
         )
       }
 
       const deduped = dedupeEnvVars(entries)
       if (deduped.length === 0) {
-        return json({ error: "No secrets to import." }, { status: 400 })
+        return noStoreJsonError("No secrets to import.", 400)
       }
 
-      const client = await convexClient()
+      const client = await currentUserConvexHttpClient()
       const { failed, saved } = await upsertSecrets(client, presetId, deduped)
-      return json({ failed, saved }, { status: failed.length ? 207 : 200 })
-    }
-
-    if (typeof body.name !== "string" || typeof body.value !== "string") {
-      return json(
-        { error: "presetId, name, and value are required." },
-        { status: 400 }
+      return noStoreJson(
+        { failed, saved },
+        { status: failed.length ? 207 : 200 }
       )
     }
 
-    const client = await convexClient()
+    const name = jsonRawStringField(body, "name")
+    const value = jsonRawStringField(body, "value")
+    if (name === undefined || value === undefined) {
+      return noStoreJsonError("presetId, name, and value are required.", 400)
+    }
+
+    const client = await currentUserConvexHttpClient()
     const id = await client.mutation(api.sandboxPresets.upsertSecret, {
-      name: body.name,
+      name,
       presetId,
-      value: encryptSecret(body.value),
+      value: encryptSecret(value),
     })
 
-    return json({ id })
+    return noStoreJson({ id })
   } catch (error) {
-    return json(
-      {
-        error:
-          error instanceof Error ? error.message : "Failed to save secret.",
-      },
-      { status: 500 }
+    return noStoreJsonError(
+      error instanceof Error ? error.message : "Failed to save secret.",
+      500
     )
   }
 }
@@ -284,16 +258,15 @@ export async function DELETE(request: Request) {
   if (blocked) return blocked
 
   try {
-    const body = (await request.json().catch(() => null)) as {
-      secretId?: unknown
-    } | null
+    const body = await readJsonRecord(request)
+    const rawSecretId = jsonRawStringField(body, "secretId")
 
-    if (typeof body?.secretId !== "string") {
-      return json({ error: "secretId is required." }, { status: 400 })
+    if (rawSecretId === undefined) {
+      return noStoreJsonError("secretId is required.", 400)
     }
 
-    const secretId = body.secretId as Id<"sandboxPresetSecrets">
-    const client = await convexClient()
+    const secretId = rawSecretId as Id<"sandboxPresetSecrets">
+    const client = await currentUserConvexHttpClient()
     let cleanup: SecretCleanupResult[] = []
     let cleanupError: string | undefined
 
@@ -315,18 +288,15 @@ export async function DELETE(request: Request) {
       secretId,
     })
 
-    return json({
+    return noStoreJson({
       cleanup,
       ...(cleanupError ? { cleanupError } : {}),
       ok: true,
     })
   } catch (error) {
-    return json(
-      {
-        error:
-          error instanceof Error ? error.message : "Failed to delete secret.",
-      },
-      { status: 500 }
+    return noStoreJsonError(
+      error instanceof Error ? error.message : "Failed to delete secret.",
+      500
     )
   }
 }

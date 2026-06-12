@@ -6,6 +6,10 @@ import {
   resolveDaytonaPaths,
 } from "./daytona-sandbox"
 import {
+  cleanTerminalDimensions,
+  cleanTerminalId,
+} from "./daytona-terminal-params"
+import {
   configureSandboxGitHubRemote,
   setupSandboxGitHubAuth,
   type SandboxGitHubAuth,
@@ -20,7 +24,7 @@ type StartedDaytonaSandbox = Awaited<
   ReturnType<typeof getStartedDaytonaSandbox>
 >
 type DaytonaTerminalPaths = Awaited<ReturnType<typeof resolveDaytonaPaths>>
-type DaytonaTerminalContext = {
+type DaytonaTerminalSessionContext = {
   paths: DaytonaTerminalPaths
   sandbox: StartedDaytonaSandbox
 }
@@ -59,20 +63,6 @@ function keyFor(sandboxId: string, terminalId: string) {
 
 function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-function cleanTerminalId(terminalId: string) {
-  const trimmed = terminalId.trim()
-  if (!/^[A-Za-z0-9._:-]{1,120}$/.test(trimmed)) {
-    throw new Error("Invalid terminal id.")
-  }
-  return trimmed
-}
-
-function cleanSize(value: unknown, fallback: number, min: number, max: number) {
-  const number = typeof value === "number" ? value : Number(value)
-  if (!Number.isFinite(number)) return fallback
-  return Math.min(max, Math.max(min, Math.round(number)))
 }
 
 function terminalSessionKey(sandboxId: string, terminalId: string) {
@@ -281,8 +271,7 @@ export async function connectDaytonaTerminal({
   const cleanId = cleanTerminalId(terminalId)
   const key = keyFor(sandboxId, cleanId)
   const session = getSession(key)
-  const safeCols = cleanSize(cols, 100, 20, 300)
-  const safeRows = cleanSize(rows, 30, 8, 120)
+  const size = cleanTerminalDimensions({ cols, rows })
 
   const subscriber: TerminalSubscriber = {
     active: false,
@@ -292,7 +281,7 @@ export async function connectDaytonaTerminal({
 
   async function attachSubscriber(handle: PtyHandle) {
     session.subscribers.add(subscriber)
-    await handle.resize(safeCols, safeRows).catch(() => undefined)
+    await handle.resize(size.cols, size.rows).catch(() => undefined)
 
     return {
       activate: () => activateSubscriber(subscriber),
@@ -303,7 +292,7 @@ export async function connectDaytonaTerminal({
     }
   }
 
-  let sandboxAndPaths: Promise<DaytonaTerminalContext> | undefined
+  let sandboxAndPaths: Promise<DaytonaTerminalSessionContext> | undefined
   function getSandboxAndPaths() {
     sandboxAndPaths ??= (async () => {
       const sandbox = await getStartedDaytonaSandbox(sandboxId)
@@ -314,7 +303,9 @@ export async function connectDaytonaTerminal({
     return sandboxAndPaths
   }
 
-  async function ensureTerminalGitHubAuth(context?: DaytonaTerminalContext) {
+  async function ensureTerminalGitHubAuth(
+    context?: DaytonaTerminalSessionContext
+  ) {
     return await refreshDaytonaTerminalGitHubAuth({
       githubToken,
       githubTokenExpiresAt,
@@ -345,7 +336,7 @@ export async function connectDaytonaTerminal({
     const { paths, sandbox } = context
     const githubAuth = await ensureTerminalGitHubAuth(context)
     const createOptions = {
-      cols: safeCols,
+      cols: size.cols,
       envs: {
         CLICOLOR: "1",
         COLORTERM: "truecolor",
@@ -359,7 +350,7 @@ export async function connectDaytonaTerminal({
       },
       id: cleanId,
       onData,
-      rows: safeRows,
+      rows: size.rows,
     }
     let handle: PtyHandle
     const broadcast = (data: Uint8Array) => emitToSubscribers(session, data)
@@ -367,7 +358,7 @@ export async function connectDaytonaTerminal({
 
     try {
       handle = await connectExistingPty(sandbox, cleanId, broadcast)
-      await handle.resize(safeCols, safeRows).catch(() => undefined)
+      await handle.resize(size.cols, size.rows).catch(() => undefined)
     } catch {
       try {
         handle = await sandbox.process.createPty({
@@ -457,8 +448,7 @@ export async function resizeDaytonaTerminal({
   sandboxId: string
   terminalId: string
 }) {
-  const safeCols = cleanSize(cols, 100, 20, 300)
-  const safeRows = cleanSize(rows, 30, 8, 120)
+  const size = cleanTerminalDimensions({ cols, rows })
   const key = terminalSessionKey(sandboxId, terminalId)
   const session = sessions.get(key)
   let handle = session?.handle
@@ -467,7 +457,7 @@ export async function resizeDaytonaTerminal({
   }
 
   if (handle?.isConnected()) {
-    await handle.resize(safeCols, safeRows)
+    await handle.resize(size.cols, size.rows)
     return
   }
 
@@ -478,15 +468,15 @@ export async function resizeDaytonaTerminal({
       onData: (data) => emitToSubscribers(session, data),
     })
     session.handle = connectedHandle
-    await connectedHandle.resize(safeCols, safeRows)
+    await connectedHandle.resize(size.cols, size.rows)
     return
   }
 
   const sandbox = await getStartedDaytonaSandbox(sandboxId)
   await sandbox.process.resizePtySession(
     cleanTerminalId(terminalId),
-    safeCols,
-    safeRows
+    size.cols,
+    size.rows
   )
 }
 

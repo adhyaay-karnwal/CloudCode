@@ -1,13 +1,11 @@
 "use client"
 
-import { FileDiff, FolderGit2, GitBranch, Maximize2, X } from "lucide-react"
-import { type CSSProperties, type ReactNode } from "react"
+import { FileDiff, FolderGit2, GitBranch, Maximize2 } from "lucide-react"
+import { type ReactNode } from "react"
 
 import { NotesEditor } from "@/components/notes-editor"
+import { ResizableSidePanel } from "@/components/resizable-side-panel"
 import { IconButton } from "@/components/ui/icon-button"
-import { ResizeHandle } from "@/components/resize-handle"
-import { useIsMobile } from "@/hooks/use-is-mobile"
-import { useResizablePanel } from "@/hooks/use-resizable-panel"
 import { cn } from "@/lib/utils"
 
 type ChatEnvironment = {
@@ -38,41 +36,18 @@ export function ChatContextPanel({
   onOpenChanges: () => void
   onOpenNotesFullscreen: () => void
 }) {
-  const isMobile = useIsMobile()
-  const { width, resizing, onResizeStart, resetWidth } = useResizablePanel({
-    storageKey: "cloudcode:contextPanelWidth",
-    defaultWidth: 304,
-    minWidth: 240,
-    maxWidth: 560,
-    edge: "left",
-    enabled: !isMobile,
-  })
-
-  if (!open) return null
-
   return (
-    <aside
-      className="fixed inset-0 z-40 flex h-full min-h-0 w-full flex-col overflow-hidden border-l border-border/60 bg-sidebar pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] text-sidebar-foreground md:relative md:inset-auto md:z-auto md:w-[var(--panel-width)] md:shrink-0 md:pt-0 md:pb-0"
-      style={{ "--panel-width": `${width}px` } as CSSProperties}
+    <ResizableSidePanel
+      open={open}
+      title="Context"
+      onClose={onClose}
+      closeLabel="Close context panel"
+      resizeLabel="Resize context panel"
+      storageKey="cloudcode:contextPanelWidth"
+      defaultWidth={304}
+      minWidth={240}
+      maxWidth={560}
     >
-      <ResizeHandle
-        edge="left"
-        resizing={resizing}
-        onResizeStart={onResizeStart}
-        onReset={resetWidth}
-        ariaLabel="Resize context panel"
-      />
-      <header className="flex h-[3.25rem] shrink-0 items-center gap-2 border-b border-border/60 px-3">
-        <span className="text-sm font-medium text-foreground/85">Context</span>
-        <IconButton
-          onClick={onClose}
-          aria-label="Close context panel"
-          className="ml-auto"
-        >
-          <X />
-        </IconButton>
-      </header>
-
       <div className="flex min-h-0 w-full flex-1 flex-col px-3 pt-4 pb-5">
         <div className="mb-6 shrink-0 space-y-2.5 px-1">
           <EnvRow
@@ -135,7 +110,7 @@ export function ChatContextPanel({
           />
         </section>
       </div>
-    </aside>
+    </ResizableSidePanel>
   )
 }
 

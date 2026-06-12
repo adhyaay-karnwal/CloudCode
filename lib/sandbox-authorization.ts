@@ -1,9 +1,8 @@
 import { auth } from "@clerk/nextjs/server"
-import { ConvexHttpClient } from "convex/browser"
 
 import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
-import { getConvexAuthTokenForSession } from "@/lib/codex-auth"
+import { convexHttpClientForSession } from "@/lib/convex-http"
 
 export class SandboxAuthorizationError extends Error {
   constructor() {
@@ -26,16 +25,6 @@ type SandboxAccessCacheEntry = {
 }
 
 const sandboxAccessCache = new Map<string, SandboxAccessCacheEntry>()
-
-function getConvexUrl() {
-  const url = process.env.NEXT_PUBLIC_CONVEX_URL
-
-  if (!url) {
-    throw new Error("Set NEXT_PUBLIC_CONVEX_URL before using Convex storage.")
-  }
-
-  return url
-}
 
 function sandboxAccessCacheKey(userId: string, sandboxId: string) {
   return `${userId}:${sandboxId}`
@@ -65,8 +54,7 @@ export async function requireCurrentUserSandbox(
   if (cached && cached.expiresAt > now) return cached.sandbox
   if (cached) sandboxAccessCache.delete(cacheKey)
 
-  const client = new ConvexHttpClient(getConvexUrl())
-  client.setAuth(await getConvexAuthTokenForSession(session))
+  const client = await convexHttpClientForSession(session)
 
   const sandbox = await client.query(api.codexRuns.sandboxAccess, {
     sandboxId,

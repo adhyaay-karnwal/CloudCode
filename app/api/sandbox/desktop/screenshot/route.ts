@@ -1,5 +1,3 @@
-import { NextResponse } from "next/server"
-
 import {
   BillingRequiredError,
   observeCurrentUserDaytonaBillingInfo,
@@ -7,6 +5,7 @@ import {
   requireCurrentUserInfraAccess,
 } from "@/lib/billing-server"
 import { takeDaytonaDesktopScreenshot } from "@/lib/daytona-desktop"
+import { jsonError, searchStringParam } from "@/lib/api-route"
 import { readDaytonaSandboxInfo } from "@/lib/daytona-sandbox"
 import { requireSameOrigin } from "@/lib/request-security"
 import { requireCurrentUserSandbox } from "@/lib/sandbox-authorization"
@@ -14,16 +13,11 @@ import { requireCurrentUserSandbox } from "@/lib/sandbox-authorization"
 export const runtime = "nodejs"
 export const maxDuration = 300
 
-function jsonError(message: string, status: number) {
-  return NextResponse.json({ error: message }, { status })
-}
-
 export async function GET(request: Request) {
   const blocked = requireSameOrigin(request)
   if (blocked) return blocked
 
-  const { searchParams } = new URL(request.url)
-  const sandboxId = searchParams.get("sandboxId")
+  const sandboxId = searchStringParam(request, "sandboxId")
 
   if (!sandboxId) {
     return jsonError("sandboxId required", 400)

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 
+import { jsonError, readJsonStringField } from "@/lib/api-route"
 import {
   BillingRequiredError,
   observeCurrentUserDaytonaBillingInfo,
@@ -17,17 +18,9 @@ export async function POST(request: Request) {
   const blocked = requireSameOrigin(request)
   if (blocked) return blocked
 
-  let sandboxId: string | undefined
-
-  try {
-    const body = (await request.json()) as { sandboxId?: unknown }
-    if (typeof body.sandboxId === "string") sandboxId = body.sandboxId
-  } catch {
-    // ignore malformed bodies; validation below returns a clean error
-  }
-
+  const sandboxId = await readJsonStringField(request, "sandboxId")
   if (!sandboxId) {
-    return NextResponse.json({ error: "sandboxId required" }, { status: 400 })
+    return jsonError("sandboxId required", 400)
   }
 
   try {
@@ -39,15 +32,12 @@ export async function POST(request: Request) {
   } catch (error) {
     if (error instanceof BillingRequiredError) {
       await pauseCurrentUserSandboxForBilling(sandboxId)
-      return NextResponse.json({ error: error.message }, { status: 402 })
+      return jsonError(error.message, 402)
     }
 
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error ? error.message : "Failed to resume sandbox.",
-      },
-      { status: 500 }
+    return jsonError(
+      error instanceof Error ? error.message : "Failed to resume sandbox.",
+      500
     )
   }
 }

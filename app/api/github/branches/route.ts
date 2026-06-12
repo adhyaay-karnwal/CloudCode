@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 
+import { jsonError, searchStringParam } from "@/lib/api-route"
 import { maybeGetCurrentGitHubRepoCredential } from "@/lib/github-auth"
 import { parseGitHubRepoUrl } from "@/lib/github-repo"
 import {
@@ -10,19 +11,15 @@ import {
 export const runtime = "nodejs"
 
 export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url)
-  const repoUrl = searchParams.get("repoUrl")?.trim()
+  const repoUrl = searchStringParam(request, "repoUrl")
 
   if (!repoUrl) {
-    return NextResponse.json({ error: "repoUrl required" }, { status: 400 })
+    return jsonError("repoUrl required", 400)
   }
 
   const parsed = parseGitHubRepoUrl(repoUrl)
   if (!parsed) {
-    return NextResponse.json(
-      { error: "Unsupported GitHub URL." },
-      { status: 400 }
-    )
+    return jsonError("Unsupported GitHub URL.", 400)
   }
 
   try {
@@ -33,35 +30,27 @@ export async function GET(request: Request) {
     )
     if (!repoMetadata.ok) {
       if (repoMetadata.status === 404) {
-        return NextResponse.json(
-          { error: "Repository not found." },
-          { status: 404 }
-        )
+        return jsonError("Repository not found.", 404)
       }
       if (repoMetadata.status === 401 || repoMetadata.status === 403) {
-        return NextResponse.json(
-          {
-            error: repoMetadata.rateLimited
-              ? "GitHub rate limit hit. Connect GitHub or try again later."
-              : "GitHub denied access. Reconnect GitHub with repo access.",
-          },
-          { status: repoMetadata.status }
+        return jsonError(
+          repoMetadata.rateLimited
+            ? "GitHub rate limit hit. Connect GitHub or try again later."
+            : "GitHub denied access. Reconnect GitHub with repo access.",
+          repoMetadata.status
         )
       }
 
-      return NextResponse.json(
-        { error: `GitHub API error: ${repoMetadata.status}` },
-        { status: repoMetadata.status }
+      return jsonError(
+        `GitHub API error: ${repoMetadata.status}`,
+        repoMetadata.status
       )
     }
 
     if (repoMetadata.metadata.private && !credential?.token) {
-      return NextResponse.json(
-        {
-          error:
-            "Install the GitHub App on this repository and authorize your GitHub user.",
-        },
-        { status: 401 }
+      return jsonError(
+        "Install the GitHub App on this repository and authorize your GitHub user.",
+        401
       )
     }
 
@@ -128,22 +117,16 @@ export async function GET(request: Request) {
       const body = (await error.json().catch(() => null)) as {
         error?: unknown
       } | null
-      return NextResponse.json(
-        {
-          error:
-            typeof body?.error === "string"
-              ? body.error
-              : "Failed to fetch branches.",
-        },
-        { status: error.status }
+      return jsonError(
+        typeof body?.error === "string"
+          ? body.error
+          : "Failed to fetch branches.",
+        error.status
       )
     }
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error ? error.message : "Failed to fetch branches.",
-      },
-      { status: 500 }
+    return jsonError(
+      error instanceof Error ? error.message : "Failed to fetch branches.",
+      500
     )
   }
 }

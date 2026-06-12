@@ -90,7 +90,7 @@ type GitHubCommitStatusResponse = {
   }>
 }
 
-type GitHubRepositoryResponse = {
+type GitHubRepositoryMergeSettingsResponse = {
   allow_merge_commit?: unknown
   allow_rebase_merge?: unknown
   allow_squash_merge?: unknown
@@ -310,7 +310,7 @@ export async function getAllowedMergeMethods({
   repo: GitHubRepo
   token?: string
 }): Promise<MergeMethod[]> {
-  const result = await githubFetch<GitHubRepositoryResponse>(
+  const result = await githubFetch<GitHubRepositoryMergeSettingsResponse>(
     githubRepoApiUrl(repo),
     token
   )

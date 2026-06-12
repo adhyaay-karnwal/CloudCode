@@ -1,13 +1,18 @@
-import { ConvexHttpClient } from "convex/browser"
 import { NextResponse } from "next/server"
 
 import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
-import { getConvexAuthToken } from "@/lib/codex-auth"
+import { currentUserConvexHttpClient } from "@/lib/convex-http"
 import {
   createDaytonaSshAccess,
   revokeDaytonaSshAccess,
 } from "@/lib/daytona-sandbox"
+import {
+  jsonError,
+  jsonStringField,
+  readJsonRecord,
+  searchStringParam,
+} from "@/lib/api-route"
 import { requireSameOrigin } from "@/lib/request-security"
 import { requireCurrentUserSandbox } from "@/lib/sandbox-authorization"
 
@@ -17,37 +22,6 @@ export const maxDuration = 300
 const MIN_EXPIRES_MINUTES = 5
 const MAX_EXPIRES_MINUTES = 24 * 60
 const DEFAULT_EXPIRES_MINUTES = 60
-
-function getConvexUrl() {
-  const url = process.env.NEXT_PUBLIC_CONVEX_URL
-  if (!url) {
-    throw new Error("Set NEXT_PUBLIC_CONVEX_URL before using Convex storage.")
-  }
-  return url
-}
-
-async function convexClient() {
-  const client = new ConvexHttpClient(getConvexUrl())
-  client.setAuth(await getConvexAuthToken())
-  return client
-}
-
-async function parseBody(request: Request) {
-  try {
-    return (await request.json()) as {
-      expiresInMinutes?: unknown
-      id?: unknown
-      label?: unknown
-      sandboxId?: unknown
-    }
-  } catch {
-    return {}
-  }
-}
-
-function jsonError(message: string, status: number) {
-  return NextResponse.json({ error: message }, { status })
-}
 
 function normalizeExpiresInMinutes(value: unknown) {
   if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -61,15 +35,14 @@ export async function GET(request: Request) {
   const blocked = requireSameOrigin(request)
   if (blocked) return blocked
 
-  const { searchParams } = new URL(request.url)
-  const sandboxId = searchParams.get("sandboxId")
+  const sandboxId = searchStringParam(request, "sandboxId")
   if (!sandboxId) {
     return jsonError("sandboxId required", 400)
   }
 
   try {
     await requireCurrentUserSandbox(sandboxId)
-    const client = await convexClient()
+    const client = await currentUserConvexHttpClient()
     const connections = await client.query(api.sshAccess.list, { sandboxId })
     return NextResponse.json({ connections })
   } catch (error) {
@@ -84,9 +57,9 @@ export async function POST(request: Request) {
   const blocked = requireSameOrigin(request)
   if (blocked) return blocked
 
-  const body = await parseBody(request)
-  const sandboxId = typeof body.sandboxId === "string" ? body.sandboxId : ""
-  const label = typeof body.label === "string" ? body.label : ""
+  const body = await readJsonRecord(request)
+  const sandboxId = jsonStringField(body, "sandboxId")
+  const label = jsonStringField(body, "label") ?? ""
   if (!sandboxId) {
     return jsonError("sandboxId required", 400)
   }
@@ -97,7 +70,7 @@ export async function POST(request: Request) {
       sandboxId,
       normalizeExpiresInMinutes(body.expiresInMinutes)
     )
-    const client = await convexClient()
+    const client = await currentUserConvexHttpClient()
     const id = await client.mutation(api.sshAccess.create, {
       accessId: access.accessId,
       expiresAt: Date.parse(access.expiresAt),
@@ -119,15 +92,15 @@ export async function PATCH(request: Request) {
   const blocked = requireSameOrigin(request)
   if (blocked) return blocked
 
-  const body = await parseBody(request)
-  const id = typeof body.id === "string" ? body.id : ""
-  const label = typeof body.label === "string" ? body.label : ""
+  const body = await readJsonRecord(request)
+  const id = jsonStringField(body, "id")
+  const label = jsonStringField(body, "label") ?? ""
   if (!id) {
     return jsonError("id required", 400)
   }
 
   try {
-    const client = await convexClient()
+    const client = await currentUserConvexHttpClient()
     await client.mutation(api.sshAccess.rename, {
       id: id as Id<"sshAccessTokens">,
       label,
@@ -145,9 +118,9 @@ export async function DELETE(request: Request) {
   const blocked = requireSameOrigin(request)
   if (blocked) return blocked
 
-  const body = await parseBody(request)
-  const sandboxId = typeof body.sandboxId === "string" ? body.sandboxId : ""
-  const id = typeof body.id === "string" ? body.id : ""
+  const body = await readJsonRecord(request)
+  const sandboxId = jsonStringField(body, "sandboxId")
+  const id = jsonStringField(body, "id")
   if (!sandboxId) {
     return jsonError("sandboxId required", 400)
   }
@@ -157,7 +130,7 @@ export async function DELETE(request: Request) {
 
   try {
     await requireCurrentUserSandbox(sandboxId)
-    const client = await convexClient()
+    const client = await currentUserConvexHttpClient()
     const record = await client.query(api.sshAccess.get, {
       id: id as Id<"sshAccessTokens">,
     })

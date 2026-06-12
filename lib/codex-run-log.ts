@@ -12,6 +12,10 @@ export type CodexRunLog = {
   message: string
 }
 
+export type StoredCodexRunLog = CodexRunLog & {
+  time: number
+}
+
 const CODEX_TOOL_MARKER_REGEX = /<codex-tool>([^<]*)<\/codex-tool>/g
 
 const MAX_MARKER_COMMAND_LENGTH = 1_000

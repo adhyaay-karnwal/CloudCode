@@ -53,18 +53,7 @@ function tomlBareOrQuotedKey(key: string) {
   return /^[A-Za-z0-9_-]+$/.test(key) ? key : tomlString(key)
 }
 
-export function normalizeMcpServerName(name: string) {
-  const slug = name
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .slice(0, 64)
-
-  return slug || "custom_mcp"
-}
-
-export function assertMcpServerName(name: string) {
+function assertMcpServerName(name: string) {
   if (!MCP_NAME_RE.test(name)) {
     throw new Error(
       "MCP server name must contain only letters, numbers, underscores, and dashes."
@@ -121,7 +110,7 @@ export function splitMcpLaunchCommand(value: string) {
   return parts
 }
 
-export function buildMcpServerConfig(server: McpRuntimeServer) {
+function buildMcpServerConfig(server: McpRuntimeServer) {
   assertMcpServerName(server.name)
 
   const lines = [

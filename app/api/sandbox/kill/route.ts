@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 
+import { jsonError, readJsonStringField } from "@/lib/api-route"
 import { observeCurrentUserDaytonaBilling } from "@/lib/billing-server"
 import {
   deleteDaytonaSandboxQuietly,
@@ -15,23 +16,15 @@ export async function POST(request: Request) {
   const blocked = requireSameOrigin(request)
   if (blocked) return blocked
 
-  let sandboxId: string | undefined
-
-  try {
-    const body = (await request.json()) as { sandboxId?: unknown }
-    if (typeof body.sandboxId === "string") sandboxId = body.sandboxId
-  } catch {
-    // ignore malformed bodies; validation below returns a clean error
-  }
-
+  const sandboxId = await readJsonStringField(request, "sandboxId")
   if (!sandboxId) {
-    return NextResponse.json({ error: "sandboxId required" }, { status: 400 })
+    return jsonError("sandboxId required", 400)
   }
 
   try {
     await requireCurrentUserSandbox(sandboxId)
   } catch {
-    return NextResponse.json({ error: "Sandbox not found." }, { status: 404 })
+    return jsonError("Sandbox not found.", 404)
   }
 
   const info = await readDaytonaSandboxInfo(sandboxId).catch(() => null)

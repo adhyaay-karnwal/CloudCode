@@ -10,28 +10,17 @@ import {
   stopDaytonaDesktopRecording,
   type DaytonaDesktopRecordingFile,
 } from "@/lib/daytona-desktop"
+import {
+  jsonError,
+  jsonStringField,
+  readJsonRecord,
+  searchStringParam,
+} from "@/lib/api-route"
 import { requireSameOrigin } from "@/lib/request-security"
 import { requireCurrentUserSandbox } from "@/lib/sandbox-authorization"
 
 export const runtime = "nodejs"
 export const maxDuration = 300
-
-async function parseBody(request: Request) {
-  try {
-    return (await request.json()) as {
-      action?: unknown
-      label?: unknown
-      recordingId?: unknown
-      sandboxId?: unknown
-    }
-  } catch {
-    return {}
-  }
-}
-
-function jsonError(message: string, status: number) {
-  return NextResponse.json({ error: message }, { status })
-}
 
 function downloadName(fileName: string) {
   return fileName.replace(/["\r\n]/g, "_") || "desktop-recording.mp4"
@@ -129,8 +118,8 @@ export async function GET(request: Request) {
   if (blocked) return blocked
 
   const { searchParams } = new URL(request.url)
-  const sandboxId = searchParams.get("sandboxId")
-  const recordingId = searchParams.get("recordingId")
+  const sandboxId = searchStringParam(request, "sandboxId")
+  const recordingId = searchStringParam(request, "recordingId")
   const download = searchParams.get("download") === "1"
   const inline = searchParams.get("inline") === "1"
 
@@ -164,12 +153,11 @@ export async function POST(request: Request) {
   const blocked = requireSameOrigin(request)
   if (blocked) return blocked
 
-  const body = await parseBody(request)
-  const sandboxId = typeof body.sandboxId === "string" ? body.sandboxId : ""
-  const action = typeof body.action === "string" ? body.action : ""
-  const label = typeof body.label === "string" ? body.label : undefined
-  const recordingId =
-    typeof body.recordingId === "string" ? body.recordingId : ""
+  const body = await readJsonRecord(request)
+  const sandboxId = jsonStringField(body, "sandboxId")
+  const action = jsonStringField(body, "action")
+  const label = jsonStringField(body, "label")
+  const recordingId = jsonStringField(body, "recordingId")
 
   if (!sandboxId) {
     return jsonError("sandboxId required", 400)
