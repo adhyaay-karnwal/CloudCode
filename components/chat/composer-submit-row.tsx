@@ -16,6 +16,7 @@ import {
   type Speed,
   type Thinking,
 } from "@/lib/chat/options"
+import { cn } from "@/lib/shared/utils"
 
 export function ComposerSubmitRow({
   activeRunPending,
@@ -69,7 +70,12 @@ export function ComposerSubmitRow({
         <ImagePlus className="size-[18px]" />
       </IconButton>
 
-      <div className="ml-auto flex min-w-0 flex-nowrap items-center justify-end gap-1.5 overflow-x-auto overscroll-x-contain md:flex-wrap md:overflow-visible">
+      <div
+        className={cn(
+          "ml-auto flex min-w-0 flex-nowrap items-center justify-end gap-1.5 overscroll-x-contain md:flex-wrap md:overflow-visible",
+          modelOpen || thinkingOpen ? "overflow-visible" : "overflow-x-auto"
+        )}
+      >
         <Pill
           header="Model"
           value={model}
