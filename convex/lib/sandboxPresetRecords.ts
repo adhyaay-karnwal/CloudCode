@@ -1,4 +1,5 @@
 import type { Doc } from "../_generated/dataModel"
+import { isBuiltInAutoEnvironmentPreset } from "./sandboxPresetConstants"
 
 export function isLegacyDefaultPreset(
   preset: {
@@ -16,10 +17,6 @@ export function isLegacyDefaultPreset(
     !preset.pathInstallScript &&
     secretCount === 0
   )
-}
-
-export function isAutoPreset(preset: { mode?: "manual" | "auto" }) {
-  return preset.mode === "auto"
 }
 
 function secretSummaryRows(secrets: Doc<"sandboxPresetSecrets">[]) {
@@ -43,11 +40,11 @@ function secretValueRows(secrets: Doc<"sandboxPresetSecrets">[]) {
 }
 
 function environmentRowsForPreset(
-  presetId: Doc<"sandboxPresets">["_id"],
+  environmentPresetId: Doc<"sandboxPresets">["_id"],
   environments: Doc<"sandboxPresetEnvironments">[]
 ) {
   return environments
-    .filter((environment) => environment.presetId === presetId)
+    .filter((environment) => environment.presetId === environmentPresetId)
     .slice(0, 8)
     .map((environment) => ({
       activeSandboxId: environment.activeSandboxId,
@@ -62,10 +59,12 @@ function environmentRowsForPreset(
 
 export function sandboxPresetListRow({
   environments,
+  environmentPresetId,
   preset,
   secrets,
 }: {
   environments?: Doc<"sandboxPresetEnvironments">[]
+  environmentPresetId?: Doc<"sandboxPresets">["_id"]
   preset: Doc<"sandboxPresets">
   secrets: Doc<"sandboxPresetSecrets">[]
 }) {
@@ -75,11 +74,17 @@ export function sandboxPresetListRow({
     environmentSlug: preset.environmentSlug,
     id: preset._id,
     installScript: preset.installScript,
+    isBuiltInAutoEnvironment: isBuiltInAutoEnvironmentPreset(preset),
     mode: preset.mode ?? "manual",
     name: preset.name,
     pathInstallScript: preset.pathInstallScript,
     ...(environments
-      ? { environments: environmentRowsForPreset(preset._id, environments) }
+      ? {
+          environments: environmentRowsForPreset(
+            environmentPresetId ?? preset._id,
+            environments
+          ),
+        }
       : {}),
     secrets: secretSummaryRows(secrets),
     updatedAt: preset.updatedAt,

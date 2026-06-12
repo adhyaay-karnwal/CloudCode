@@ -18,7 +18,7 @@ export function usePresetSettingsController(presets: SandboxPresetRecord[]) {
     null
   )
   const selected = presets.find((preset) => preset.id === selectedId) ?? null
-  const selectedIsAuto = selected?.mode === "auto"
+  const selectedIsAuto = selected?.isBuiltInAutoEnvironment === true
   const [name, setName] = useState("")
   const [autoEnvironment, setAutoEnvironment] = useState(false)
   const [pathInstallScript, setPathInstallScript] = useState("")

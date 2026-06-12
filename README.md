@@ -5,6 +5,19 @@ Daytona sandboxes. It uses Clerk for sign-in, ChatGPT OAuth for Codex auth, a
 GitHub App for repository access, Convex for app data, and Trigger.dev for
 background Codex runs.
 
+## Demo
+
+[Watch the demo](https://drive.google.com/file/d/1TXkPj7NiCo4qouHJE5VemrvAAb7LsD-o/view?usp=sharing)
+
+## Features
+
+- Run Codex against GitHub repositories in isolated Daytona sandboxes.
+- Use persistent sandbox terminals.
+- Connect over SSH.
+- Share project notes so agents and humans can share context. 
+- Configure MCP servers for external integrations. 
+- Computer use workflows for browser-driven tasks and visual inspection.
+
 ## Setup
 
 Install dependencies:

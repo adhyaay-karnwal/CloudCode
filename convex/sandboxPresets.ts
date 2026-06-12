@@ -12,15 +12,16 @@ import {
 } from "./lib/sandboxPresetBuilds"
 import {
   autoEnvironmentRunRow,
-  isAutoPreset,
   isLegacyDefaultPreset,
   sandboxPresetListRow,
   sandboxPresetRunInput,
 } from "./lib/sandboxPresetRecords"
 import {
   ensureAutoEnvironmentPreset,
+  getAutoEnvironmentPreset,
   requireOwnedPreset,
 } from "./lib/sandboxPresets"
+import { isBuiltInAutoEnvironmentPreset } from "./lib/sandboxPresetConstants"
 import {
   cleanDaytonaSnapshot,
   cleanEncryptedPresetSecretValue,
@@ -69,7 +70,7 @@ export const listWithEnvironments = query({
     const user = await getCurrentUser(ctx)
     if (!user) return []
 
-    const [presets, environments] = await Promise.all([
+    const [presets, environments, autoEnvironmentPreset] = await Promise.all([
       ctx.db
         .query("sandboxPresets")
         .withIndex("by_user_updated", (q) => q.eq("userId", user._id))
@@ -80,6 +81,7 @@ export const listWithEnvironments = query({
         .withIndex("by_user_updated", (q) => q.eq("userId", user._id))
         .order("desc")
         .take(ENVIRONMENT_LIST_LIMIT),
+      getAutoEnvironmentPreset(ctx, user._id),
     ])
 
     const rows = await Promise.all(
@@ -91,7 +93,14 @@ export const listWithEnvironments = query({
 
         if (isLegacyDefaultPreset(preset, secrets.length)) return null
 
-        return sandboxPresetListRow({ environments, preset, secrets })
+        return sandboxPresetListRow({
+          environmentPresetId: isBuiltInAutoEnvironmentPreset(preset)
+            ? autoEnvironmentPreset?._id
+            : undefined,
+          environments,
+          preset,
+          secrets,
+        })
       })
     )
 
@@ -204,12 +213,15 @@ export const getAutoEnvironmentForRun = query({
     const preset = await requireOwnedPreset(ctx, args.presetId, user._id)
     if ((preset.mode ?? "manual") !== "auto") return null
 
+    const autoEnvironmentPreset = await getAutoEnvironmentPreset(ctx, user._id)
+    if (!autoEnvironmentPreset) return null
+
     const environment = await ctx.db
       .query("sandboxPresetEnvironments")
       .withIndex("by_preset_repo", (q) =>
         q
           .eq("userId", user._id)
-          .eq("presetId", preset._id)
+          .eq("presetId", autoEnvironmentPreset._id)
           .eq("repoUrl", args.repoUrl)
       )
       .unique()
@@ -231,12 +243,18 @@ export const getAutoEnvironmentForRunForWorker = query({
     const preset = await ctx.db.get(args.presetId)
     if (!preset || (preset.mode ?? "manual") !== "auto") return null
 
+    const autoEnvironmentPreset = await getAutoEnvironmentPreset(
+      ctx,
+      preset.userId
+    )
+    if (!autoEnvironmentPreset) return null
+
     const environment = await ctx.db
       .query("sandboxPresetEnvironments")
       .withIndex("by_preset_repo", (q) =>
         q
           .eq("userId", preset.userId)
-          .eq("presetId", preset._id)
+          .eq("presetId", autoEnvironmentPreset._id)
           .eq("repoUrl", args.repoUrl)
       )
       .unique()
@@ -360,7 +378,7 @@ export const remove = mutation({
   handler: async (ctx, args) => {
     const userId = await ensureCurrentUser(ctx)
     const preset = await requireOwnedPreset(ctx, args.presetId, userId)
-    if (isAutoPreset(preset)) {
+    if (isBuiltInAutoEnvironmentPreset(preset)) {
       throw new Error("Auto environment presets cannot be deleted.")
     }
 

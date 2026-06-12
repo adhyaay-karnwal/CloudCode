@@ -47,7 +47,11 @@ export function makeId() {
 }
 
 export function cloneEntries(entries: EnvVar[]) {
-  return entries.map((entry) => ({ name: entry.name, value: entry.value }))
+  return entries.map((entry) => ({
+    ...(entry.managed ? { managed: true } : {}),
+    name: entry.name,
+    value: entry.value,
+  }))
 }
 
 function rowsFromEntries(entries: EnvVar[]): LocalRow[] {
@@ -56,6 +60,7 @@ function rowsFromEntries(entries: EnvVar[]): LocalRow[] {
 
 export function entriesFromRows(rows: LocalRow[]): EnvVar[] {
   return rows.map((row) => ({
+    ...(row.managed ? { managed: true } : {}),
     name: row.name.trim(),
     value: row.value,
   }))
@@ -72,7 +77,13 @@ export function entriesEqual(rows: LocalRow[], original: EnvVar[]) {
   for (let index = 0; index < rows.length; index += 1) {
     const row = rows[index]
     const entry = original[index]
-    if (row.name !== entry.name || row.value !== entry.value) return false
+    if (
+      row.managed !== entry.managed ||
+      row.name !== entry.name ||
+      row.value !== entry.value
+    ) {
+      return false
+    }
   }
 
   return true
@@ -171,6 +182,7 @@ export function environmentPanelReducer(
       for (const entry of action.vars) {
         const existingIndex = indexByName.get(entry.name)
         if (existingIndex !== undefined) {
+          if (rows[existingIndex].managed) continue
           rows[existingIndex] = { ...rows[existingIndex], value: entry.value }
         } else {
           rows.push({ id: makeId(), name: entry.name, value: entry.value })

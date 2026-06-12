@@ -156,14 +156,6 @@ function ManualPresetFields(props: PresetEditorFieldsProps) {
         />
       </div>
 
-      {props.autoEnvironment && props.selected?.environments?.length ? (
-        <PresetEnvironmentList
-          environments={props.selected.environments}
-          saving={props.saving}
-          onDelete={props.deleteEnvironment}
-        />
-      ) : null}
-
       <PresetScriptTextarea
         label="PATH setup script"
         value={props.pathInstallScript}

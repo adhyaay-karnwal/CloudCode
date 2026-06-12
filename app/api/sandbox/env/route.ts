@@ -83,11 +83,25 @@ function parseEntries(userContent: string): SandboxEnvVar[] {
   return entries
 }
 
+function entriesForResponse(content: string) {
+  const { managedBlock, userContent } = splitManagedBlock(content)
+  const entriesByName = new Map(
+    parseEntries(userContent).map((entry) => [entry.name, entry])
+  )
+
+  for (const entry of parseEntries(managedBlock ?? "")) {
+    entriesByName.set(entry.name, { ...entry, managed: true })
+  }
+
+  return Array.from(entriesByName.values())
+}
+
 function serialize(
   entries: SandboxEnvVar[],
   managedBlock: string | null
 ): string {
   const userText = entries
+    .filter((entry) => !entry.managed)
     .map((entry) => `${entry.name}=${JSON.stringify(entry.value)}`)
     .join("\n")
 
@@ -171,8 +185,7 @@ export async function GET(request: Request) {
   try {
     const { sandbox } = await getStartedCurrentUserDaytonaSandbox(sandboxId)
     const { content } = await readEnvFile(sandboxId, sandbox)
-    const { userContent } = splitManagedBlock(content)
-    return noStoreJson({ entries: parseEntries(userContent) })
+    return noStoreJson({ entries: entriesForResponse(content) })
   } catch (error) {
     if (error instanceof BillingRequiredError) {
       return noStoreJsonError(error.message, 402)
@@ -205,13 +218,13 @@ async function save(request: Request) {
     const { content, fullPath } = await readEnvFile(sandboxId, sandbox)
     const { managedBlock } = splitManagedBlock(content)
 
-    await writeDaytonaTextFile(
-      sandbox,
-      fullPath,
-      serialize(entries, managedBlock)
-    )
+    const contentToWrite = serialize(entries, managedBlock)
+    await writeDaytonaTextFile(sandbox, fullPath, contentToWrite)
 
-    return noStoreJson({ entries, ok: true })
+    return noStoreJson({
+      entries: entriesForResponse(contentToWrite),
+      ok: true,
+    })
   } catch (error) {
     if (error instanceof BillingRequiredError) {
       return noStoreJsonError(error.message, 402)

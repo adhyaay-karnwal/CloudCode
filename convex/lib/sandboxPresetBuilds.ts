@@ -1,7 +1,10 @@
 import type { Doc, Id } from "../_generated/dataModel"
 import type { MutationCtx } from "../_generated/server"
 import { appendBuildRunLogs, type StoredRunLog } from "./codexRunLogs"
-import { requireOwnedPreset } from "./sandboxPresets"
+import {
+  ensureAutoEnvironmentPreset,
+  requireOwnedPreset,
+} from "./sandboxPresets"
 import { repoSlug, slugify } from "./sandboxPresetValidation"
 
 export async function beginAutoEnvironmentBuildForUser(
@@ -17,6 +20,7 @@ export async function beginAutoEnvironmentBuildForUser(
   if ((preset.mode ?? "manual") !== "auto") {
     throw new Error("Preset is not an auto environment preset.")
   }
+  const autoEnvironmentPresetId = await ensureAutoEnvironmentPreset(ctx, userId)
 
   const repoUrl = args.repoUrl.trim()
   if (!repoUrl) throw new Error("repoUrl is required.")
@@ -27,20 +31,13 @@ export async function beginAutoEnvironmentBuildForUser(
     .withIndex("by_preset_repo", (q) =>
       q
         .eq("userId", userId)
-        .eq("presetId", args.presetId)
+        .eq("presetId", autoEnvironmentPresetId)
         .eq("repoUrl", repoUrl)
     )
     .unique()
 
   const environmentSlug = slugify(
-    [
-      preset.environmentSlug && preset.environmentSlug !== "auto"
-        ? preset.environmentSlug
-        : preset.name,
-      repoSlug(repoUrl),
-    ]
-      .filter(Boolean)
-      .join("-")
+    ["Auto environment", repoSlug(repoUrl)].filter(Boolean).join("-")
   )
   const buildNumber = (environment?.buildNumber ?? 0) + 1
 
@@ -52,7 +49,7 @@ export async function beginAutoEnvironmentBuildForUser(
       buildNumber,
       createdAt: now,
       environmentSlug,
-      presetId: args.presetId,
+      presetId: autoEnvironmentPresetId,
       repoUrl,
       status: "building",
       updatedAt: now,
@@ -77,7 +74,7 @@ export async function beginAutoEnvironmentBuildForUser(
     createdAt: now,
     environmentId: environment._id,
     logs: [],
-    presetId: args.presetId,
+    presetId: autoEnvironmentPresetId,
     repoUrl,
     startedAt: now,
     status: "building",

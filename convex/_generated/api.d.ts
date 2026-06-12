@@ -28,6 +28,7 @@ import type * as lib_mcpServerRecords from "../lib/mcpServerRecords.js";
 import type * as lib_mcpServerValidation from "../lib/mcpServerValidation.js";
 import type * as lib_sandboxAccess from "../lib/sandboxAccess.js";
 import type * as lib_sandboxPresetBuilds from "../lib/sandboxPresetBuilds.js";
+import type * as lib_sandboxPresetConstants from "../lib/sandboxPresetConstants.js";
 import type * as lib_sandboxPresetRecords from "../lib/sandboxPresetRecords.js";
 import type * as lib_sandboxPresetValidation from "../lib/sandboxPresetValidation.js";
 import type * as lib_sandboxPresets from "../lib/sandboxPresets.js";
@@ -67,6 +68,7 @@ declare const fullApi: ApiFromModules<{
   "lib/mcpServerValidation": typeof lib_mcpServerValidation;
   "lib/sandboxAccess": typeof lib_sandboxAccess;
   "lib/sandboxPresetBuilds": typeof lib_sandboxPresetBuilds;
+  "lib/sandboxPresetConstants": typeof lib_sandboxPresetConstants;
   "lib/sandboxPresetRecords": typeof lib_sandboxPresetRecords;
   "lib/sandboxPresetValidation": typeof lib_sandboxPresetValidation;
   "lib/sandboxPresets": typeof lib_sandboxPresets;

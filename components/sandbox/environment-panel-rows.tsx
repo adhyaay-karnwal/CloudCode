@@ -65,6 +65,7 @@ export function EnvRow({
           autoComplete="off"
           autoCorrect="off"
           className={nameInputClass}
+          disabled={row.managed}
           onChange={(event) => onChange({ name: event.target.value })}
           spellCheck={false}
           value={row.name}
@@ -78,6 +79,7 @@ export function EnvRow({
           className={valueInputClass}
           data-1p-ignore
           data-lpignore="true"
+          disabled={row.managed}
           onChange={(event) => onChange({ value: event.target.value })}
           placeholder={row.value ? maskedDots(row.value) : "(empty)"}
           spellCheck={false}
@@ -97,13 +99,15 @@ export function EnvRow({
             <Eye className="size-3.5" />
           )}
         </RowIconButton>
-        <RowIconButton
-          label="Delete variable"
-          onClick={onRemove}
-          disabled={saving}
-        >
-          <Trash2 className="size-3.5" />
-        </RowIconButton>
+        {row.managed ? null : (
+          <RowIconButton
+            label="Delete variable"
+            onClick={onRemove}
+            disabled={saving}
+          >
+            <Trash2 className="size-3.5" />
+          </RowIconButton>
+        )}
       </div>
     </li>
   )
