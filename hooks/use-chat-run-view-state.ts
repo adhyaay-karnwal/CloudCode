@@ -52,6 +52,7 @@ export function useChatRunViewState({
   })
 
   const revealedLiveRunContent = useChatLiveRunReveal({
+    isCurrentLiveRunSnapshot: Boolean(liveRun && visibleLiveRun === liveRun),
     shouldAnimateInitial: Boolean(
       visibleLiveRun && runningRunKeys[visibleLiveRun.threadId as string]
     ),

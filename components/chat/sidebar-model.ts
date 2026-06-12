@@ -17,6 +17,10 @@ export type SidebarChatGroup = {
   repo: string
 }
 
+export function isSidebarChatRunning(chat: SidebarChat) {
+  return chat.pending
+}
+
 export function groupSidebarChats(chats: SidebarChat[]): SidebarChatGroup[] {
   const map = new Map<string, SidebarChatGroup>()
   for (const chat of chats) {

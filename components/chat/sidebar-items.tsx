@@ -5,7 +5,10 @@ import { useEffect, useRef, useState } from "react"
 
 import { ContextMenu } from "@/components/ui/context-menu"
 import type { SidebarChat } from "@/components/chat/sidebar-model"
-import { relativeTime } from "@/components/chat/sidebar-model"
+import {
+  isSidebarChatRunning,
+  relativeTime,
+} from "@/components/chat/sidebar-model"
 import { BrailleSpinner, SandboxDot } from "@/components/chat/sidebar-status"
 import type { Id } from "@/convex/_generated/dataModel"
 import { cn } from "@/lib/shared/utils"
@@ -30,6 +33,7 @@ export function FolderGroup({
   onNewChatInRepo: (repoUrl: string) => void
 }) {
   const [open, setOpen] = useState(true)
+  const visibleItems = open ? items : items.filter(isSidebarChatRunning)
 
   return (
     <div>
@@ -37,6 +41,7 @@ export function FolderGroup({
         <button
           type="button"
           onClick={() => setOpen(!open)}
+          aria-expanded={open}
           className="flex min-w-0 flex-1 items-center gap-1.5 text-left transition-colors hover:text-foreground"
         >
           <ChevronRight
@@ -56,9 +61,9 @@ export function FolderGroup({
           <Plus className="size-3" />
         </button>
       </div>
-      {open ? (
+      {visibleItems.length > 0 ? (
         <div>
-          {items.map((chat) => (
+          {visibleItems.map((chat) => (
             <SidebarItem
               key={chat.id}
               chat={chat}

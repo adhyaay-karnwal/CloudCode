@@ -6,6 +6,7 @@ import { splitStreamingTokens } from "@/components/chat/streaming"
 import type { LiveRunRecord } from "@/components/chat/types"
 
 type LiveRevealState = {
+  inactive?: boolean
   queue: string[]
   target: string
   timer?: ReturnType<typeof setTimeout>
@@ -13,9 +14,11 @@ type LiveRevealState = {
 }
 
 export function useChatLiveRunReveal({
+  isCurrentLiveRunSnapshot,
   shouldAnimateInitial,
   visibleLiveRun,
 }: {
+  isCurrentLiveRunSnapshot: boolean
   shouldAnimateInitial: boolean
   visibleLiveRun: LiveRunRecord | null
 }) {
@@ -23,6 +26,7 @@ export function useChatLiveRunReveal({
     Record<string, string>
   >({})
   const liveRevealRef = useRef<Record<string, LiveRevealState>>({})
+  const previousRunKeyRef = useRef<string | null>(null)
   const runKey = visibleLiveRun ? (visibleLiveRun.runId as string) : null
   const target = visibleLiveRun?.content ?? ""
 
@@ -54,16 +58,41 @@ export function useChatLiveRunReveal({
     (key: string) => {
       const state = liveRevealRef.current[key]
       if (!state || state.timer) return
+      state.inactive = false
       state.timer = setTimeout(() => revealNextLiveToken(key), 0)
     },
     [revealNextLiveToken]
   )
+
+  const finishLiveReveal = useCallback((key: string, inactive: boolean) => {
+    const state = liveRevealRef.current[key]
+    if (!state) return
+
+    if (state.timer) clearTimeout(state.timer)
+    state.inactive = inactive
+    state.queue = []
+    state.timer = undefined
+    state.visible = state.target
+    setRevealedLiveRunContent((current) =>
+      current[key] === state.visible
+        ? current
+        : { ...current, [key]: state.visible }
+    )
+  }, [])
 
   const clearLiveRevealTimers = useCallback(() => {
     for (const state of Object.values(liveRevealRef.current)) {
       if (state.timer) clearTimeout(state.timer)
     }
   }, [])
+
+  useEffect(() => {
+    const previousRunKey = previousRunKeyRef.current
+    if (previousRunKey && previousRunKey !== runKey) {
+      finishLiveReveal(previousRunKey, true)
+    }
+    previousRunKeyRef.current = runKey
+  }, [finishLiveReveal, runKey])
 
   useEffect(() => {
     if (!runKey) return
@@ -82,6 +111,7 @@ export function useChatLiveRunReveal({
       }
 
       liveRevealRef.current[runKey] = {
+        inactive: false,
         queue: splitStreamingTokens(target),
         target,
         visible: "",
@@ -90,11 +120,25 @@ export function useChatLiveRunReveal({
       return
     }
 
+    if (current.inactive) {
+      if (current.timer) clearTimeout(current.timer)
+      current.inactive = !isCurrentLiveRunSnapshot
+      current.queue = []
+      current.target = target
+      current.timer = undefined
+      current.visible = target
+      setRevealedLiveRunContent((state) =>
+        state[runKey] === target ? state : { ...state, [runKey]: target }
+      )
+      return
+    }
+
     if (current.target === target) return
 
     if (!target.startsWith(current.visible)) {
       if (current.timer) clearTimeout(current.timer)
       liveRevealRef.current[runKey] = {
+        inactive: false,
         queue: [],
         target,
         visible: target,
@@ -106,15 +150,13 @@ export function useChatLiveRunReveal({
     current.target = target
     current.queue = splitStreamingTokens(target.slice(current.visible.length))
     scheduleLiveReveal(runKey)
-  }, [runKey, scheduleLiveReveal, shouldAnimateInitial, target])
-
-  useEffect(() => {
-    if (runKey) return
-
-    clearLiveRevealTimers()
-    liveRevealRef.current = {}
-    setRevealedLiveRunContent({})
-  }, [clearLiveRevealTimers, runKey])
+  }, [
+    isCurrentLiveRunSnapshot,
+    runKey,
+    scheduleLiveReveal,
+    shouldAnimateInitial,
+    target,
+  ])
 
   useEffect(() => clearLiveRevealTimers, [clearLiveRevealTimers])
 
