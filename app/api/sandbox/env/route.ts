@@ -169,7 +169,11 @@ function validateEntries(rawEntries: unknown): SandboxEnvVar[] | Response {
     }
 
     seen.add(name)
-    entries.push({ name, value })
+    entries.push({
+      ...((item as SandboxEnvVar).managed === true ? { managed: true } : {}),
+      name,
+      value,
+    })
   }
 
   return entries

@@ -5,13 +5,15 @@ import { memo, type ReactNode } from "react"
 import { MarkdownWithRecordingVideos } from "@/components/chat/message-media"
 import type { ChatRunLog } from "@/components/chat/message-model"
 import {
-  EMPTY_TOOL_DETAILS,
+  type AssistantGroupedSegment,
   findLastTextSegmentIndex,
   groupAssistantContent,
+  placeToolsBeforeFinalText,
   shouldShowFinalResponseSeparator,
 } from "@/components/chat/message-segments"
 import { ToolGroup } from "@/components/chat/message-tools"
 import { toolDetailsFromLogs } from "@/components/chat/tool-details"
+import type { ParsedLogDetail } from "@/components/chat/tool-detail-types"
 import { cn } from "@/lib/shared/utils"
 
 export const AssistantBody = memo(function AssistantBody({
@@ -48,23 +50,17 @@ export const AssistantBody = memo(function AssistantBody({
   }
 
   const { grouped, hasToolMarkers } = groupAssistantContent(text)
-  const fallbackTools = hasToolMarkers ? [] : toolDetailsFromLogs(logs)
-  if (fallbackTools.length > 0) {
-    grouped.push({
-      details: fallbackTools,
-      key: "fallback-tools",
-      kind: "tools",
-    })
-  }
+  const fallbackTools = visibleFallbackTools(grouped, logs, hasToolMarkers)
+  const ordered = placeToolsBeforeFinalText(grouped, fallbackTools)
 
-  const lastTextIndex = findLastTextSegmentIndex(grouped)
+  const lastTextIndex = findLastTextSegmentIndex(ordered)
   const showFinalSeparator = shouldShowFinalResponseSeparator(
-    grouped,
+    ordered,
     lastTextIndex
   )
 
   const rendered: ReactNode[] = []
-  grouped.forEach((seg, i) => {
+  ordered.forEach((seg, i) => {
     if (showFinalSeparator && i === lastTextIndex) {
       rendered.push(
         <div key={`sep-${seg.key}`} className="flex items-center gap-4 py-4">
@@ -123,13 +119,12 @@ const PendingAssistantBody = memo(function PendingAssistantBody({
   sandboxId?: string | null
 }) {
   const { grouped, hasToolMarkers } = groupAssistantContent(text)
-  const fallbackTools = hasToolMarkers
-    ? EMPTY_TOOL_DETAILS
-    : toolDetailsFromLogs(logs)
+  const fallbackTools = visibleFallbackTools(grouped, logs, hasToolMarkers)
+  const ordered = placeToolsBeforeFinalText(grouped, fallbackTools)
 
   return (
     <div className="space-y-3">
-      {grouped.map((seg) =>
+      {ordered.map((seg) =>
         seg.kind === "tools" ? (
           <ToolGroup
             key={seg.key}
@@ -151,13 +146,56 @@ const PendingAssistantBody = memo(function PendingAssistantBody({
           />
         )
       )}
-      {fallbackTools.length > 0 ? (
-        <ToolGroup
-          details={fallbackTools}
-          runDiff={runDiff}
-          sandboxId={sandboxId}
-        />
-      ) : null}
     </div>
   )
 })
+
+function visibleFallbackTools(
+  grouped: AssistantGroupedSegment[],
+  logs: ChatRunLog[],
+  hasToolMarkers: boolean
+): ParsedLogDetail[] {
+  const fallbackTools = toolDetailsFromLogs(logs)
+  if (!hasToolMarkers || fallbackTools.length === 0) return fallbackTools
+
+  const visibleIdentities = new Set(
+    grouped
+      .flatMap((segment) => (segment.kind === "tools" ? segment.details : []))
+      .map(toolFallbackIdentity)
+      .filter((identity): identity is string => Boolean(identity))
+  )
+  if (visibleIdentities.size === 0) return fallbackTools
+
+  return fallbackTools.filter((detail) => {
+    const identity = toolFallbackIdentity(detail)
+    return !identity || !visibleIdentities.has(identity)
+  })
+}
+
+function toolFallbackIdentity(detail: ParsedLogDetail): string | null {
+  const itemId = detail.itemId?.trim()
+  if (itemId) return `item:${itemId}`
+
+  if (detail.kind === "command_execution") {
+    const command = detail.command?.trim()
+    return command ? `command:${command}` : null
+  }
+
+  if (detail.kind === "file_change") {
+    const paths = detail.changes
+      ?.map((change) => change.path?.trim())
+      .filter(Boolean)
+      .join(",")
+    return paths ? `file:${paths}` : null
+  }
+
+  if (detail.kind === "tool_call") {
+    const name = detail.name?.trim()
+    const query = detail.query?.trim()
+    const text = detail.text?.trim()
+    if (name || query || text)
+      return `tool:${name ?? ""}:${query ?? text ?? ""}`
+  }
+
+  return null
+}

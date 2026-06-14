@@ -94,6 +94,7 @@ export function classifyDetail(detail: ParsedLogDetail): DetailKind {
     )
     return intent.kind
   }
+  if (detail.query?.trim()) return "search"
   const name = (detail.name || "").toLowerCase()
   if (/edit|patch|write|apply|insert|update/.test(name)) return "edit"
   if (/create/.test(name)) return "create"

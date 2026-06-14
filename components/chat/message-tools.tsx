@@ -300,7 +300,10 @@ const DetailView = memo(function DetailView({
     isCommand && !hasDiff
       ? unwrapShellCommand(detail.command?.trim() ?? "")
       : ""
-  const text = !isCommand && !hasDiff ? (detail.text?.trim() ?? "") : ""
+  const text =
+    !isCommand && !hasDiff
+      ? detail.query?.trim() || detail.text?.trim() || ""
+      : ""
   const output = detail.output?.trim() ?? ""
   const fileChanges = !hasDiff ? fileOps : []
   const recording =

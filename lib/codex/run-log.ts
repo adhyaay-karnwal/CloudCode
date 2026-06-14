@@ -44,6 +44,7 @@ type ToolMarkerDetail = {
   kind?: string
   name?: string
   output?: string
+  query?: string
   recording?: {
     fileName?: string
     filePath?: string
@@ -108,6 +109,7 @@ function compactToolDetail(value: ToolMarkerDetail): ToolMarkerDetail | null {
   if (value.kind === "tool_call") {
     if (
       !value.name?.trim() &&
+      !value.query?.trim() &&
       !value.text?.trim() &&
       !value.recording &&
       !value.output?.trim()
@@ -146,6 +148,7 @@ function compactToolDetail(value: ToolMarkerDetail): ToolMarkerDetail | null {
       itemId: truncateMarkerText(value.itemId, MAX_MARKER_TEXT_LENGTH),
       kind: value.kind,
       name: truncateMarkerText(value.name, MAX_MARKER_TEXT_LENGTH),
+      query: truncateMarkerText(value.query, MAX_MARKER_TEXT_LENGTH),
       recording,
       status: truncateMarkerText(value.status, MAX_MARKER_TEXT_LENGTH),
       text: truncateMarkerText(

@@ -20,6 +20,7 @@ export type ParsedLogDetail = {
   kind?: string
   name?: string
   output?: string
+  query?: string
   recording?: RecordingArtifact
   renderKey?: string
   status?: string

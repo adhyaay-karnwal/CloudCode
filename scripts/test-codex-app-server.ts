@@ -12,6 +12,11 @@ import {
   parseCodexAuthJson,
 } from "@/lib/codex/auth-json"
 import { getFilePathFromHref, normalizeLinkHref } from "@/lib/chat/link-path"
+import { describeItem, summarizeBundle } from "@/components/chat/tool-details"
+import {
+  groupAssistantContent,
+  placeToolsBeforeFinalText,
+} from "@/components/chat/message-segments"
 import { refreshCodexOAuthTokens } from "@/lib/codex/oauth-refresh"
 import {
   inlineToolMarker,
@@ -396,6 +401,18 @@ reducer.handleNotification({
     turnId: "turn-1",
   },
 })
+reducer.handleNotification({
+  method: "item/completed",
+  params: {
+    item: {
+      id: "search-1",
+      query: "latest Next.js release",
+      type: "webSearch",
+    },
+    threadId: "thread-1",
+    turnId: "turn-1",
+  },
+})
 for (const item of [
   {
     id: "plan-1",
@@ -601,6 +618,19 @@ assert.ok(fileChangeLog?.detail?.includes("src/example.ts"))
 assert.ok(
   logs.some((log) => log.message === "cloudcode_desktop.desktop_open_browser")
 )
+const webSearchLog = logs.find((log) => log.message === "Web search")
+assert.ok(webSearchLog)
+assert.ok(webSearchLog.detail?.includes('"name":"Web search"'))
+assert.ok(webSearchLog.detail?.includes('"query":"latest Next.js release"'))
+const webSearchDetail = JSON.parse(webSearchLog.detail ?? "{}")
+assert.equal(
+  summarizeBundle("explore", [webSearchDetail]),
+  "Searched web for latest Next.js release"
+)
+assert.equal(
+  describeItem(webSearchDetail),
+  "Searched web for latest Next.js release"
+)
 assert.ok(logs.some((log) => log.message === "Plan"))
 assert.ok(logs.some((log) => log.message === "spawn"))
 assert.ok(logs.some((log) => log.message === "Image view"))
@@ -657,6 +687,24 @@ assert.ok(mcpLog.detail?.includes('"itemId":"mcp-1"'))
 const mcpMarker = inlineToolMarker(mcpLog)
 assert.ok(mcpMarker)
 assert.ok(mcpMarker.includes("mcp-1"))
+const webSearchMarker = inlineToolMarker(webSearchLog)
+assert.ok(webSearchMarker)
+assert.ok(webSearchMarker.includes("Web%20search"))
+assert.ok(webSearchMarker.includes("latest%20Next.js%20release"))
+const markerAfterText = groupAssistantContent(`Final answer${webSearchMarker}`)
+assert.deepEqual(
+  placeToolsBeforeFinalText(markerAfterText.grouped).map(
+    (segment) => segment.kind
+  ),
+  ["tools", "text"]
+)
+assert.deepEqual(
+  placeToolsBeforeFinalText(
+    [{ key: "text", kind: "text", text: "Final answer" }],
+    [webSearchDetail]
+  ).map((segment) => segment.kind),
+  ["tools", "text"]
+)
 const mcpProgressLog = logs.find(
   (log) => log.message === "Calling cloudcode_desktop.desktop_open_browser"
 )

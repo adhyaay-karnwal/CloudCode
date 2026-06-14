@@ -109,6 +109,35 @@ export function findLastTextSegmentIndex(
   return -1
 }
 
+export function placeToolsBeforeFinalText(
+  grouped: AssistantGroupedSegment[],
+  fallbackTools: ParsedLogDetail[] = [],
+  fallbackKey = "fallback-tools"
+): AssistantGroupedSegment[] {
+  const segments: AssistantGroupedSegment[] =
+    fallbackTools.length > 0
+      ? [
+          { details: fallbackTools, key: fallbackKey, kind: "tools" },
+          ...grouped,
+        ]
+      : [...grouped]
+  const lastTextIndex = findLastTextSegmentIndex(segments)
+  if (lastTextIndex === -1) return segments
+
+  const afterLastText = segments.slice(lastTextIndex + 1)
+  const trailingTools = afterLastText.filter(
+    (segment) => segment.kind === "tools"
+  )
+  if (trailingTools.length === 0) return segments
+
+  return [
+    ...segments.slice(0, lastTextIndex),
+    ...trailingTools,
+    segments[lastTextIndex],
+    ...afterLastText.filter((segment) => segment.kind !== "tools"),
+  ]
+}
+
 export function shouldShowFinalResponseSeparator(
   grouped: AssistantGroupedSegment[],
   lastTextIndex: number

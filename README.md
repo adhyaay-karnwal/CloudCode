@@ -14,8 +14,8 @@ background Codex runs.
 - Run Codex against GitHub repositories in isolated Daytona sandboxes.
 - Use persistent sandbox terminals.
 - Connect over SSH.
-- Share project notes so agents and humans can share context. 
-- Configure MCP servers for external integrations. 
+- Share project notes so agents and humans can share context.
+- Configure MCP servers for external integrations.
 - Computer use workflows for browser-driven tasks and visual inspection.
 
 ## Setup

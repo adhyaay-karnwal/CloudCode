@@ -78,7 +78,10 @@ function toolCallIdentity(detail: ParsedLogDetail): string | null {
 
 function hasToolCallPayload(detail: ParsedLogDetail): boolean {
   return Boolean(
-    detail.text?.trim() || detail.output?.trim() || detail.recording
+    detail.query?.trim() ||
+    detail.text?.trim() ||
+    detail.output?.trim() ||
+    detail.recording
   )
 }
 
@@ -140,6 +143,7 @@ function mergeToolCallDetails(
     kind: "tool_call",
     name: primary.name ?? fallback.name,
     output: primary.output ?? fallback.output,
+    query: primary.query ?? fallback.query,
     recording: primary.recording ?? fallback.recording,
     renderKey: primary.renderKey ?? fallback.renderKey,
     status: primary.status ?? fallback.status,

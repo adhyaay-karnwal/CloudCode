@@ -55,6 +55,7 @@ export function toolDetailKey(detail: ParsedLogDetail) {
     detail.status,
     detail.exitCode,
     detail.command,
+    detail.query,
     detail.changes
       ?.map((change) => `${change.kind ?? ""}:${change.path ?? ""}`)
       .join(","),
@@ -105,6 +106,18 @@ export function summarizeBundle(
   umbrella: ToolUmbrella,
   items: ParsedLogDetail[]
 ): string {
+  if (
+    umbrella === "explore" &&
+    items.length > 0 &&
+    items.every(isWebSearchDetail)
+  ) {
+    if (items.length === 1) {
+      const query = searchQueryForDetail(items[0])
+      return query ? `Searched web for ${query}` : "Searched web"
+    }
+    return `Searched web ${pluralize(items.length, "time", "times")}`
+  }
+
   const counts: Record<DetailKind, number> = {
     command: 0,
     create: 0,
@@ -216,6 +229,11 @@ export function describeItem(detail: ParsedLogDetail): string {
     return `Read ${basename(path) || text || detail.name || "file"}`
   }
   if (kind === "search") {
+    const query = searchQueryForDetail(detail)
+    if (isWebSearchDetail(detail)) {
+      return query ? `Searched web for ${query}` : "Searched web"
+    }
+    if (query) return `Searched for ${query}`
     const inMatch = text.match(/^(.+?)\s+in\s+(.+)$/)
     if (inMatch) return `Searched for ${inMatch[1]} in ${inMatch[2]}`
     return text ? `Searched for ${text}` : "Searched"
@@ -234,4 +252,16 @@ function basename(path: string): string {
   const trimmed = path.replace(/\/+$/, "")
   const idx = trimmed.lastIndexOf("/")
   return idx === -1 ? trimmed : trimmed.slice(idx + 1)
+}
+
+function isWebSearchDetail(detail: ParsedLogDetail): boolean {
+  return (
+    detail.kind === "tool_call" &&
+    (detail.name?.trim().toLowerCase() === "web search" ||
+      Boolean(detail.query?.trim()))
+  )
+}
+
+function searchQueryForDetail(detail: ParsedLogDetail): string {
+  return detail.query?.trim() || detail.text?.trim() || ""
 }

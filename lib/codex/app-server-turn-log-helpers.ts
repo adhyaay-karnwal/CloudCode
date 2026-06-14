@@ -165,8 +165,11 @@ export function emitItemLog(
   if (item.type === "webSearch") {
     void onLog?.({
       detail: logDetail({
+        itemId: item.id,
         kind: "tool_call",
+        name: "Web search",
         query: item.query,
+        text: item.query,
         status: phase,
       }),
       kind: "command",
