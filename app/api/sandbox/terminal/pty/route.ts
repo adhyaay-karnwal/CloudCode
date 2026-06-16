@@ -33,7 +33,7 @@ import {
 } from "@/lib/sandbox/terminal-route"
 
 export const runtime = "nodejs"
-export const maxDuration = 3600
+export const maxDuration = 1800
 
 function sse(value: unknown) {
   return `data: ${JSON.stringify(value)}\n\n`
