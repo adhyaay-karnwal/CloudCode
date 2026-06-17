@@ -4,6 +4,10 @@ export type ChatGPTConnectionState = {
   disconnectingProfile: string | null
   draftDisplayName: string
   editingProfile: string | null
+  importError: string
+  importing: boolean
+  importOpen: boolean
+  importValue: string
   pendingDisconnectAccount: CodexAuthAccountStatus | null
   renamingProfile: string | null
   switchError: string
@@ -16,6 +20,12 @@ export type ChatGPTConnectionAction =
   | { profile: string; type: "disconnect-success" }
   | { account: CodexAuthAccountStatus | null; type: "set-pending-disconnect" }
   | { error: string; type: "set-error" }
+  | { type: "import-open" }
+  | { type: "import-close" }
+  | { type: "import-set-value"; value: string }
+  | { type: "import-start" }
+  | { type: "import-success" }
+  | { error: string; type: "import-error" }
   | { type: "rename-cancel" }
   | { account: CodexAuthAccountStatus; type: "rename-open" }
   | { profile: string; type: "rename-start" }
@@ -29,6 +39,10 @@ export const initialChatGPTConnectionState: ChatGPTConnectionState = {
   disconnectingProfile: null,
   draftDisplayName: "",
   editingProfile: null,
+  importError: "",
+  importing: false,
+  importOpen: false,
+  importValue: "",
   pendingDisconnectAccount: null,
   renamingProfile: null,
   switchError: "",
@@ -53,6 +67,30 @@ export function chatGPTConnectionReducer(
       return state.editingProfile === action.profile
         ? { ...state, draftDisplayName: "", editingProfile: null }
         : state
+    case "import-open":
+      return { ...state, importError: "", importOpen: true, switchError: "" }
+    case "import-close":
+      return {
+        ...state,
+        importError: "",
+        importOpen: false,
+        importValue: "",
+        importing: false,
+      }
+    case "import-set-value":
+      return { ...state, importError: "", importValue: action.value }
+    case "import-start":
+      return { ...state, importError: "", importing: true }
+    case "import-success":
+      return {
+        ...state,
+        importError: "",
+        importOpen: false,
+        importValue: "",
+        importing: false,
+      }
+    case "import-error":
+      return { ...state, importError: action.error, importing: false }
     case "rename-cancel":
       return { ...state, draftDisplayName: "", editingProfile: null }
     case "rename-finish":

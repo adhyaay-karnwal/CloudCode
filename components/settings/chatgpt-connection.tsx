@@ -1,20 +1,17 @@
 "use client"
 
-import { Plus, RefreshCw } from "lucide-react"
+import { FileUp } from "lucide-react"
 import { useReducer } from "react"
 
 import { ChatGPTAccountEditRow } from "@/components/settings/chatgpt-account-edit-row"
 import { ChatGPTAccountRow } from "@/components/settings/chatgpt-account-row"
+import { ChatGPTImportDialog } from "@/components/settings/chatgpt-import-dialog"
 import {
   chatGPTConnectionReducer,
   codexAccountTitle,
   initialChatGPTConnectionState,
 } from "@/components/settings/chatgpt-model"
-import {
-  navAction,
-  navPrimary,
-  SettingsConfirmDialog,
-} from "@/components/settings/shared"
+import { navAction, SettingsConfirmDialog } from "@/components/settings/shared"
 import { OpenAIIcon } from "@/components/ui/brand-icons"
 import type {
   CodexAuthAccountStatus,
@@ -39,6 +36,10 @@ export function ChatGPTConnectionRow({
     disconnectingProfile,
     draftDisplayName,
     editingProfile,
+    importError,
+    importing,
+    importOpen,
+    importValue,
     pendingDisconnectAccount,
     renamingProfile,
     switchError,
@@ -83,6 +84,37 @@ export function ChatGPTConnectionRow({
       })
     } finally {
       dispatch({ type: "select-finish" })
+    }
+  }
+
+  async function importAuthJson() {
+    if (importing) return
+
+    const authJson = importValue.trim()
+    if (!authJson) return
+
+    dispatch({ type: "import-start" })
+
+    try {
+      await requestJson(
+        "/api/codex-auth",
+        "POST",
+        { authJson },
+        {
+          fallbackError: "Unable to import auth.json.",
+        }
+      )
+
+      dispatch({ type: "import-success" })
+      await onCodexAuthChanged()
+    } catch (error) {
+      dispatch({
+        error:
+          error instanceof Error
+            ? error.message
+            : "Unable to import auth.json.",
+        type: "import-error",
+      })
     }
   }
 
@@ -161,22 +193,22 @@ export function ChatGPTConnectionRow({
           <div className="text-sm font-medium text-foreground">ChatGPT</div>
           <div className="text-xs text-muted-foreground">{detail}</div>
         </div>
-        {connected ? (
-          <form action="/api/codex-auth/login" method="get">
-            <input type="hidden" name="profile" value={activeProfile} />
-            <button type="submit" className={navAction}>
-              <RefreshCw className="size-3.5" />
-              Reconnect
-            </button>
-          </form>
-        ) : null}
-        <form action="/api/codex-auth/login" method="get">
+        <button
+          type="button"
+          className={navAction}
+          onClick={() => dispatch({ type: "import-open" })}
+        >
+          <FileUp className="size-3.5" />
+          Import auth.json
+        </button>
+        {/* Connect / Add account via ChatGPT OAuth. Kept for easy re-adding. */}
+        {/* <form action="/api/codex-auth/login" method="get">
           {connected ? <input type="hidden" name="add" value="1" /> : null}
           <button type="submit" className={connected ? navAction : navPrimary}>
             {connected ? <Plus className="size-3.5" /> : null}
             {connected ? "Add account" : "Connect"}
           </button>
-        </form>
+        </form> */}
       </div>
       {visibleError ? (
         <div className="mt-2 text-[11px] leading-4 text-destructive">
@@ -230,6 +262,18 @@ export function ChatGPTConnectionRow({
             )
           })}
         </div>
+      ) : null}
+      {importOpen ? (
+        <ChatGPTImportDialog
+          value={importValue}
+          busy={importing}
+          error={importError}
+          onValueChange={(value) =>
+            dispatch({ type: "import-set-value", value })
+          }
+          onConfirm={() => void importAuthJson()}
+          onCancel={() => dispatch({ type: "import-close" })}
+        />
       ) : null}
       {pendingDisconnectAccount ? (
         <SettingsConfirmDialog
