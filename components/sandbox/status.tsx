@@ -214,6 +214,8 @@ export function useSandboxInfo({
     const controller = new AbortController()
     let fallbackInterval: number | undefined
     let initialFallbackTimeout: number | undefined
+    let source: EventSource | undefined
+    let streamReconnectTimeout: number | undefined
     let receivedStatus = false
 
     if (!sandboxId) {
@@ -221,9 +223,6 @@ export function useSandboxInfo({
     }
 
     const checkedSandboxId = sandboxId
-    const source = new EventSource(
-      `/api/sandbox/status?sandboxId=${encodeURIComponent(checkedSandboxId)}`
-    )
 
     function clearInitialFallbackTimeout() {
       if (!initialFallbackTimeout) return
@@ -231,36 +230,77 @@ export function useSandboxInfo({
       initialFallbackTimeout = undefined
     }
 
+    function clearStreamReconnectTimeout() {
+      if (!streamReconnectTimeout) return
+      window.clearTimeout(streamReconnectTimeout)
+      streamReconnectTimeout = undefined
+    }
+
+    function closeSource() {
+      source?.close()
+      source = undefined
+    }
+
     function startFallbackPolling() {
       if (controller.signal.aborted || fallbackInterval) return
       clearInitialFallbackTimeout()
-      source.close()
+      clearStreamReconnectTimeout()
+      closeSource()
       void load(checkedSandboxId, { signal: controller.signal })
       fallbackInterval = window.setInterval(() => {
         void load(checkedSandboxId, { signal: controller.signal })
       }, 2_000)
     }
 
-    source.onmessage = (event) => {
-      if (controller.signal.aborted) return
-      try {
-        const data = JSON.parse(event.data) as Record<string, unknown>
-        receivedStatus = true
-        clearInitialFallbackTimeout()
-        if (data.notFound) {
-          applyMissing(checkedSandboxId)
-          source.close()
-          return
+    function scheduleStreamReconnect(delayMs = 1_000) {
+      if (controller.signal.aborted || fallbackInterval) return
+      clearInitialFallbackTimeout()
+      clearStreamReconnectTimeout()
+      closeSource()
+      streamReconnectTimeout = window.setTimeout(() => {
+        streamReconnectTimeout = undefined
+        openStatusStream()
+      }, delayMs)
+    }
+
+    function openStatusStream() {
+      closeSource()
+      source = new EventSource(
+        `/api/sandbox/status?sandboxId=${encodeURIComponent(checkedSandboxId)}`
+      )
+
+      source.onmessage = (event) => {
+        if (controller.signal.aborted) return
+        try {
+          const data = JSON.parse(event.data) as Record<string, unknown>
+          if (data.type === "reconnect") {
+            const retryMs =
+              typeof data.retryMs === "number"
+                ? Math.max(0, data.retryMs)
+                : 1_000
+            scheduleStreamReconnect(retryMs)
+            return
+          }
+
+          receivedStatus = true
+          clearInitialFallbackTimeout()
+          if (data.notFound) {
+            applyMissing(checkedSandboxId)
+            closeSource()
+            return
+          }
+          applyInfo(parseSandboxInfo(data))
+        } catch {
+          // Ignore malformed stream events and let the next status event repair it.
         }
-        applyInfo(parseSandboxInfo(data))
-      } catch {
-        // Ignore malformed stream events and let the next status event repair it.
+      }
+
+      source.onerror = () => {
+        startFallbackPolling()
       }
     }
 
-    source.onerror = () => {
-      startFallbackPolling()
-    }
+    openStatusStream()
 
     initialFallbackTimeout = window.setTimeout(() => {
       if (!receivedStatus) startFallbackPolling()
@@ -269,7 +309,8 @@ export function useSandboxInfo({
     return () => {
       controller.abort()
       clearInitialFallbackTimeout()
-      source.close()
+      clearStreamReconnectTimeout()
+      closeSource()
       if (fallbackInterval) window.clearInterval(fallbackInterval)
     }
   }, [applyInfo, applyMissing, load, sandboxId])

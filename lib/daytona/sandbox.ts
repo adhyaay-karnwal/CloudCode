@@ -27,6 +27,7 @@ const DEFAULT_AUTO_STOP_MINUTES = 15
 const DEFAULT_AUTO_ARCHIVE_MINUTES = 7 * 24 * 60
 const DEFAULT_AUTO_DELETE_MINUTES = 30 * 24 * 60
 const DEFAULT_CREATE_TIMEOUT_SECONDS = 480
+const DEFAULT_READ_TIMEOUT_MS = 15_000
 const DEFAULT_SANDBOX_CPU = 2
 const DEFAULT_SANDBOX_DISK = 8
 const DEFAULT_SANDBOX_MEMORY = 4
@@ -316,11 +317,81 @@ function timeValue(value?: string) {
   return value ? new Date(value).getTime() : null
 }
 
+export class DaytonaOperationTimeoutError extends Error {
+  constructor(label: string, timeoutMs: number) {
+    super(`${label} timed out after ${timeoutMs}ms.`)
+    this.name = "DaytonaOperationTimeoutError"
+  }
+}
+
+export function isDaytonaOperationTimeoutError(
+  error: unknown
+): error is DaytonaOperationTimeoutError {
+  return error instanceof DaytonaOperationTimeoutError
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object")
+}
+
+export function isDaytonaNotFoundError(error: unknown) {
+  if (!isRecord(error)) return false
+  return error.name === "DaytonaNotFoundError" || error.statusCode === 404
+}
+
+function defaultDaytonaReadTimeoutMs() {
+  return Math.max(
+    1_000,
+    Math.round(envNumber("DAYTONA_READ_TIMEOUT_MS", DEFAULT_READ_TIMEOUT_MS))
+  )
+}
+
+async function withDaytonaOperationTimeout<T>(
+  promise: Promise<T>,
+  {
+    label,
+    timeoutMs = defaultDaytonaReadTimeoutMs(),
+  }: {
+    label: string
+    timeoutMs?: number
+  }
+): Promise<T> {
+  let timedOut = false
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  promise.catch(() => undefined)
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => {
+      timedOut = true
+      reject(new DaytonaOperationTimeoutError(label, timeoutMs))
+    }, timeoutMs)
+    timeout.unref?.()
+  })
+
+  try {
+    return await Promise.race([promise, timeoutPromise])
+  } finally {
+    if (timeout) clearTimeout(timeout)
+    if (timedOut) {
+      promise.catch((error) => {
+        console.warn(`${label} completed after timeout.`, error)
+      })
+    }
+  }
+}
+
 export async function readDaytonaSandboxInfo(
-  sandboxId: string
+  sandboxId: string,
+  options: { timeoutMs?: number } = {}
 ): Promise<DaytonaSandboxInfo> {
-  const sandbox = await getDaytonaSandbox(sandboxId)
-  await sandbox.refreshData().catch(() => undefined)
+  const sandbox = await getDaytonaSandbox(sandboxId, options)
+  await withDaytonaOperationTimeout(sandbox.refreshData(), {
+    label: "Daytona sandbox refresh",
+    timeoutMs: options.timeoutMs,
+  }).catch((error) => {
+    if (isDaytonaOperationTimeoutError(error)) throw error
+    return undefined
+  })
 
   return daytonaSandboxInfo(sandbox)
 }
@@ -466,9 +537,14 @@ export async function createDaytonaSandbox({
   return sandbox
 }
 
-export async function getDaytonaSandbox(sandboxId: string) {
-  const sandbox = await getDaytonaClient().get(sandboxId)
-  return sandbox
+export async function getDaytonaSandbox(
+  sandboxId: string,
+  options: { timeoutMs?: number } = {}
+) {
+  return await withDaytonaOperationTimeout(getDaytonaClient().get(sandboxId), {
+    label: "Daytona sandbox lookup",
+    timeoutMs: options.timeoutMs,
+  })
 }
 
 export async function getStartedDaytonaSandbox(sandboxId: string) {

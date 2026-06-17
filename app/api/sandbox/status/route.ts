@@ -1,4 +1,7 @@
-import { readDaytonaSandboxInfo } from "@/lib/daytona/sandbox"
+import {
+  isDaytonaNotFoundError,
+  readDaytonaSandboxInfo,
+} from "@/lib/daytona/sandbox"
 import { searchStringParam } from "@/lib/http/api-route"
 import { requireCurrentUserSandbox } from "@/lib/sandbox/authorization"
 
@@ -7,6 +10,8 @@ export const maxDuration = 300
 
 const STATUS_POLL_INTERVAL_MS = 1_000
 const HEARTBEAT_INTERVAL_MS = 15_000
+const STATUS_READ_TIMEOUT_MS = 8_000
+const STREAM_RECONNECT_AFTER_MS = 55_000
 
 export async function GET(request: Request) {
   const sandboxId = searchStringParam(request, "sandboxId")
@@ -27,6 +32,7 @@ export async function GET(request: Request) {
   let closed = false
   let lastPayload = ""
   let lastHeartbeat = 0
+  const startedAt = Date.now()
   let timeout: ReturnType<typeof setTimeout> | undefined
 
   const stream = new ReadableStream({
@@ -59,9 +65,20 @@ export async function GET(request: Request) {
 
       async function tick() {
         if (closed) return
+        if (Date.now() - startedAt >= STREAM_RECONNECT_AFTER_MS) {
+          safeStreamEvent({
+            retryMs: STATUS_POLL_INTERVAL_MS,
+            sandboxId: checkedSandboxId,
+            type: "reconnect",
+          })
+          close()
+          return
+        }
 
         try {
-          const info = await readDaytonaSandboxInfo(checkedSandboxId)
+          const info = await readDaytonaSandboxInfo(checkedSandboxId, {
+            timeoutMs: STATUS_READ_TIMEOUT_MS,
+          })
           const payload = JSON.stringify({ type: "status", ...info })
           if (payload !== lastPayload) {
             lastPayload = payload
@@ -72,15 +89,28 @@ export async function GET(request: Request) {
             if (!safeEnqueue(": heartbeat\n\n")) return
           }
         } catch (error) {
+          if (isDaytonaNotFoundError(error)) {
+            safeStreamEvent({
+              error:
+                error instanceof Error ? error.message : "Sandbox not found",
+              notFound: true,
+              sandboxId: checkedSandboxId,
+              state: "deleted",
+              type: "status",
+            })
+            close()
+            return
+          }
+
           safeStreamEvent({
-            error: error instanceof Error ? error.message : "Sandbox not found",
-            notFound: true,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Unable to read sandbox status.",
             sandboxId: checkedSandboxId,
-            state: "deleted",
+            state: "error",
             type: "status",
           })
-          close()
-          return
         }
 
         timeout = setTimeout(tick, STATUS_POLL_INTERVAL_MS)
