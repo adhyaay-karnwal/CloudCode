@@ -52,7 +52,6 @@ export type CodexAppServerDaemonEvent =
       threadId: string
       turnError?: string
       type: "result"
-      updatedAuthJson: string
     }
 
 export function codexAppServerStdioCommand({
@@ -196,8 +195,7 @@ export function parseCodexAppServerDaemonEventLine(
     case "result": {
       const status = rawStringValue(record.status)
       const threadId = rawStringValue(record.threadId)
-      const updatedAuthJson = rawStringValue(record.updatedAuthJson)
-      if (!status || !threadId || !updatedAuthJson) return undefined
+      if (!status || !threadId) return undefined
       const finalAssistantText = rawStringValue(record.finalAssistantText)
       const turnError = rawStringValue(record.turnError)
       return {
@@ -206,7 +204,6 @@ export function parseCodexAppServerDaemonEventLine(
         threadId,
         ...(turnError ? { turnError } : {}),
         type,
-        updatedAuthJson,
       }
     }
     default:

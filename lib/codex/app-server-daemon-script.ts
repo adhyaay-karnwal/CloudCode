@@ -8,6 +8,7 @@ import net from "node:net"
 const VERSION = "3"
 const REQUEST_TIMEOUT_MS = Number(process.env.CLOUDCODE_APP_SERVER_REQUEST_TIMEOUT_MS || "45000")
 const SOCKET_PATH = requiredEnv("CLOUDCODE_DAEMON_SOCKET")
+const DAEMON_DIR = SOCKET_PATH.slice(0, SOCKET_PATH.lastIndexOf("/"))
 const STATE_PATH = requiredEnv("CLOUDCODE_DAEMON_STATE")
 const CODEX_LAUNCHER = requiredEnv("CLOUDCODE_CODEX_LAUNCHER")
 const REPO_PATH = requiredEnv("CLOUDCODE_REPO_PATH")
@@ -50,6 +51,25 @@ function sha256(value) {
 function writeLine(socket, value) {
   if (socket.destroyed) return
   socket.write(JSON.stringify(value) + "\n")
+}
+
+function daemonFilePath(value) {
+  const filePath = stringValue(value)
+  if (!filePath) return undefined
+  if (filePath.includes("\0") || !filePath.startsWith(DAEMON_DIR + "/")) {
+    throw new Error("Codex app-server daemon auth output path is invalid.")
+  }
+  return filePath
+}
+
+function writeAuthOutput(filePath, authJson) {
+  if (!filePath) return
+  fs.writeFileSync(filePath, authJson, {
+    encoding: "utf8",
+    flag: "w",
+    mode: 0o600,
+  })
+  fs.chmodSync(filePath, 0o600)
 }
 
 function compactLine(value, max = 1000) {
@@ -720,13 +740,13 @@ async function runTurn(payload, socket) {
 
     const completedTurn = run.completedTurn || alreadyCompleted || {}
     const status = stringValue(completedTurn.status) || "failed"
+    writeAuthOutput(daemonFilePath(payload.authOutputPath), run.authJson)
     writeLine(socket, {
       finalAssistantText: agentMessageFromTurn(completedTurn),
       status,
       threadId: run.threadId,
       turnError: turnErrorMessage(completedTurn),
       type: "result",
-      updatedAuthJson: run.authJson,
     })
   } finally {
     socket.off("close", socketClosed)
@@ -818,7 +838,7 @@ try {
   fs.unlinkSync(SOCKET_PATH)
 } catch {}
 fs.mkdirSync(CODEX_HOME, { mode: 0o700, recursive: true })
-fs.mkdirSync(SOCKET_PATH.slice(0, SOCKET_PATH.lastIndexOf("/")), {
+fs.mkdirSync(DAEMON_DIR, {
   mode: 0o700,
   recursive: true,
 })

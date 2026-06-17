@@ -109,6 +109,7 @@ export async function runCodexViaAppServer({
     | Extract<CodexAppServerDaemonEvent, { type: "result" }>
     | undefined
   let daemonError = ""
+  let updatedAuthJson: string | undefined
   let stdout = ""
   let stderr = ""
   let resumeLogged = false
@@ -270,6 +271,7 @@ export async function runCodexViaAppServer({
       input.signal?.removeEventListener("abort", interruptDaemonRun)
     })
     const { result } = daemonResponse
+    updatedAuthJson = daemonResponse.updatedAuthJson
 
     if (result.stderr) {
       stderr += result.stderr
@@ -282,13 +284,13 @@ export async function runCodexViaAppServer({
     }
     if (daemonError) {
       throw new CodexAppServerRunError(daemonError, {
-        updatedAuthJson: daemonResult?.updatedAuthJson,
+        updatedAuthJson,
       })
     }
     if (!daemonResult) {
       throw new Error("Codex app-server daemon did not return a turn result.")
     }
-    if (!daemonResult.updatedAuthJson) {
+    if (!updatedAuthJson) {
       throw new Error("Codex app-server daemon did not return updated auth.")
     }
 
@@ -314,17 +316,17 @@ export async function runCodexViaAppServer({
       lastMessage,
       stderr: turnError,
       stdout,
-      updatedAuthJson: daemonResult.updatedAuthJson,
+      updatedAuthJson,
     }
   } catch (error) {
     // Cancellation must reach the worker unchanged: wrapping would both lose
     // the WorkerRunCanceledError type and bloat the error with the full
     // daemon event stream captured in stdout.
     if (isWorkerRunCanceledError(error) || input.signal?.aborted) throw error
-    const updatedAuthJson =
+    const errorUpdatedAuthJson =
       error instanceof CodexAppServerRunError
         ? error.updatedAuthJson
-        : daemonResult?.updatedAuthJson
+        : updatedAuthJson
     const message = redactCodexAppServerAuthPayloads(
       error instanceof CodexAppServerError && error.code !== undefined
         ? `${error.message} (${error.code})`
@@ -338,11 +340,13 @@ export async function runCodexViaAppServer({
     if (safeStdout || safeStderr) {
       throw new CodexAppServerRunError(
         [message, safeStdout, safeStderr].filter(Boolean).join("\n\n"),
-        { updatedAuthJson }
+        { updatedAuthJson: errorUpdatedAuthJson }
       )
     }
-    if (updatedAuthJson) {
-      throw new CodexAppServerRunError(message, { updatedAuthJson })
+    if (errorUpdatedAuthJson) {
+      throw new CodexAppServerRunError(message, {
+        updatedAuthJson: errorUpdatedAuthJson,
+      })
     }
     throw new CodexAppServerRunError(message)
   }

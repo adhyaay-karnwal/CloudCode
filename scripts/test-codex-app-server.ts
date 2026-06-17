@@ -90,13 +90,12 @@ assert.deepEqual(
 )
 assert.deepEqual(
   parseCodexAppServerDaemonEventLine(
-    '{"type":"result","threadId":"thread-from-daemon","status":"completed","updatedAuthJson":"{\\"auth_mode\\":\\"chatgpt\\"}"}'
+    '{"type":"result","threadId":"thread-from-daemon","status":"completed"}'
   ),
   {
     status: "completed",
     threadId: "thread-from-daemon",
     type: "result",
-    updatedAuthJson: '{"auth_mode":"chatgpt"}',
   }
 )
 assert.deepEqual(
@@ -160,6 +159,7 @@ const daemonScriptSource = await readFile(
 )
 assert.ok(daemonScriptSource.includes("initializedAuthHash"))
 assert.ok(daemonScriptSource.includes("fs.chmodSync(CODEX_HOME"))
+assert.ok(daemonScriptSource.includes("writeAuthOutput"))
 assert.ok(daemonScriptSource.includes("isBundledBubblewrapWarning"))
 assert.deepEqual(
   codexAppServerStderrLogForLine(
@@ -230,14 +230,14 @@ const replayedDaytonaChunks: string[] = []
 assert.equal(
   replayMissingDaytonaCommandOutput({
     finalOutput:
-      '{"type":"thread","threadId":"thread-from-daemon"}\n{"type":"result","threadId":"thread-from-daemon","status":"completed","updatedAuthJson":"{}"}\n',
+      '{"type":"thread","threadId":"thread-from-daemon"}\n{"type":"result","threadId":"thread-from-daemon","status":"completed"}\n',
     onMissingOutput: (chunk) => replayedDaytonaChunks.push(chunk),
     streamedOutput: '{"type":"thread","threadId":"thread-from-daemon"}\n',
   }),
-  '{"type":"thread","threadId":"thread-from-daemon"}\n{"type":"result","threadId":"thread-from-daemon","status":"completed","updatedAuthJson":"{}"}\n'
+  '{"type":"thread","threadId":"thread-from-daemon"}\n{"type":"result","threadId":"thread-from-daemon","status":"completed"}\n'
 )
 assert.deepEqual(replayedDaytonaChunks, [
-  '{"type":"result","threadId":"thread-from-daemon","status":"completed","updatedAuthJson":"{}"}\n',
+  '{"type":"result","threadId":"thread-from-daemon","status":"completed"}\n',
 ])
 
 function base64UrlJson(value: unknown) {

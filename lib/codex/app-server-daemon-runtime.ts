@@ -18,6 +18,7 @@ import {
 import { compactLine } from "@/lib/shared/compact-line"
 import {
   repoCommandEnv,
+  readDaytonaTextFile,
   runDaytonaCommand,
   shellQuote,
   writeDaytonaTextFile,
@@ -209,7 +210,12 @@ export async function requestCodexAppServerDaemon({
   timeoutMs?: number
 }) {
   const payloadPath = codexAppServerDaemonRequestPath(paths, label)
-  await writeDaytonaTextFile(sandbox, payloadPath, JSON.stringify(payload))
+  const authOutputPath = codexAppServerDaemonRequestPath(paths, `${label}-auth`)
+  await writeDaytonaTextFile(
+    sandbox,
+    payloadPath,
+    JSON.stringify({ ...payload, authOutputPath })
+  )
 
   let buffer = ""
   const events: CodexAppServerDaemonEvent[] = []
@@ -241,13 +247,21 @@ export async function requestCodexAppServerDaemon({
       }
     )
     flush()
-    return { events, result }
+    const updatedAuthJson = await readDaytonaTextFile(
+      sandbox,
+      authOutputPath
+    ).catch(() => undefined)
+    return { events, result, updatedAuthJson }
   } finally {
     // No signal here: after an abort the payload file should still be removed,
     // and an aborted signal would make this cleanup throw before running.
-    await runDaytonaCommand(sandbox, `rm -f ${shellQuote(payloadPath)}`, {
-      timeoutMs: 10_000,
-    }).catch(() => undefined)
+    await runDaytonaCommand(
+      sandbox,
+      `rm -f ${shellQuote(payloadPath)} ${shellQuote(authOutputPath)}`,
+      {
+        timeoutMs: 10_000,
+      }
+    ).catch(() => undefined)
   }
 }
 

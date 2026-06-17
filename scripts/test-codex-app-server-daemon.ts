@@ -179,7 +179,15 @@ async function requestDaemon({
   root: string
 }) {
   const payloadPath = join(root, `payload-${Date.now()}-${Math.random()}.json`)
-  await writeFile(payloadPath, JSON.stringify(payload), "utf8")
+  const authOutputPath = join(
+    root,
+    `auth-output-${Date.now()}-${Math.random()}.json`
+  )
+  await writeFile(
+    payloadPath,
+    JSON.stringify({ ...payload, authOutputPath }),
+    "utf8"
+  )
 
   const result = await new Promise<{
     exitCode: number | null
@@ -208,7 +216,11 @@ async function requestDaemon({
     return [JSON.parse(line) as Record<string, unknown>]
   })
 
-  return { ...result, events }
+  const updatedAuthJson = await readFile(authOutputPath, "utf8").catch(
+    () => undefined
+  )
+
+  return { ...result, events, updatedAuthJson }
 }
 
 function runPayload({
@@ -369,7 +381,10 @@ try {
     ),
     eventLines(firstRun.events)
   )
-  assert.equal(resultEvent(firstRun.events)?.updatedAuthJson, firstAuth)
+  assert.equal(resultEvent(firstRun.events)?.updatedAuthJson, undefined)
+  assert.equal(firstRun.updatedAuthJson, firstAuth)
+  assert.ok(!firstRun.stdout.includes(firstAuth), firstRun.stdout)
+  assert.ok(!firstRun.stdout.includes("access-one"), firstRun.stdout)
   const spawnsAfterFirstRun = await spawnCount(spawnLogPath)
 
   const secondRun = await requestDaemon({
@@ -392,7 +407,9 @@ try {
     ),
     eventLines(secondRun.events)
   )
-  assert.equal(resultEvent(secondRun.events)?.updatedAuthJson, firstAuth)
+  assert.equal(resultEvent(secondRun.events)?.updatedAuthJson, undefined)
+  assert.equal(secondRun.updatedAuthJson, firstAuth)
+  assert.ok(!secondRun.stdout.includes(firstAuth), secondRun.stdout)
   assert.equal(await spawnCount(spawnLogPath), spawnsAfterFirstRun)
 
   const secondAuth = testAuthJson("two")
@@ -416,7 +433,9 @@ try {
     ),
     eventLines(thirdRun.events)
   )
-  assert.equal(resultEvent(thirdRun.events)?.updatedAuthJson, secondAuth)
+  assert.equal(resultEvent(thirdRun.events)?.updatedAuthJson, undefined)
+  assert.equal(thirdRun.updatedAuthJson, secondAuth)
+  assert.ok(!thirdRun.stdout.includes(secondAuth), thirdRun.stdout)
   assert.equal(await spawnCount(spawnLogPath), spawnsAfterFirstRun + 1)
 
   const hangingPayloadPath = join(root, "payload-hanging-run.json")
