@@ -167,6 +167,9 @@ export async function saveCodexAuthJson(
     openaiApiKey: parsed.openaiApiKey,
     profile: profileInput,
     refreshToken: parsed.refreshToken,
+    // Without an explicit profile, derive one from the account so importing a
+    // different account adds it instead of overwriting the "default" profile.
+    useAccountProfile: profileInput === undefined,
   })
 }
 
