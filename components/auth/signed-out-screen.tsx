@@ -2,7 +2,6 @@
 
 import { SignInButton } from "@clerk/nextjs"
 import { GeistPixelSquare } from "geist/font/pixel"
-import { ArrowRight } from "lucide-react"
 import Link from "next/link"
 
 import { AuthBackdrop } from "@/components/auth/auth-backdrop"
@@ -41,16 +40,12 @@ export function SignedOutScreen() {
           type="button"
           size="lg"
           className={cn(
-            "group/signin mt-10 px-6",
+            "mt-10 px-6 hover:bg-foreground/80",
             riseClass,
             "[animation-delay:160ms]"
           )}
         >
           Sign in
-          <ArrowRight
-            data-icon="inline-end"
-            className="transition-transform group-hover/signin:translate-x-0.5"
-          />
         </Button>
       </SignInButton>
 
