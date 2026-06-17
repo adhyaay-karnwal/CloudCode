@@ -95,6 +95,7 @@ function computerUseStatusLooksActive(status: string) {
   }
   return (
     value.includes("active") ||
+    value.includes("partial") ||
     value.includes("running") ||
     value.includes("start") ||
     value.includes("up")
