@@ -55,6 +55,8 @@
   --foreground: oklch(0.145 0 0);
   --scrollbar-thumb: rgb(128 128 128 / 42%);
   --scrollbar-track: transparent;
+  --chat-empty-bottom-space: clamp(3rem, 18dvh, 7.5rem);
+  --chat-composer-dock-bottom-space: 0.625rem;
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.145 0 0);
   --popover: oklch(1 0 0);
@@ -88,6 +90,13 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+}
+
+@media (display-mode: standalone) and (max-width: 767px) {
+  :root {
+    --chat-empty-bottom-space: clamp(3rem, 18dvh, 7rem);
+    --chat-composer-dock-bottom-space: 0.375rem;
+  }
 }
 
 .dark {
