@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server"
 
 import { getConvexAuthToken } from "@/lib/codex/auth"
-import { createCodexLoginUrl } from "@/lib/codex/oauth"
+import {
+  CODEX_OAUTH_STATE_COOKIE,
+  CODEX_OAUTH_STATE_COOKIE_MAX_AGE,
+  CODEX_OAUTH_STATE_COOKIE_PATH,
+  createCodexLoginRequest,
+} from "@/lib/codex/oauth"
 import { escapeHtml } from "@/lib/shared/html-escape"
 
 export const runtime = "nodejs"
@@ -27,24 +32,49 @@ function returnUrlForRequest(url: URL) {
   ).toString()
 }
 
+function appOriginForRequest(url: URL) {
+  const configuredUrl = process.env.NEXT_PUBLIC_APP_URL?.trim()
+  if (!configuredUrl) return url.origin
+
+  try {
+    return new URL(configuredUrl).origin
+  } catch {
+    return url.origin
+  }
+}
+
 export async function GET(request: Request) {
   try {
     const url = new URL(request.url)
-    const convexToken = await getConvexAuthToken()
+    const appOrigin = appOriginForRequest(url)
+    if (url.origin !== appOrigin) {
+      return NextResponse.redirect(
+        new URL(`${url.pathname}${url.search}`, appOrigin)
+      )
+    }
+
+    await getConvexAuthToken()
     const addAccount =
       url.searchParams.get("add") === "1" ||
       url.searchParams.get("mode") === "add"
     const profile = url.searchParams.get("profile") ?? undefined
-    const loginUrl = await createCodexLoginUrl({
-      appOrigin: url.origin,
-      convexToken,
+    const { cookieValue, loginUrl } = createCodexLoginRequest({
+      appOrigin,
       forceLogin: addAccount,
       profile,
       returnUrl: returnUrlForRequest(url),
       useAccountProfile: addAccount && !profile,
     })
+    const response = NextResponse.redirect(loginUrl)
+    response.cookies.set(CODEX_OAUTH_STATE_COOKIE, cookieValue, {
+      httpOnly: true,
+      maxAge: CODEX_OAUTH_STATE_COOKIE_MAX_AGE,
+      path: CODEX_OAUTH_STATE_COOKIE_PATH,
+      sameSite: "lax",
+      secure: url.protocol === "https:",
+    })
 
-    return NextResponse.redirect(loginUrl)
+    return response
   } catch (error) {
     const message =
       error instanceof Error

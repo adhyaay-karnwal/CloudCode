@@ -1,41 +1,42 @@
 import { createHash, randomBytes } from "node:crypto"
-import { createServer, type Server } from "node:http"
 
 import { saveCodexOAuthTokens } from "@/lib/codex/auth"
 import { codexOAuthClientId, codexOAuthIssuer } from "@/lib/codex/oauth-config"
-import { escapeHtml } from "@/lib/shared/html-escape"
+import { decryptSecret, encryptSecret } from "@/lib/security/secret-crypto"
 
-const DEFAULT_PORT = 1455
-const FALLBACK_PORT = 1457
-const LOGIN_SERVER_VERSION = "settings-return-v1"
+const LOGIN_STATE_VERSION = "web-callback-v1"
 const SCOPE =
   "openid profile email offline_access api.connectors.read api.connectors.invoke"
 
-type PendingLogin = {
-  appOrigin: string
+export const CODEX_OAUTH_STATE_COOKIE = "cloudcode_codex_oauth_state"
+export const CODEX_OAUTH_STATE_COOKIE_MAX_AGE = 15 * 60
+export const CODEX_OAUTH_STATE_COOKIE_PATH = "/api/codex-auth"
+
+type CodexOAuthStateCookie = {
   codeVerifier: string
-  convexToken: string
+  createdAt: number
   profile?: string
-  forceLogin?: boolean
+  redirectUri: string
   returnUrl: string
   state: string
   useAccountProfile?: boolean
+  version: typeof LOGIN_STATE_VERSION
 }
 
-type LoginServerState = {
-  pending: Map<string, PendingLogin>
-  port: number
-  server: Server
-  version: string
-}
-
-type HtmlDocumentOptions = {
-  autoRedirect?: boolean
+type CreateCodexLoginRequestInput = {
+  appOrigin: string
+  forceLogin?: boolean
+  profile?: string
   returnUrl?: string
+  useAccountProfile?: boolean
 }
 
-declare global {
-  var __cloudcodeCodexLoginServer: LoginServerState | undefined
+type CompleteCodexLoginInput = {
+  code: string
+  convexToken: string
+  requestOrigin: string
+  returnedState: string
+  stateCookie?: string
 }
 
 function base64Url(buffer: Buffer) {
@@ -59,15 +60,19 @@ function createState() {
   return base64Url(randomBytes(32))
 }
 
+function buildCallbackUri(appOrigin: string) {
+  return new URL("/api/codex-auth/callback", appOrigin).toString()
+}
+
 function buildAuthorizeUrl({
   codeChallenge,
   forceLogin,
-  port,
+  redirectUri,
   state,
 }: {
   codeChallenge: string
   forceLogin?: boolean
-  port: number
+  redirectUri: string
   state: string
 }) {
   const issuer = codexOAuthIssuer()
@@ -75,7 +80,7 @@ function buildAuthorizeUrl({
 
   url.searchParams.set("response_type", "code")
   url.searchParams.set("client_id", codexOAuthClientId())
-  url.searchParams.set("redirect_uri", `http://localhost:${port}/auth/callback`)
+  url.searchParams.set("redirect_uri", redirectUri)
   url.searchParams.set("scope", SCOPE)
   url.searchParams.set("code_challenge", codeChallenge)
   url.searchParams.set("code_challenge_method", "S256")
@@ -90,7 +95,7 @@ function buildAuthorizeUrl({
   return url.toString()
 }
 
-function oauthErrorMessage(url: URL) {
+export function codexOAuthErrorMessage(url: URL) {
   const error = url.searchParams.get("error")
   if (!error) return null
 
@@ -101,18 +106,22 @@ function oauthErrorMessage(url: URL) {
     : `ChatGPT sign-in failed: ${error}`
 }
 
-async function exchangeCodeForTokens(
-  login: PendingLogin,
-  code: string,
-  port: number
-) {
+async function exchangeCodeForTokens({
+  code,
+  codeVerifier,
+  redirectUri,
+}: {
+  code: string
+  codeVerifier: string
+  redirectUri: string
+}) {
   const tokenEndpoint = new URL("/oauth/token", codexOAuthIssuer())
   const body = new URLSearchParams({
     client_id: codexOAuthClientId(),
     code,
-    code_verifier: login.codeVerifier,
+    code_verifier: codeVerifier,
     grant_type: "authorization_code",
-    redirect_uri: `http://localhost:${port}/auth/callback`,
+    redirect_uri: redirectUri,
   })
 
   const response = await fetch(tokenEndpoint, {
@@ -148,191 +157,138 @@ async function exchangeCodeForTokens(
   }
 }
 
-function htmlDocument(message: string, options: HtmlDocumentOptions = {}) {
-  const returnUrl = options.returnUrl?.trim()
-  const escapedReturnUrl = returnUrl ? escapeHtml(returnUrl) : undefined
-  const scriptReturnUrl = returnUrl
-    ? JSON.stringify(returnUrl).replace(/</g, "\\u003c")
-    : undefined
-  const refresh =
-    options.autoRedirect && escapedReturnUrl
-      ? `<meta http-equiv="refresh" content="1;url=${escapedReturnUrl}">`
-      : ""
-  const script =
-    options.autoRedirect && scriptReturnUrl
-      ? `<script>window.setTimeout(function(){window.location.assign(${scriptReturnUrl})},100)</script>`
-      : ""
-  const returnLink = escapedReturnUrl
-    ? `<p><a href="${escapedReturnUrl}">Return to Cloudcode</a></p>`
-    : ""
-
-  return `<!doctype html><html><head><meta charset="utf-8">${refresh}<title>Cloudcode Auth</title></head><body style="font-family:system-ui;padding:2rem;line-height:1.5;max-width:42rem"><p>${escapeHtml(message)}</p>${returnLink}${script}</body></html>`
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value))
 }
 
-async function handleCallback(
-  state: LoginServerState,
-  requestUrl: string,
-  respond: (
-    message: string,
-    status?: number,
-    options?: HtmlDocumentOptions
-  ) => void
+function requiredString(
+  record: Record<string, unknown>,
+  key: keyof CodexOAuthStateCookie
 ) {
-  const url = new URL(requestUrl, `http://localhost:${state.port}`)
-
-  if (url.pathname !== "/auth/callback") {
-    respond("Not found.", 404)
-    return
+  const value = record[key]
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error("ChatGPT sign-in state is malformed.")
   }
+  return value
+}
 
-  const stateParam = url.searchParams.get("state")
-  const pending = stateParam ? state.pending.get(stateParam) : undefined
-  const returnOptions = pending ? { returnUrl: pending.returnUrl } : undefined
-  const oauthError = oauthErrorMessage(url)
-  if (oauthError) {
-    if (stateParam) {
-      state.pending.delete(stateParam)
-    }
-    respond(oauthError, 400, returnOptions)
-    return
-  }
+function optionalString(record: Record<string, unknown>, key: string) {
+  const value = record[key]
+  return typeof value === "string" ? value : undefined
+}
 
-  const code = url.searchParams.get("code")
+function optionalBoolean(record: Record<string, unknown>, key: string) {
+  const value = record[key]
+  return typeof value === "boolean" ? value : undefined
+}
 
-  if (!code || !stateParam) {
-    if (stateParam) {
-      state.pending.delete(stateParam)
-    }
-    respond("Missing OAuth code or state.", 400, returnOptions)
-    return
-  }
-
-  if (!pending) {
-    respond("OAuth state did not match an active login.", 400)
-    return
-  }
-
-  state.pending.delete(stateParam)
+function parseStateCookie(value: string): CodexOAuthStateCookie {
+  let parsed: unknown
 
   try {
-    const tokens = await exchangeCodeForTokens(pending, code, state.port)
-    await saveCodexOAuthTokens({
-      ...tokens,
-      convexToken: pending.convexToken,
-      profile: pending.profile,
-      useAccountProfile: pending.useAccountProfile,
-    })
-    respond("Signed in with ChatGPT. Returning to Cloudcode...", 200, {
-      autoRedirect: true,
-      returnUrl: pending.returnUrl,
-    })
-  } catch (error) {
-    respond(
-      error instanceof Error ? error.message : "ChatGPT sign-in failed.",
-      400,
-      {
-        returnUrl: pending.returnUrl,
-      }
-    )
-  }
-}
-
-async function listen(port: number) {
-  return new Promise<LoginServerState>((resolve, reject) => {
-    const pending = new Map<string, PendingLogin>()
-    let loginState: LoginServerState
-    const server = createServer((request, response) => {
-      void handleCallback(
-        loginState,
-        request.url ?? "/",
-        (message, status = 200, options) => {
-          response.statusCode = status
-          response.setHeader("Content-Type", "text/html; charset=utf-8")
-          response.setHeader("Connection", "close")
-          response.end(htmlDocument(message, options))
-        }
-      )
-    })
-    loginState = {
-      pending,
-      port,
-      server,
-      version: LOGIN_SERVER_VERSION,
-    }
-
-    server.once("error", reject)
-    server.listen(port, "127.0.0.1", () => {
-      server.off("error", reject)
-      resolve(loginState)
-    })
-  })
-}
-
-async function closeLoginServer(state: LoginServerState) {
-  await new Promise<void>((resolve) => {
-    try {
-      state.server.close(() => resolve())
-    } catch {
-      resolve()
-    }
-  })
-}
-
-async function getLoginServer() {
-  if (
-    globalThis.__cloudcodeCodexLoginServer?.version === LOGIN_SERVER_VERSION
-  ) {
-    return globalThis.__cloudcodeCodexLoginServer
-  }
-
-  if (globalThis.__cloudcodeCodexLoginServer) {
-    await closeLoginServer(globalThis.__cloudcodeCodexLoginServer)
-    globalThis.__cloudcodeCodexLoginServer = undefined
-  }
-
-  try {
-    globalThis.__cloudcodeCodexLoginServer = await listen(DEFAULT_PORT)
+    parsed = JSON.parse(decryptSecret(value))
   } catch {
-    globalThis.__cloudcodeCodexLoginServer = await listen(FALLBACK_PORT)
+    throw new Error("ChatGPT sign-in state could not be read.")
   }
 
-  return globalThis.__cloudcodeCodexLoginServer
+  if (!isRecord(parsed) || parsed.version !== LOGIN_STATE_VERSION) {
+    throw new Error("ChatGPT sign-in state is malformed.")
+  }
+
+  const createdAt = parsed.createdAt
+  if (typeof createdAt !== "number" || !Number.isFinite(createdAt)) {
+    throw new Error("ChatGPT sign-in state is malformed.")
+  }
+
+  if (Date.now() - createdAt > CODEX_OAUTH_STATE_COOKIE_MAX_AGE * 1000) {
+    throw new Error("ChatGPT sign-in expired. Try again.")
+  }
+
+  return {
+    codeVerifier: requiredString(parsed, "codeVerifier"),
+    createdAt,
+    profile: optionalString(parsed, "profile"),
+    redirectUri: requiredString(parsed, "redirectUri"),
+    returnUrl: requiredString(parsed, "returnUrl"),
+    state: requiredString(parsed, "state"),
+    useAccountProfile: optionalBoolean(parsed, "useAccountProfile"),
+    version: LOGIN_STATE_VERSION,
+  }
 }
 
-export async function createCodexLoginUrl({
+function safeReturnUrl(returnUrl: string, requestOrigin: string) {
+  try {
+    const url = new URL(returnUrl)
+    if (url.origin === requestOrigin) return url.toString()
+  } catch {
+    // Fall through to the app origin.
+  }
+
+  return requestOrigin
+}
+
+export function createCodexLoginRequest({
   appOrigin,
-  convexToken,
   forceLogin,
   profile,
   returnUrl,
   useAccountProfile,
-}: {
-  appOrigin: string
-  convexToken: string
-  forceLogin?: boolean
-  profile?: string
-  returnUrl?: string
-  useAccountProfile?: boolean
-}) {
-  const server = await getLoginServer()
+}: CreateCodexLoginRequestInput) {
+  const redirectUri = buildCallbackUri(appOrigin)
   const { codeChallenge, codeVerifier } = createPkcePair()
   const state = createState()
-
-  server.pending.set(state, {
-    appOrigin,
+  const stateCookie: CodexOAuthStateCookie = {
     codeVerifier,
-    convexToken,
-    forceLogin,
-    profile,
+    createdAt: Date.now(),
+    ...(profile !== undefined ? { profile } : {}),
+    redirectUri,
     returnUrl: returnUrl ?? appOrigin,
     state,
-    useAccountProfile,
+    ...(useAccountProfile !== undefined ? { useAccountProfile } : {}),
+    version: LOGIN_STATE_VERSION,
+  }
+
+  return {
+    cookieValue: encryptSecret(JSON.stringify(stateCookie)),
+    loginUrl: buildAuthorizeUrl({
+      codeChallenge,
+      forceLogin,
+      redirectUri,
+      state,
+    }),
+  }
+}
+
+export async function completeCodexLogin({
+  code,
+  convexToken,
+  requestOrigin,
+  returnedState,
+  stateCookie,
+}: CompleteCodexLoginInput) {
+  if (!stateCookie) {
+    throw new Error("ChatGPT sign-in state cookie is missing. Try again.")
+  }
+
+  const login = parseStateCookie(stateCookie)
+  if (returnedState !== login.state) {
+    throw new Error("ChatGPT sign-in state did not match.")
+  }
+
+  const tokens = await exchangeCodeForTokens({
+    code,
+    codeVerifier: login.codeVerifier,
+    redirectUri: login.redirectUri,
   })
 
-  return buildAuthorizeUrl({
-    codeChallenge,
-    forceLogin,
-    port: server.port,
-    state,
+  await saveCodexOAuthTokens({
+    ...tokens,
+    convexToken,
+    profile: login.profile,
+    useAccountProfile: login.useAccountProfile,
   })
+
+  return {
+    returnUrl: safeReturnUrl(login.returnUrl, requestOrigin),
+  }
 }
