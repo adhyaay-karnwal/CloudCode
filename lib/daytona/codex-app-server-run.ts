@@ -54,6 +54,34 @@ export type CodexAppServerRunResult = {
   updatedAuthJson: string
 }
 
+export class CodexAppServerRunError extends Error {
+  updatedAuthJson?: string
+
+  constructor(message: string, options: { updatedAuthJson?: string } = {}) {
+    super(message)
+    this.name = "CodexAppServerRunError"
+    this.updatedAuthJson = options.updatedAuthJson
+  }
+}
+
+export function codexAppServerRunUpdatedAuthJson(error: unknown) {
+  return error instanceof CodexAppServerRunError
+    ? error.updatedAuthJson
+    : undefined
+}
+
+export function redactCodexAppServerAuthPayloads(value: string) {
+  return value
+    .replace(
+      /("(?:authJson|updatedAuthJson)"\s*:\s*)"(?:\\.|[^"\\])*"/g,
+      '$1"[redacted auth.json]"'
+    )
+    .replace(
+      /("(?:access_token|id_token|refresh_token)"\s*:\s*)"(?:\\.|[^"\\])*"/g,
+      '$1"[redacted token]"'
+    )
+}
+
 export async function runCodexViaAppServer({
   codexThreadIdToResume,
   gitAuth,
@@ -248,11 +276,14 @@ export async function runCodexViaAppServer({
     }
     if (result.exitCode !== 0 && !daemonError) {
       daemonError =
-        compactLine(result.stderr || result.stdout) ||
-        "Codex app-server daemon client failed."
+        compactLine(
+          redactCodexAppServerAuthPayloads(result.stderr || result.stdout)
+        ) || "Codex app-server daemon client failed."
     }
     if (daemonError) {
-      throw new Error(daemonError)
+      throw new CodexAppServerRunError(daemonError, {
+        updatedAuthJson: daemonResult?.updatedAuthJson,
+      })
     }
     if (!daemonResult) {
       throw new Error("Codex app-server daemon did not return a turn result.")
@@ -290,18 +321,30 @@ export async function runCodexViaAppServer({
     // the WorkerRunCanceledError type and bloat the error with the full
     // daemon event stream captured in stdout.
     if (isWorkerRunCanceledError(error) || input.signal?.aborted) throw error
-    const message =
+    const updatedAuthJson =
+      error instanceof CodexAppServerRunError
+        ? error.updatedAuthJson
+        : daemonResult?.updatedAuthJson
+    const message = redactCodexAppServerAuthPayloads(
       error instanceof CodexAppServerError && error.code !== undefined
         ? `${error.message} (${error.code})`
         : error instanceof Error
           ? error.message
           : "Codex app-server run failed."
-    if (stdout.trim() || stderr.trim()) {
-      throw new Error(
-        [message, stdout.trim(), stderr.trim()].filter(Boolean).join("\n\n")
+    )
+    const safeStdout = redactCodexAppServerAuthPayloads(stdout.trim())
+    const safeStderr = redactCodexAppServerAuthPayloads(stderr.trim())
+
+    if (safeStdout || safeStderr) {
+      throw new CodexAppServerRunError(
+        [message, safeStdout, safeStderr].filter(Boolean).join("\n\n"),
+        { updatedAuthJson }
       )
     }
-    throw error
+    if (updatedAuthJson) {
+      throw new CodexAppServerRunError(message, { updatedAuthJson })
+    }
+    throw new CodexAppServerRunError(message)
   }
 }
 

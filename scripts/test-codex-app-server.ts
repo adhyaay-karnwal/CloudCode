@@ -34,6 +34,7 @@ import {
 } from "@/lib/codex/app-server-daemon"
 import { appServerThreadParams } from "@/lib/codex/app-server-run-params"
 import { codexAppServerStderrLogForLine } from "@/lib/codex/app-server-stderr"
+import { redactCodexAppServerAuthPayloads } from "@/lib/daytona/codex-app-server-run"
 import { replayMissingDaytonaCommandOutput } from "@/lib/daytona/sandbox-command"
 import type { RunCodexInSandboxResult } from "@/lib/daytona/codex-agent-types"
 
@@ -128,6 +129,31 @@ assert.ok(!daytonaCodexAgentSource.includes("Repo already prepared"))
 assert.ok(
   daytonaCodexAppServerRunSource.includes("authHash: sha256(input.authJson)")
 )
+const redactedDaemonOutput = redactCodexAppServerAuthPayloads(
+  JSON.stringify({
+    error: "refresh failed",
+    tokens: {
+      access_token: "secret-access-token",
+      id_token: "secret-id-token",
+      refresh_token: "secret-refresh-token",
+    },
+    type: "result",
+    updatedAuthJson: JSON.stringify({
+      auth_mode: "chatgpt",
+      tokens: {
+        access_token: "nested-secret-access-token",
+        id_token: "nested-secret-id-token",
+        refresh_token: "nested-secret-refresh-token",
+      },
+    }),
+  })
+)
+assert.ok(redactedDaemonOutput.includes("refresh failed"))
+assert.ok(redactedDaemonOutput.includes("[redacted auth.json]"))
+assert.ok(redactedDaemonOutput.includes("[redacted token]"))
+assert.ok(!redactedDaemonOutput.includes("secret-access-token"))
+assert.ok(!redactedDaemonOutput.includes("secret-id-token"))
+assert.ok(!redactedDaemonOutput.includes("secret-refresh-token"))
 const daemonScriptSource = await readFile(
   new URL("../lib/codex/app-server-daemon-script.ts", import.meta.url),
   "utf8"

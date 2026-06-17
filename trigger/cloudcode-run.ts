@@ -4,6 +4,7 @@ import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
 import { ensureAutoEnvironmentSandbox } from "@/lib/sandbox/auto-environment"
 import { runCodexInSandbox } from "@/lib/daytona/codex-agent"
+import { codexAppServerRunUpdatedAuthJson } from "@/lib/daytona/codex-app-server-run"
 import {
   cancelWorkerRun,
   completeWorkerRun,
@@ -100,6 +101,8 @@ export const cloudcodeRun = task({
     let usageMeter: ReturnType<typeof createTriggerUsageMeter> | undefined
     let billingPauseSandboxId: string | undefined
     let billingPausePromise: Promise<void> | undefined
+    let loadedProfile: string | undefined
+    let runAuthJson: string | undefined
     const sandboxObservations = new Map<string, Promise<void>>()
     const failBilling = (error: unknown) => {
       billingError = billingError ?? error
@@ -167,6 +170,7 @@ export const cloudcodeRun = task({
       if (!loaded) return { canceled: true }
 
       loadedUserId = loaded.userId
+      loadedProfile = loaded.profile
       usageMeter = createTriggerUsageMeter({
         client,
         failBilling,
@@ -177,7 +181,7 @@ export const cloudcodeRun = task({
       await usageMeter.flush("started")
 
       let runInput = loaded.input
-      let runAuthJson = loaded.authJson
+      runAuthJson = loaded.authJson
       latestSandboxId = runInput.sandboxId
       if (latestSandboxId) observeSandbox(latestSandboxId)
 
@@ -269,6 +273,22 @@ export const cloudcodeRun = task({
       if (signal.aborted || isWorkerRunCanceledError(error)) {
         await cancelWorkerRun(client, payload.runId, latestSandboxId)
         return { canceled: true }
+      }
+
+      const updatedAuthJson = codexAppServerRunUpdatedAuthJson(error)
+      if (
+        loadedUserId &&
+        updatedAuthJson &&
+        runAuthJson &&
+        updatedAuthJson !== runAuthJson
+      ) {
+        await saveWorkerAuthJson(
+          loadedUserId,
+          loadedProfile,
+          updatedAuthJson
+        ).catch((authError) => {
+          console.warn("Unable to save Codex auth after failed run.", authError)
+        })
       }
 
       await failWorkerRun(
