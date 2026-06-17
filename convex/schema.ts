@@ -341,6 +341,7 @@ export default defineSchema({
     userId: v.id("users"),
   })
     .index("by_environment_updated", ["environmentId", "updatedAt"])
+    .index("by_sandbox_user", ["sandboxId", "userId"])
     .index("by_user_updated", ["userId", "updatedAt"]),
 
   sandboxPresetEnvironments: defineTable({
@@ -361,6 +362,7 @@ export default defineSchema({
     updatedAt: v.number(),
     userId: v.id("users"),
   })
+    .index("by_active_sandbox_user", ["activeSandboxId", "userId"])
     .index("by_preset_repo", ["userId", "presetId", "repoUrl"])
     .index("by_user_updated", ["userId", "updatedAt"]),
 

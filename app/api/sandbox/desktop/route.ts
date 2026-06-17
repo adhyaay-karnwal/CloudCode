@@ -20,7 +20,10 @@ import {
 } from "@/lib/http/api-route"
 import { readDaytonaSandboxInfo } from "@/lib/daytona/sandbox"
 import { requireSameOrigin } from "@/lib/http/request-security"
-import { requireCurrentUserSandbox } from "@/lib/sandbox/authorization"
+import {
+  requireCurrentUserSandbox,
+  SandboxAuthorizationError,
+} from "@/lib/sandbox/authorization"
 
 export const runtime = "nodejs"
 export const maxDuration = 300
@@ -41,6 +44,10 @@ export async function GET(request: Request) {
     await requireCurrentUserSandbox(sandboxId)
     return NextResponse.json(await readDaytonaDesktopStatus(sandboxId))
   } catch (error) {
+    if (error instanceof SandboxAuthorizationError) {
+      return jsonError(error.message, 404)
+    }
+
     return jsonError(
       error instanceof Error
         ? error.message
@@ -85,6 +92,10 @@ export async function POST(request: Request) {
       })
     return NextResponse.json(result)
   } catch (error) {
+    if (error instanceof SandboxAuthorizationError) {
+      return jsonError(error.message, 404)
+    }
+
     if (error instanceof BillingRequiredError) {
       await pauseCurrentUserSandboxForBilling(sandboxId)
       return jsonError(error.message, 402)
