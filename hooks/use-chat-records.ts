@@ -1,7 +1,7 @@
 "use client"
 
 import { useMutation, useQuery } from "convex/react"
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { ACTIVE_KEY, DRAFT_RUN_KEY } from "@/components/chat/storage"
 import type { ChatRecord, LiveRunRecord } from "@/components/chat/types"
@@ -12,6 +12,7 @@ import {
   removeBrowserStorage,
   writeBrowserStorage,
 } from "@/lib/browser/storage"
+import { requestJson } from "@/lib/http/client-json"
 import type { SandboxPresetRecord } from "@/lib/sandbox/preset-types"
 
 const EMPTY_CHAT_RECORDS: ChatRecord[] = []
@@ -40,7 +41,16 @@ export function useChatRecords() {
   )
   const saveRunState = useMutation(api.chats.saveRunState)
   const clearSandbox = useMutation(api.chats.clearSandbox)
-  const deleteThreadMutation = useMutation(api.chats.deleteThread)
+  const deleteThreadMutation = useCallback(
+    (args: { threadId: Id<"threads"> }) =>
+      requestJson<{
+        deleted: boolean
+        sandboxIds: string[]
+      }>("/api/chats/thread/delete", "POST", args, {
+        fallbackError: "Failed to delete chat.",
+      }),
+    []
+  )
   const updateThread = useMutation(api.chats.updateThread)
   const setThreadNotes = useMutation(api.chats.setThreadNotes)
   const [activeId, setActiveId] = useState<Id<"threads"> | null>(

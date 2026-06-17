@@ -1,7 +1,7 @@
 import { v } from "convex/values"
 
 import { mutation, query } from "./_generated/server"
-import type { QueryCtx } from "./_generated/server"
+import type { MutationCtx, QueryCtx } from "./_generated/server"
 import type { Doc, Id } from "./_generated/dataModel"
 import { compactMessageMeta } from "./lib/codexRunLogs"
 import {
@@ -13,6 +13,7 @@ import {
   thinking,
   threadSandboxState as sandboxState,
 } from "./lib/codexRunValidators"
+import { latestSandboxIdForRun } from "./lib/codexRunLifecycle"
 import { resolveOwnedPresetOrAutoDefault } from "./lib/sandboxPresets"
 import { requireOwnedThread } from "./lib/threadAccess"
 import {
@@ -29,6 +30,30 @@ import {
 import { ensureCurrentUser, getCurrentUser } from "./lib/users"
 
 const THREAD_LIST_LIMIT = 80
+
+function uniqueSandboxIds(ids: Array<string | undefined>) {
+  return [...new Set(ids.filter((id): id is string => Boolean(id)))]
+}
+
+function sandboxIdsForThreadRuns(
+  thread: Pick<Doc<"threads">, "sandboxId">,
+  runs: Array<Pick<Doc<"codexRuns">, "logs" | "sandboxId">>
+) {
+  return uniqueSandboxIds([
+    thread.sandboxId,
+    ...runs.map((run) => latestSandboxIdForRun(run)),
+  ])
+}
+
+async function threadRuns(
+  ctx: QueryCtx | MutationCtx,
+  threadId: Id<"threads">
+) {
+  return await ctx.db
+    .query("codexRuns")
+    .withIndex("by_thread_updated", (q) => q.eq("threadId", threadId))
+    .collect()
+}
 
 async function presetNameForThread(
   ctx: QueryCtx,
@@ -113,6 +138,23 @@ export const get = query({
     if (!thread || thread.userId !== user._id) return null
 
     return await fullThreadRecord(ctx, thread)
+  },
+})
+
+export const threadSandboxIds = query({
+  args: {
+    threadId: v.id("threads"),
+  },
+  handler: async (ctx, args) => {
+    const user = await getCurrentUser(ctx)
+    if (!user) throw new Error("Not authenticated.")
+
+    const thread = await requireOwnedThread(ctx, args.threadId, user._id)
+    const runs = await threadRuns(ctx, args.threadId)
+
+    return {
+      sandboxIds: sandboxIdsForThreadRuns(thread, runs),
+    }
   },
 })
 
@@ -482,29 +524,23 @@ export const deleteThread = mutation({
     threadId: v.id("threads"),
   },
   handler: async (ctx, args) => {
-    await ensureCurrentUser(ctx).then((userId) =>
-      requireOwnedThread(ctx, args.threadId, userId)
-        .then(() =>
-          Promise.all([
-            ctx.db
-              .query("messages")
-              .withIndex("by_thread", (q) => q.eq("threadId", args.threadId))
-              .collect(),
-            ctx.db
-              .query("codexRuns")
-              .withIndex("by_thread_updated", (q) =>
-                q.eq("threadId", args.threadId)
-              )
-              .collect(),
-          ])
-        )
-        .then(([messages, runs]) =>
-          Promise.all([
-            ...runs.map((run) => ctx.db.delete(run._id)),
-            ...messages.map((message) => ctx.db.delete(message._id)),
-          ])
-        )
-        .then(() => ctx.db.delete(args.threadId))
-    )
+    const userId = await ensureCurrentUser(ctx)
+    const thread = await requireOwnedThread(ctx, args.threadId, userId)
+    const [messages, runs] = await Promise.all([
+      ctx.db
+        .query("messages")
+        .withIndex("by_thread", (q) => q.eq("threadId", args.threadId))
+        .collect(),
+      threadRuns(ctx, args.threadId),
+    ])
+    const sandboxIds = sandboxIdsForThreadRuns(thread, runs)
+
+    await Promise.all([
+      ...runs.map((run) => ctx.db.delete(run._id)),
+      ...messages.map((message) => ctx.db.delete(message._id)),
+    ])
+    await ctx.db.delete(args.threadId)
+
+    return { sandboxIds }
   },
 })

@@ -10,7 +10,6 @@ import {
 import { closeBrowserTerminalSession } from "@/components/sandbox/terminal-session"
 import type { ChatRecord } from "@/components/chat/types"
 import type { Id } from "@/convex/_generated/dataModel"
-import { requestJson } from "@/lib/http/client-json"
 
 type DeleteThread = (args: { threadId: Id<"threads"> }) => Promise<unknown>
 
@@ -96,16 +95,6 @@ export function useChatThreadActions({
       if (sandboxId) closeBrowserTerminalSession(sandboxId)
 
       try {
-        if (sandboxId) {
-          await requestJson(
-            "/api/sandbox/kill",
-            "POST",
-            { sandboxId },
-            {
-              fallbackError: "Failed to delete sandbox.",
-            }
-          ).catch(() => undefined)
-        }
         await deleteThread({ threadId: id })
         removeThreadRunState(id)
         if (activeId === id) {
