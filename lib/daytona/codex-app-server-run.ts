@@ -12,6 +12,7 @@ import {
 } from "@/lib/codex/app-server-run-params"
 import { codexAppServerStderrLogForLine } from "@/lib/codex/app-server-stderr"
 import { isWorkerRunCanceledError } from "@/lib/codex/run-cancel-error"
+import { isCodexRefreshTokenReusedRunResult } from "@/lib/codex/auth-errors"
 import {
   codexAppServerNotificationMatchesActiveRoute,
   codexAppServerNotificationRoute,
@@ -302,6 +303,19 @@ export async function runCodexViaAppServer({
       status === "completed"
         ? ""
         : summary.turnError || daemonResult.turnError || stderr
+    if (
+      isCodexRefreshTokenReusedRunResult({
+        exitCode,
+        lastMessage,
+        stderr: turnError,
+        stdout,
+      })
+    ) {
+      throw new CodexAppServerRunError(
+        turnError || "Codex ChatGPT auth refresh failed.",
+        { updatedAuthJson }
+      )
+    }
 
     return {
       codexThreadId: activeThreadId,

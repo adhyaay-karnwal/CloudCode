@@ -30,3 +30,16 @@ export function isCodexRefreshTokenReusedError(error: unknown) {
     normalized.includes("access token could not be refreshed")
   )
 }
+
+export function isCodexRefreshTokenReusedRunResult(result: {
+  exitCode?: number
+  lastMessage?: string
+  stderr?: string
+  stdout?: string
+}) {
+  if (result.exitCode === 0) return false
+
+  return [result.stderr, result.stdout, result.lastMessage].some((value) =>
+    isCodexRefreshTokenReusedError(value)
+  )
+}

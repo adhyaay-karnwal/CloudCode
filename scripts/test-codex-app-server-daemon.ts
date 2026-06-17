@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import { spawn, type ChildProcess } from "node:child_process"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { createServer } from "node:http"
 import { join } from "node:path"
 import process from "node:process"
 
@@ -50,14 +51,61 @@ const interruptLog = process.env.MOCK_CODEX_INTERRUPT_LOG;
 if (spawnLog) appendFileSync(spawnLog, String(process.pid) + "\\n");
 
 let turnCount = 0;
+const refreshTurns = new Map();
 
 function send(message) {
   process.stdout.write(JSON.stringify(message) + "\\n");
 }
 
+function completeRefreshTurn(state) {
+  const tokens = state.responses.map((response) => response.result?.accessToken || response.error?.message || "missing").join(" ");
+  send({
+    method: "item/agentMessage/delta",
+    params: {
+      delta: "refresh " + tokens,
+      itemId: "agent-" + state.turnCount,
+      threadId: state.threadId,
+      turnId: state.turnId,
+    },
+  });
+  send({
+    method: "turn/completed",
+    params: {
+      threadId: state.threadId,
+      turn: {
+        error: null,
+        id: state.turnId,
+        items: [
+          {
+            id: "agent-" + state.turnCount,
+            text: "refresh " + tokens,
+            type: "agentMessage",
+          },
+        ],
+        status: "completed",
+      },
+    },
+  });
+}
+
+function handleRefreshResponse(message) {
+  const id = String(message.id || "");
+  if (!id.startsWith("refresh:")) return false;
+  const turnId = id.split(":")[1];
+  const state = refreshTurns.get(turnId);
+  if (!state) return true;
+  state.responses.push(message);
+  if (state.responses.length === 2) {
+    refreshTurns.delete(turnId);
+    completeRefreshTurn(state);
+  }
+  return true;
+}
+
 createInterface({ input: process.stdin }).on("line", (line) => {
   if (!line.trim()) return;
   const message = JSON.parse(line);
+  if (handleRefreshResponse(message)) return;
   const { id, method, params } = message;
 
   if (method === "initialize") {
@@ -85,6 +133,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     const turnId = "turn-" + turnCount;
     const threadId = params.threadId;
     const shouldHang = params?.input?.[0]?.text === "hang";
+    const shouldRefresh = params?.input?.[0]?.text === "refresh";
     send({ id, result: { turn: { id: turnId, status: "inProgress" } } });
     setTimeout(() => {
       send({
@@ -94,6 +143,25 @@ createInterface({ input: process.stdin }).on("line", (line) => {
           turn: { id: turnId, status: "inProgress" },
         },
       });
+      if (shouldRefresh) {
+        refreshTurns.set(turnId, {
+          responses: [],
+          threadId,
+          turnCount,
+          turnId,
+        });
+        send({
+          id: "refresh:" + turnId + ":a",
+          method: "account/chatgptAuthTokens/refresh",
+          params: { previousAccountId: "account-one" },
+        });
+        send({
+          id: "refresh:" + turnId + ":b",
+          method: "account/chatgptAuthTokens/refresh",
+          params: { previousAccountId: "account-one" },
+        });
+        return;
+      }
       if (shouldHang) return;
       send({
         method: "item/agentMessage/delta",
@@ -280,8 +348,57 @@ async function eventually(
   throw new Error(`Timed out waiting for ${label}.`)
 }
 
+async function startAuthServer() {
+  let refreshRequests = 0
+  const idToken = [
+    base64UrlJson({ alg: "none" }),
+    base64UrlJson({
+      "https://api.openai.com/auth": {
+        chatgpt_account_id: "account-refreshed",
+      },
+    }),
+    "signature",
+  ].join(".")
+  const server = createServer((request, response) => {
+    if (request.method !== "POST" || request.url !== "/oauth/token") {
+      response.statusCode = 404
+      response.end("not found")
+      return
+    }
+
+    refreshRequests += 1
+    request.resume()
+    setTimeout(() => {
+      response.setHeader("Content-Type", "application/json")
+      response.end(
+        JSON.stringify({
+          access_token: "access-refreshed",
+          id_token: idToken,
+          refresh_token: "refresh-refreshed",
+        })
+      )
+    }, 50)
+  })
+
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  const address = server.address()
+  assert.ok(address && typeof address === "object")
+
+  return {
+    close: () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()))
+      }),
+    issuer: `http://127.0.0.1:${address.port}`,
+    refreshRequests: () => refreshRequests,
+  }
+}
+
 const root = await mkdtemp(join("/tmp", "ccd-"))
 let daemon: ChildProcess | undefined
+let authServer: Awaited<ReturnType<typeof startAuthServer>> | undefined
 
 try {
   const daemonScriptPath = join(root, "cloudcode-codex-daemon.mjs")
@@ -302,6 +419,8 @@ try {
     writeFile(mockCodexPath, mockCodexAppServerScript(), { mode: 0o755 }),
   ])
 
+  authServer = await startAuthServer()
+
   const env = {
     ...process.env,
     CLOUDCODE_CODEX_LAUNCHER: mockCodexPath,
@@ -313,6 +432,7 @@ try {
     HOME: root,
     MOCK_CODEX_SPAWN_LOG: spawnLogPath,
     MOCK_CODEX_INTERRUPT_LOG: interruptLogPath,
+    OPENAI_CODEX_ISSUER: authServer.issuer,
   }
 
   daemon = spawn(process.execPath, [daemonScriptPath], {
@@ -410,6 +530,32 @@ try {
   assert.equal(resultEvent(secondRun.events)?.updatedAuthJson, undefined)
   assert.equal(secondRun.updatedAuthJson, firstAuth)
   assert.ok(!secondRun.stdout.includes(firstAuth), secondRun.stdout)
+  assert.equal(await spawnCount(spawnLogPath), spawnsAfterFirstRun)
+
+  const refreshRun = await requestDaemon({
+    clientPath: daemonClientPath,
+    env,
+    payload: runPayload({
+      authHash: "auth-one",
+      authJson: firstAuth,
+      codexThreadIdToResume: "thread-1",
+      text: "refresh",
+    }),
+    root,
+  })
+  assert.equal(refreshRun.exitCode, 0)
+  assert.equal(authServer.refreshRequests(), 1)
+  assert.ok(
+    refreshRun.events.some(
+      (event) =>
+        event.type === "result" &&
+        event.threadId === "thread-1" &&
+        event.finalAssistantText === "refresh access-refreshed access-refreshed"
+    ),
+    eventLines(refreshRun.events)
+  )
+  assert.ok(refreshRun.updatedAuthJson?.includes("access-refreshed"))
+  assert.ok(refreshRun.updatedAuthJson?.includes("refresh-refreshed"))
   assert.equal(await spawnCount(spawnLogPath), spawnsAfterFirstRun)
 
   const secondAuth = testAuthJson("two")
@@ -539,5 +685,6 @@ try {
   })
 } finally {
   if (daemon) await stopProcessGroup(daemon)
+  if (authServer) await authServer.close().catch(() => undefined)
   await rm(root, { force: true, recursive: true })
 }

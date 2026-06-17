@@ -15,6 +15,7 @@ import {
   CODEX_AUTH_PROFILE_BUSY_MESSAGE,
   CODEX_AUTH_RECONNECT_MESSAGE,
   isCodexRefreshTokenReusedError,
+  isCodexRefreshTokenReusedRunResult,
 } from "@/lib/codex/auth-errors"
 import { redactCodexAuthPayloads } from "@/lib/codex/auth-redaction"
 import {
@@ -148,6 +149,11 @@ assert.ok(!daytonaCodexAgentSource.includes("Repo already prepared"))
 assert.ok(
   daytonaCodexAppServerRunSource.includes("authHash: sha256(input.authJson)")
 )
+assert.ok(
+  daytonaCodexAppServerRunSource.includes(
+    "isCodexRefreshTokenReusedRunResult({"
+  )
+)
 const redactedDaemonOutput = redactCodexAppServerAuthPayloads(
   JSON.stringify({
     error: "refresh failed",
@@ -218,6 +224,19 @@ const codexRunRouteSource = await readFile(
 assert.ok(codexRunRouteSource.includes("CODEX_RUN_CREATE_ERROR_STATUS"))
 assert.ok(codexRunRouteSource.includes("if (!created.ok)"))
 assert.ok(codexRunRouteSource.includes("created.status"))
+const triggerCloudcodeRunSource = await readFile(
+  new URL("../trigger/cloudcode-run.ts", import.meta.url),
+  "utf8"
+)
+const returnedAuthFailureCheck = triggerCloudcodeRunSource.indexOf(
+  "isCodexRefreshTokenReusedRunResult(result)"
+)
+const returnedAuthSave = triggerCloudcodeRunSource.indexOf(
+  "if (result.updatedAuthJson !== runAuthJson)"
+)
+assert.ok(returnedAuthFailureCheck > 0)
+assert.ok(returnedAuthSave > 0)
+assert.ok(returnedAuthFailureCheck < returnedAuthSave)
 const codexAuthSource = await readFile(
   new URL("../convex/codexAuth.ts", import.meta.url),
   "utf8"
@@ -243,6 +262,20 @@ assert.ok(
   isCodexRefreshTokenReusedError(
     "Your access token could not be refreshed because your refresh token was already used."
   )
+)
+assert.ok(
+  isCodexRefreshTokenReusedRunResult({
+    exitCode: 1,
+    stderr:
+      "Your access token could not be refreshed because your refresh token was already used.",
+  })
+)
+assert.equal(
+  isCodexRefreshTokenReusedRunResult({
+    exitCode: 0,
+    stderr: "refresh_token_reused",
+  }),
+  false
 )
 assert.equal(
   isCodexRefreshTokenReusedError(new Error("network timeout")),

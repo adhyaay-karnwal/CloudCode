@@ -1,11 +1,11 @@
-export const CODEX_APP_SERVER_DAEMON_VERSION = "4"
+export const CODEX_APP_SERVER_DAEMON_VERSION = "5"
 
 export const CODEX_APP_SERVER_DAEMON_SCRIPT = String.raw`import { createHash } from "node:crypto"
 import { spawn } from "node:child_process"
 import fs from "node:fs"
 import net from "node:net"
 
-const VERSION = "4"
+const VERSION = "5"
 const REQUEST_TIMEOUT_MS = Number(process.env.CLOUDCODE_APP_SERVER_REQUEST_TIMEOUT_MS || "45000")
 const SOCKET_PATH = requiredEnv("CLOUDCODE_DAEMON_SOCKET")
 const DAEMON_DIR = SOCKET_PATH.slice(0, SOCKET_PATH.lastIndexOf("/"))
@@ -15,6 +15,7 @@ const REPO_PATH = requiredEnv("CLOUDCODE_REPO_PATH")
 const CODEX_HOME = requiredEnv("CODEX_HOME")
 const OAUTH_ISSUER = process.env.OPENAI_CODEX_ISSUER || "https://auth.openai.com"
 const OAUTH_CLIENT_ID = process.env.OPENAI_CODEX_CLIENT_ID || "app_EMoamEEZ73f0CkXaXp7hrann"
+const REFRESH_RESULT_REUSE_MS = Number(process.env.CLOUDCODE_AUTH_REFRESH_RESULT_REUSE_MS || "30000")
 
 let codex = null
 let codexExited = false
@@ -419,6 +420,31 @@ function buildAuthJson(auth) {
   )
 }
 
+function authRefreshResult(auth) {
+  return {
+    accessToken: auth.accessToken,
+    chatgptAccountId: auth.accountId || "",
+    chatgptPlanType: null,
+  }
+}
+
+async function tokenRefreshFailureMessage(response) {
+  const record = objectRecord(await response.json().catch(() => null))
+  const detail = [
+    stringValue(record && record.error),
+    stringValue(record && record.error_description),
+    stringValue(record && record.message),
+  ]
+    .filter(Boolean)
+    .join(": ")
+
+  return (
+    "Token refresh failed with status " +
+    response.status +
+    (detail ? ": " + compactLine(detail) : ".")
+  )
+}
+
 function writeAuthJson(authJson, authHash) {
   fs.mkdirSync(CODEX_HOME, { mode: 0o700, recursive: true })
   fs.writeFileSync(CODEX_HOME + "/auth.json", authJson, "utf8")
@@ -437,8 +463,8 @@ function ensureAuthJson(authJson, authHash) {
   return auth
 }
 
-async function refreshChatgptAuthTokens(params) {
-  if (!activeRun || !activeRun.auth) {
+async function performChatgptAuthTokenRefresh(run, params) {
+  if (activeRun !== run || !run.auth) {
     throw new Error("No active Codex auth is available for token refresh.")
   }
   const previousAccountId = stringValue(objectRecord(params) && objectRecord(params).previousAccountId)
@@ -446,7 +472,7 @@ async function refreshChatgptAuthTokens(params) {
   const body = new URLSearchParams({
     client_id: OAUTH_CLIENT_ID,
     grant_type: "refresh_token",
-    refresh_token: activeRun.auth.refreshToken,
+    refresh_token: run.auth.refreshToken,
   })
   const response = await fetch(endpoint, {
     body,
@@ -454,37 +480,66 @@ async function refreshChatgptAuthTokens(params) {
     method: "POST",
   })
   if (!response.ok) {
-    throw new Error("Token refresh failed with status " + response.status + ".")
+    throw new Error(await tokenRefreshFailureMessage(response))
   }
   const data = await response.json()
   if (typeof data.access_token !== "string") {
     throw new Error("Token refresh response did not include access_token.")
   }
+  if (activeRun !== run) {
+    throw new Error("Codex auth refresh run is no longer active.")
+  }
 
-  const idToken = typeof data.id_token === "string" ? data.id_token : activeRun.auth.idToken
+  const idToken = typeof data.id_token === "string" ? data.id_token : run.auth.idToken
   const accountId =
-    (typeof data.id_token === "string" ? getAccountIdFromIdToken(idToken) : activeRun.auth.accountId) ||
+    (typeof data.id_token === "string" ? getAccountIdFromIdToken(idToken) : run.auth.accountId) ||
     previousAccountId ||
     null
-  activeRun.auth = {
-    ...activeRun.auth,
+  run.auth = {
+    ...run.auth,
     accessToken: data.access_token,
     accountId,
     idToken,
     lastRefresh: new Date().toISOString(),
     refreshToken:
-      typeof data.refresh_token === "string" ? data.refresh_token : activeRun.auth.refreshToken,
+      typeof data.refresh_token === "string" ? data.refresh_token : run.auth.refreshToken,
   }
-  const authJson = buildAuthJson(activeRun.auth)
-  activeRun.authJson = authJson
+  const authJson = buildAuthJson(run.auth)
+  run.authJson = authJson
   writeAuthJson(authJson)
   initializedAuthHash = writtenAuthHash
 
-  return {
-    accessToken: activeRun.auth.accessToken,
-    chatgptAccountId: activeRun.auth.accountId || "",
-    chatgptPlanType: null,
+  return authRefreshResult(run.auth)
+}
+
+async function refreshChatgptAuthTokens(params) {
+  const run = activeRun
+  if (!run || !run.auth) {
+    throw new Error("No active Codex auth is available for token refresh.")
   }
+
+  if (
+    run.authRefreshResult &&
+    Date.now() - run.authRefreshResult.refreshedAtMs < REFRESH_RESULT_REUSE_MS
+  ) {
+    return run.authRefreshResult.result
+  }
+
+  if (!run.authRefreshPromise) {
+    run.authRefreshPromise = performChatgptAuthTokenRefresh(run, params)
+      .then((result) => {
+        run.authRefreshResult = {
+          refreshedAtMs: Date.now(),
+          result,
+        }
+        return result
+      })
+      .finally(() => {
+        run.authRefreshPromise = null
+      })
+  }
+
+  return await run.authRefreshPromise
 }
 
 function emptyToolInputAnswers(params) {
@@ -661,6 +716,8 @@ async function runTurn(payload, socket) {
 
   const run = {
     auth,
+    authRefreshPromise: null,
+    authRefreshResult: null,
     authJson,
     completedTurn: null,
     interrupting: false,

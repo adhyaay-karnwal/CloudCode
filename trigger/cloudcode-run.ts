@@ -9,6 +9,7 @@ import { codexAppServerRunUpdatedAuthJson } from "@/lib/daytona/codex-app-server
 import {
   CODEX_AUTH_RECONNECT_MESSAGE,
   isCodexRefreshTokenReusedError,
+  isCodexRefreshTokenReusedRunResult,
 } from "@/lib/codex/auth-errors"
 import {
   cancelWorkerRun,
@@ -41,6 +42,48 @@ function errorMessage(error: unknown) {
   return redactCodexAuthPayloads(
     error instanceof Error ? error.message : "Codex run failed."
   )
+}
+
+class CodexAuthReconnectHandledError extends Error {
+  constructor() {
+    super(CODEX_AUTH_RECONNECT_MESSAGE)
+    this.name = "CodexAuthReconnectHandledError"
+  }
+}
+
+async function failCodexAuthReconnectRun({
+  client,
+  profile,
+  runId,
+  sandboxId,
+  userId,
+}: {
+  client: ReturnType<typeof workerConvexClient>
+  profile?: string
+  runId: Id<"codexRuns">
+  sandboxId?: string
+  userId?: Id<"users">
+}) {
+  if (userId && profile) {
+    await invalidateWorkerAuthProfile(
+      userId,
+      profile,
+      "refresh_token_reused"
+    ).catch((authError) => {
+      console.warn("Unable to invalidate Codex auth profile.", authError)
+    })
+  } else {
+    console.warn("Unable to invalidate Codex auth profile: missing profile.")
+  }
+
+  await failWorkerRun(
+    client,
+    runId,
+    CODEX_AUTH_RECONNECT_MESSAGE,
+    sandboxId
+  ).catch((failError) => {
+    console.warn("Unable to mark Codex run failed.", failError)
+  })
 }
 
 export const billingReconcileDaytonaSandboxes = schedules.task({
@@ -247,9 +290,21 @@ export const cloudcodeRun = task({
       observeSandbox(result.sandboxId)
       await Promise.allSettled(sandboxObservations.values())
       throwIfBillingFailed()
-      await usageMeter.flush("completed")
 
       await Promise.all([logBuffer.flush(), contentBuffer.flush()])
+
+      if (isCodexRefreshTokenReusedRunResult(result)) {
+        await failCodexAuthReconnectRun({
+          client,
+          profile: loaded.profile,
+          runId: payload.runId,
+          sandboxId: result.sandboxId,
+          userId: loaded.userId,
+        })
+        throw new CodexAuthReconnectHandledError()
+      }
+
+      await usageMeter.flush("completed")
 
       if (result.updatedAuthJson !== runAuthJson) {
         await saveWorkerAuthJson(
@@ -286,25 +341,17 @@ export const cloudcodeRun = task({
         return { canceled: true }
       }
 
-      if (
-        loadedUserId &&
-        loadedProfile &&
-        isCodexRefreshTokenReusedError(error)
-      ) {
-        await invalidateWorkerAuthProfile(
-          loadedUserId,
-          loadedProfile,
-          "refresh_token_reused"
-        ).catch((authError) => {
-          console.warn("Unable to invalidate Codex auth profile.", authError)
-        })
-        await failWorkerRun(
+      if (error instanceof CodexAuthReconnectHandledError) {
+        throw error
+      }
+
+      if (loadedUserId && isCodexRefreshTokenReusedError(error)) {
+        await failCodexAuthReconnectRun({
           client,
-          payload.runId,
-          CODEX_AUTH_RECONNECT_MESSAGE,
-          latestSandboxId
-        ).catch((failError) => {
-          console.warn("Unable to mark Codex run failed.", failError)
+          profile: loadedProfile,
+          runId: payload.runId,
+          sandboxId: latestSandboxId,
+          userId: loadedUserId,
         })
         throw new Error(CODEX_AUTH_RECONNECT_MESSAGE)
       }
