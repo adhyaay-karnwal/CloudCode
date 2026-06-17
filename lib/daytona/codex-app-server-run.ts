@@ -23,6 +23,7 @@ import {
 } from "@/lib/codex/app-server-daemon-runtime"
 import type { CodexRunLog as RunCodexLog } from "@/lib/codex/run-log"
 import type { CodexSpeed, ReasoningEffort } from "@/lib/codex/run-options"
+import { redactCodexAuthPayloads } from "@/lib/codex/auth-redaction"
 import { compactLine } from "@/lib/shared/compact-line"
 import type { DaytonaSandboxPaths } from "@/lib/daytona/sandbox"
 import type { SandboxGitHubAuth } from "@/lib/sandbox/github-auth"
@@ -71,15 +72,7 @@ export function codexAppServerRunUpdatedAuthJson(error: unknown) {
 }
 
 export function redactCodexAppServerAuthPayloads(value: string) {
-  return value
-    .replace(
-      /("(?:authJson|updatedAuthJson)"\s*:\s*)"(?:\\.|[^"\\])*"/g,
-      '$1"[redacted auth.json]"'
-    )
-    .replace(
-      /("(?:access_token|id_token|refresh_token)"\s*:\s*)"(?:\\.|[^"\\])*"/g,
-      '$1"[redacted token]"'
-    )
+  return redactCodexAuthPayloads(value)
 }
 
 export async function runCodexViaAppServer({
@@ -175,7 +168,7 @@ export async function runCodexViaAppServer({
       gitAuth,
       label: "run",
       onEvent: (event) => {
-        stdout += `${JSON.stringify(event)}\n`
+        stdout += `${redactCodexAppServerAuthPayloads(JSON.stringify(event))}\n`
         switch (event.type) {
           case "thread": {
             activeThreadId = event.threadId

@@ -2,6 +2,7 @@ import { ConvexHttpClient } from "convex/browser"
 
 import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
+import { redactCodexAuthPayloads } from "@/lib/codex/auth-redaction"
 import { requireConvexUrl } from "@/lib/convex/env"
 import { getWorkerSecret } from "@/lib/security/worker-secret"
 import {
@@ -404,8 +405,8 @@ export function workerRunFinalContent(
   return withVideo(
     streamed ||
       lastMessage ||
-      result.stdout.trim() ||
-      result.stderr.trim() ||
+      redactCodexAuthPayloads(result.stdout.trim()) ||
+      redactCodexAuthPayloads(result.stderr.trim()) ||
       "(no output)"
   )
 }

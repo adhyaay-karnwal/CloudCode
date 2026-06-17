@@ -83,6 +83,20 @@ import type {
 
 export type { RunCodexLog, RunCodexLogKind }
 
+function withUpdatedAuthJson(
+  result: Omit<RunCodexInSandboxResult, "updatedAuthJson">,
+  updatedAuthJson: string
+): RunCodexInSandboxResult {
+  Object.defineProperty(result, "updatedAuthJson", {
+    configurable: true,
+    enumerable: false,
+    value: updatedAuthJson,
+    writable: false,
+  })
+
+  return result as RunCodexInSandboxResult
+}
+
 function sandboxIsUnderResourced(sandbox: Sandbox) {
   const desired = defaultDaytonaSandboxResources()
   return (
@@ -429,22 +443,24 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
         sandbox,
       })
 
-      return {
-        branchName,
-        codexThreadId: appServerResult.codexThreadId,
-        desktopRecording,
-        diff,
-        exitCode: appServerResult.exitCode,
-        lastMessage: appServerResult.lastMessage,
-        lastMessageAuthoritative: true,
-        repoUrl,
-        sandboxId: sandbox.id,
-        stderr: appServerResult.stderr,
-        status,
-        stdout: appServerResult.stdout,
-        updatedAuthJson,
-        recoveredSandbox,
-      } satisfies RunCodexInSandboxResult
+      return withUpdatedAuthJson(
+        {
+          branchName,
+          codexThreadId: appServerResult.codexThreadId,
+          desktopRecording,
+          diff,
+          exitCode: appServerResult.exitCode,
+          lastMessage: appServerResult.lastMessage,
+          lastMessageAuthoritative: true,
+          repoUrl,
+          sandboxId: sandbox.id,
+          stderr: appServerResult.stderr,
+          status,
+          stdout: appServerResult.stdout,
+          recoveredSandbox,
+        },
+        updatedAuthJson
+      )
     }
   } finally {
     stopDaytonaActivityHeartbeat?.()

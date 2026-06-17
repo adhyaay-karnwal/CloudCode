@@ -2,6 +2,7 @@ import { schedules, task, timeout } from "@trigger.dev/sdk"
 
 import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
+import { redactCodexAuthPayloads } from "@/lib/codex/auth-redaction"
 import { ensureAutoEnvironmentSandbox } from "@/lib/sandbox/auto-environment"
 import { runCodexInSandbox } from "@/lib/daytona/codex-agent"
 import { codexAppServerRunUpdatedAuthJson } from "@/lib/daytona/codex-app-server-run"
@@ -37,7 +38,9 @@ import {
 } from "@/trigger/cloudcode-run-billing"
 
 function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : "Codex run failed."
+  return redactCodexAuthPayloads(
+    error instanceof Error ? error.message : "Codex run failed."
+  )
 }
 
 export const billingReconcileDaytonaSandboxes = schedules.task({

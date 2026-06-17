@@ -1,11 +1,11 @@
-export const CODEX_APP_SERVER_DAEMON_VERSION = "3"
+export const CODEX_APP_SERVER_DAEMON_VERSION = "4"
 
 export const CODEX_APP_SERVER_DAEMON_SCRIPT = String.raw`import { createHash } from "node:crypto"
 import { spawn } from "node:child_process"
 import fs from "node:fs"
 import net from "node:net"
 
-const VERSION = "3"
+const VERSION = "4"
 const REQUEST_TIMEOUT_MS = Number(process.env.CLOUDCODE_APP_SERVER_REQUEST_TIMEOUT_MS || "45000")
 const SOCKET_PATH = requiredEnv("CLOUDCODE_DAEMON_SOCKET")
 const DAEMON_DIR = SOCKET_PATH.slice(0, SOCKET_PATH.lastIndexOf("/"))

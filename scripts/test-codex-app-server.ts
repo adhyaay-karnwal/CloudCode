@@ -16,6 +16,7 @@ import {
   CODEX_AUTH_RECONNECT_MESSAGE,
   isCodexRefreshTokenReusedError,
 } from "@/lib/codex/auth-errors"
+import { redactCodexAuthPayloads } from "@/lib/codex/auth-redaction"
 import {
   codexAuthAnyAccountUsable,
   codexAuthOverviewUsable,
@@ -109,6 +110,16 @@ assert.deepEqual(
 )
 assert.deepEqual(
   parseCodexAppServerDaemonEventLine(
+    '{"type":"result","threadId":"thread-from-daemon","status":"failed","updatedAuthJson":"secret-auth-json"}'
+  ),
+  {
+    status: "failed",
+    threadId: "thread-from-daemon",
+    type: "result",
+  }
+)
+assert.deepEqual(
+  parseCodexAppServerDaemonEventLine(
     '{"type":"setup","message":"Codex using bundled bubblewrap sandbox helper"}'
   ),
   {
@@ -162,6 +173,24 @@ assert.ok(redactedDaemonOutput.includes("[redacted token]"))
 assert.ok(!redactedDaemonOutput.includes("secret-access-token"))
 assert.ok(!redactedDaemonOutput.includes("secret-id-token"))
 assert.ok(!redactedDaemonOutput.includes("secret-refresh-token"))
+const redactedLegacyResult = redactCodexAuthPayloads(
+  JSON.stringify({
+    status: "failed",
+    threadId: "thread-1",
+    type: "result",
+    updatedAuthJson: JSON.stringify({
+      auth_mode: "chatgpt",
+      tokens: {
+        access_token: "eyJheader.payload.signature",
+        id_token: "eyJother.payload.signature",
+        refresh_token: "rt_secret-refresh-token",
+      },
+    }),
+  })
+)
+assert.ok(redactedLegacyResult.includes("[redacted auth.json]"))
+assert.ok(!redactedLegacyResult.includes("rt_secret-refresh-token"))
+assert.ok(!redactedLegacyResult.includes("eyJheader.payload.signature"))
 const daemonScriptSource = await readFile(
   new URL("../lib/codex/app-server-daemon-script.ts", import.meta.url),
   "utf8"
@@ -872,6 +901,19 @@ assert.equal(
   stripInlineToolMarkers(nonAuthoritativeContent),
   "Partial stale stream"
 )
+const redactedFallbackContent = workerRunFinalContent("", {
+  ...authoritativeResult,
+  lastMessage: "",
+  lastMessageAuthoritative: false,
+  stdout: JSON.stringify({
+    type: "result",
+    updatedAuthJson: JSON.stringify({
+      tokens: { refresh_token: "rt_worker-fallback-token" },
+    }),
+  }),
+})
+assert.ok(redactedFallbackContent.includes("[redacted auth.json]"))
+assert.ok(!redactedFallbackContent.includes("rt_worker-fallback-token"))
 assert.equal(
   normalizeLinkHref("https://example.com/repo/app/page.tsx"),
   "https://example.com/repo/app/page.tsx"

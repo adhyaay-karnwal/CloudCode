@@ -1,4 +1,5 @@
 import type { Doc } from "../_generated/dataModel"
+import { redactCodexAuthPayloads } from "@/lib/codex/auth-redaction"
 import type { StoredCodexRunLog } from "@/lib/codex/run-log"
 
 const MAX_STORED_RUN_LOGS = 80
@@ -31,7 +32,8 @@ const BUILD_LOG_COMPACTION: RunLogCompactionPolicy = {
 
 function truncate(value: string | undefined, max: number) {
   if (!value) return undefined
-  return value.length > max ? `${value.slice(0, max - 3)}...` : value
+  const redacted = redactCodexAuthPayloads(value)
+  return redacted.length > max ? `${redacted.slice(0, max - 3)}...` : redacted
 }
 
 function compactRunLog(log: StoredCodexRunLog, policy: RunLogCompactionPolicy) {
