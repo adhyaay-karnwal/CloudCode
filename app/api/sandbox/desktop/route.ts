@@ -12,6 +12,7 @@ import {
   startDaytonaDesktop,
   stopDaytonaDesktop,
 } from "@/lib/daytona/desktop"
+import { daytonaApiErrorResponse } from "@/lib/daytona/api-errors"
 import {
   jsonError,
   jsonStringField,
@@ -48,11 +49,9 @@ export async function GET(request: Request) {
       return jsonError(error.message, 404)
     }
 
-    return jsonError(
-      error instanceof Error
-        ? error.message
-        : "Failed to read Daytona desktop status.",
-      500
+    return daytonaApiErrorResponse(
+      error,
+      "Failed to read Daytona desktop status."
     )
   }
 }
@@ -101,11 +100,6 @@ export async function POST(request: Request) {
       return jsonError(error.message, 402)
     }
 
-    return jsonError(
-      error instanceof Error
-        ? error.message
-        : "Failed to update Daytona desktop.",
-      500
-    )
+    return daytonaApiErrorResponse(error, "Failed to update Daytona desktop.")
   }
 }

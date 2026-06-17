@@ -1,11 +1,8 @@
 import { NextResponse } from "next/server"
 
 import { jsonError, searchStringParam } from "@/lib/http/api-route"
-import {
-  isDaytonaNotFoundError,
-  isDaytonaOperationTimeoutError,
-  readDaytonaSandboxInfo,
-} from "@/lib/daytona/sandbox"
+import { daytonaApiErrorResponse } from "@/lib/daytona/api-errors"
+import { readDaytonaSandboxInfo } from "@/lib/daytona/sandbox"
 import { requireCurrentUserSandbox } from "@/lib/sandbox/authorization"
 
 export const runtime = "nodejs"
@@ -27,23 +24,6 @@ export async function GET(request: Request) {
       })
     )
   } catch (error) {
-    if (isDaytonaOperationTimeoutError(error)) {
-      return jsonError(error.message, 504)
-    }
-
-    if (!isDaytonaNotFoundError(error)) {
-      return jsonError(
-        error instanceof Error
-          ? error.message
-          : "Unable to read sandbox status.",
-        502
-      )
-    }
-
-    return jsonError(
-      error instanceof Error ? error.message : "Sandbox not found",
-      404,
-      { notFound: true }
-    )
+    return daytonaApiErrorResponse(error, "Unable to read sandbox status.")
   }
 }

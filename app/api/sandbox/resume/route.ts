@@ -7,6 +7,7 @@ import {
   pauseCurrentUserSandboxForBilling,
   requireCurrentUserInfraAccess,
 } from "@/lib/billing/server"
+import { daytonaApiErrorResponse } from "@/lib/daytona/api-errors"
 import { resumeDaytonaSandbox } from "@/lib/daytona/sandbox"
 import { requireSameOrigin } from "@/lib/http/request-security"
 import { requireCurrentUserSandbox } from "@/lib/sandbox/authorization"
@@ -35,9 +36,6 @@ export async function POST(request: Request) {
       return jsonError(error.message, 402)
     }
 
-    return jsonError(
-      error instanceof Error ? error.message : "Failed to resume sandbox.",
-      500
-    )
+    return daytonaApiErrorResponse(error, "Failed to resume sandbox.")
   }
 }

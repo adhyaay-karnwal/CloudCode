@@ -4,9 +4,11 @@ import {
   daytonaTerminalPath,
   getDaytonaSandbox,
   getStartedDaytonaSandbox,
+  refreshDaytonaSandboxData,
   runDaytonaCommand,
   shellQuote,
   type DaytonaSandboxPaths,
+  withDaytonaOperationTimeout,
 } from "@/lib/daytona/sandbox"
 import { cleanRecordingLabel } from "@/lib/daytona/desktop-recordings"
 import {
@@ -27,6 +29,9 @@ const DAYTONA_DESKTOP_PORT = 6080
 const DESKTOP_PREVIEW_TTL_SECONDS = 60 * 60
 const DESKTOP_TOOL_VERSION = "9"
 const DESKTOP_BROWSER_URL = "about:blank"
+const DESKTOP_READ_TIMEOUT_MS = 8_000
+const DESKTOP_PREVIEW_TIMEOUT_MS = 8_000
+const DESKTOP_COMPUTER_USE_TIMEOUT_MS = 15_000
 
 type DaytonaDesktopToolExtras = {
   config?: string
@@ -61,9 +66,15 @@ function buildDesktopPreviewUrl(previewUrl: string) {
 
 async function safeDesktopPreviewUrl(sandbox: Sandbox) {
   try {
-    const signed = await sandbox.getSignedPreviewUrl(
-      DAYTONA_DESKTOP_PORT,
-      DESKTOP_PREVIEW_TTL_SECONDS
+    const signed = await withDaytonaOperationTimeout(
+      sandbox.getSignedPreviewUrl(
+        DAYTONA_DESKTOP_PORT,
+        DESKTOP_PREVIEW_TTL_SECONDS
+      ),
+      {
+        label: "Daytona desktop preview URL",
+        timeoutMs: DESKTOP_PREVIEW_TIMEOUT_MS,
+      }
     )
     return buildDesktopPreviewUrl(signed.url)
   } catch {
@@ -73,7 +84,13 @@ async function safeDesktopPreviewUrl(sandbox: Sandbox) {
 
 async function readComputerUseStatus(sandbox: Sandbox) {
   try {
-    const status = await sandbox.computerUse.getStatus()
+    const status = await withDaytonaOperationTimeout(
+      sandbox.computerUse.getStatus(),
+      {
+        label: "Daytona desktop status",
+        timeoutMs: DESKTOP_COMPUTER_USE_TIMEOUT_MS,
+      }
+    )
     return status.status || "unknown"
   } catch (error) {
     return error instanceof Error ? error.message : "unknown"
@@ -344,8 +361,12 @@ async function stopLocalDesktopServices(sandbox: Sandbox) {
 export async function readDaytonaDesktopStatus(
   sandboxId: string
 ): Promise<DaytonaDesktopStatus> {
-  const sandbox = await getDaytonaSandbox(sandboxId)
-  await sandbox.refreshData().catch(() => undefined)
+  const sandbox = await getDaytonaSandbox(sandboxId, {
+    timeoutMs: DESKTOP_READ_TIMEOUT_MS,
+  })
+  await refreshDaytonaSandboxData(sandbox, {
+    timeoutMs: DESKTOP_READ_TIMEOUT_MS,
+  }).catch(() => undefined)
 
   if (sandbox.state !== "started") {
     return {
@@ -382,7 +403,10 @@ export async function startDaytonaDesktop(sandboxId: string) {
   let fallbackStatus: LocalDesktopStatus | undefined
 
   try {
-    start = await sandbox.computerUse.start()
+    start = await withDaytonaOperationTimeout(sandbox.computerUse.start(), {
+      label: "Daytona desktop start",
+      timeoutMs: DESKTOP_COMPUTER_USE_TIMEOUT_MS,
+    })
   } catch (error) {
     fallbackStatus = await startDesktopServicesFallback(sandbox, error)
   }
@@ -410,9 +434,10 @@ export async function openDaytonaDesktopBrowser(
 ) {
   const sandbox = await getStartedDaytonaSandbox(sandboxId)
   await ensureDaytonaDesktopDependencies(sandbox)
-  await sandbox.computerUse
-    .start()
-    .catch((error) => startDesktopServicesFallback(sandbox, error))
+  await withDaytonaOperationTimeout(sandbox.computerUse.start(), {
+    label: "Daytona desktop start",
+    timeoutMs: DESKTOP_COMPUTER_USE_TIMEOUT_MS,
+  }).catch((error) => startDesktopServicesFallback(sandbox, error))
 
   const target = url.trim() || DESKTOP_BROWSER_URL
   const result = await runDaytonaCommand(
@@ -456,7 +481,13 @@ export async function openDaytonaDesktopBrowser(
 
 export async function stopDaytonaDesktop(sandboxId: string) {
   const sandbox = await getStartedDaytonaSandbox(sandboxId)
-  const stopResult = await sandbox.computerUse.stop().catch((error) => ({
+  const stopResult = await withDaytonaOperationTimeout(
+    sandbox.computerUse.stop(),
+    {
+      label: "Daytona desktop stop",
+      timeoutMs: DESKTOP_COMPUTER_USE_TIMEOUT_MS,
+    }
+  ).catch((error) => ({
     message: errorMessage(error),
   }))
   const localStatus = await stopLocalDesktopServices(sandbox)
@@ -481,9 +512,10 @@ export async function stopDaytonaDesktop(sandboxId: string) {
 export async function takeDaytonaDesktopScreenshot(sandboxId: string) {
   const sandbox = await getStartedDaytonaSandbox(sandboxId)
   await ensureDaytonaDesktopDependencies(sandbox)
-  await sandbox.computerUse
-    .start()
-    .catch((error) => startDesktopServicesFallback(sandbox, error))
+  await withDaytonaOperationTimeout(sandbox.computerUse.start(), {
+    label: "Daytona desktop start",
+    timeoutMs: DESKTOP_COMPUTER_USE_TIMEOUT_MS,
+  }).catch((error) => startDesktopServicesFallback(sandbox, error))
   return await sandbox.computerUse.screenshot.takeCompressed({
     format: "png",
     showCursor: true,
@@ -496,9 +528,10 @@ export async function startDaytonaDesktopRecording(
 ) {
   const sandbox = await getStartedDaytonaSandbox(sandboxId)
   await ensureDaytonaDesktopDependencies(sandbox)
-  await sandbox.computerUse
-    .start()
-    .catch((error) => startDesktopServicesFallback(sandbox, error))
+  await withDaytonaOperationTimeout(sandbox.computerUse.start(), {
+    label: "Daytona desktop start",
+    timeoutMs: DESKTOP_COMPUTER_USE_TIMEOUT_MS,
+  }).catch((error) => startDesktopServicesFallback(sandbox, error))
   return await sandbox.computerUse.recording.start(
     cleanRecordingLabel(input.label)
   )

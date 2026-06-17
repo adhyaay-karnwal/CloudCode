@@ -336,7 +336,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function isDaytonaNotFoundError(error: unknown) {
   if (!isRecord(error)) return false
-  return error.name === "DaytonaNotFoundError" || error.statusCode === 404
+  const message =
+    typeof error.message === "string" ? error.message.toLowerCase() : ""
+  return (
+    error.name === "DaytonaNotFoundError" ||
+    error.statusCode === 404 ||
+    error.status === 404 ||
+    error.code === 404 ||
+    error.code === "NOT_FOUND" ||
+    (message.includes("sandbox") && message.includes("not found"))
+  )
 }
 
 function defaultDaytonaReadTimeoutMs() {
@@ -346,7 +355,7 @@ function defaultDaytonaReadTimeoutMs() {
   )
 }
 
-async function withDaytonaOperationTimeout<T>(
+export async function withDaytonaOperationTimeout<T>(
   promise: Promise<T>,
   {
     label,
@@ -380,15 +389,22 @@ async function withDaytonaOperationTimeout<T>(
   }
 }
 
+export async function refreshDaytonaSandboxData(
+  sandbox: Sandbox,
+  options: { timeoutMs?: number } = {}
+) {
+  await withDaytonaOperationTimeout(sandbox.refreshData(), {
+    label: "Daytona sandbox refresh",
+    timeoutMs: options.timeoutMs,
+  })
+}
+
 export async function readDaytonaSandboxInfo(
   sandboxId: string,
   options: { timeoutMs?: number } = {}
 ): Promise<DaytonaSandboxInfo> {
   const sandbox = await getDaytonaSandbox(sandboxId, options)
-  await withDaytonaOperationTimeout(sandbox.refreshData(), {
-    label: "Daytona sandbox refresh",
-    timeoutMs: options.timeoutMs,
-  }).catch((error) => {
+  await refreshDaytonaSandboxData(sandbox, options).catch((error) => {
     if (isDaytonaOperationTimeoutError(error)) throw error
     return undefined
   })

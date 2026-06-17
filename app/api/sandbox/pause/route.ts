@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 
 import { jsonError, readJsonStringField } from "@/lib/http/api-route"
 import { observeCurrentUserDaytonaBillingInfo } from "@/lib/billing/server"
+import { daytonaApiErrorResponse } from "@/lib/daytona/api-errors"
 import { stopDaytonaSandbox } from "@/lib/daytona/sandbox"
 import { requireSameOrigin } from "@/lib/http/request-security"
 import { requireCurrentUserSandbox } from "@/lib/sandbox/authorization"
@@ -26,9 +27,6 @@ export async function POST(request: Request) {
     })
     return NextResponse.json(info)
   } catch (error) {
-    return jsonError(
-      error instanceof Error ? error.message : "Failed to pause sandbox.",
-      500
-    )
+    return daytonaApiErrorResponse(error, "Failed to pause sandbox.")
   }
 }
