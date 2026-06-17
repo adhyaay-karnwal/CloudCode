@@ -1,5 +1,5 @@
 import { auth } from "@clerk/nextjs/server"
-import { NextResponse } from "next/server"
+import { after, NextResponse } from "next/server"
 
 import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
@@ -10,7 +10,7 @@ import {
   readJsonRecord,
 } from "@/lib/http/api-route"
 import { requireSameOrigin } from "@/lib/http/request-security"
-import { deleteCurrentUserDaytonaSandboxes } from "@/lib/sandbox/delete"
+import { deleteCurrentUserDaytonaSandboxesWithClient } from "@/lib/sandbox/delete"
 
 export const runtime = "nodejs"
 export const maxDuration = 300
@@ -32,13 +32,17 @@ export async function POST(request: Request) {
 
   try {
     const client = await convexHttpClientForSession(session)
-    const { sandboxIds } = await client.query(api.chats.threadSandboxIds, {
+    const { sandboxIds } = await client.mutation(api.chats.deleteThread, {
       threadId: threadId as Id<"threads">,
     })
 
-    await deleteCurrentUserDaytonaSandboxes(sandboxIds)
-    await client.mutation(api.chats.deleteThread, {
-      threadId: threadId as Id<"threads">,
+    after(async () => {
+      await deleteCurrentUserDaytonaSandboxesWithClient(
+        sandboxIds,
+        client
+      ).catch((error) => {
+        console.warn("Unable to delete thread sandboxes.", error)
+      })
     })
 
     return NextResponse.json({
@@ -46,6 +50,8 @@ export async function POST(request: Request) {
       sandboxIds,
     })
   } catch (error) {
+    console.error("/api/chats/thread/delete failed", error)
+
     return jsonError(
       error instanceof Error ? error.message : "Failed to delete chat.",
       500
