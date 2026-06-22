@@ -224,52 +224,52 @@ function RecordingVideoInner({
     const preparing = loadState === "materializing" || pendingAutoLoad
     const failed = loadState === "error"
     const busy = checking || preparing
+    const disabled = busy || !recording.id || !resolvedSandboxId
+
+    const heading = failed ? "Retry" : busy ? "Loading…" : "Load recording"
+    const caption = failed
+      ? (errorMessage ?? "Recording could not load.")
+      : busy
+        ? "Preparing the recording…"
+        : "Desktop screen recording"
 
     return (
       <div
-        className="grid aspect-video place-items-center rounded-lg border border-border/60 bg-muted px-4 py-6 text-center"
+        className="relative grid aspect-video place-items-center overflow-hidden rounded-lg border border-border/60 bg-gradient-to-b from-muted/70 to-muted"
         title={label}
       >
-        <div className="flex max-w-full flex-col items-center gap-3">
-          <span className="grid size-10 place-items-center rounded-full border border-border/70 bg-background/60 text-muted-foreground">
-            {busy ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : failed ? (
-              <RefreshCw className="size-4" />
-            ) : (
-              <Play className="size-4 fill-current" />
+        <button
+          type="button"
+          onClick={() => void materializeAndLoad()}
+          disabled={disabled}
+          aria-label={failed ? "Retry loading recording" : "Load recording"}
+          className="group flex flex-col items-center gap-3 rounded-lg px-6 text-center outline-none focus-visible:ring-2 focus-visible:ring-ring/70 disabled:cursor-default"
+        >
+          <span
+            className={cn(
+              "grid size-14 place-items-center rounded-full border border-border/70 bg-background/70 text-foreground/90 shadow-sm backdrop-blur transition-transform duration-200",
+              busy && "text-muted-foreground",
+              !disabled &&
+                "group-hover:scale-105 group-hover:border-foreground/25 group-hover:text-foreground group-active:scale-95"
             )}
-          </span>
-          <div className="max-w-full space-y-1">
-            <div className="truncate text-sm font-medium text-foreground/85">
-              Desktop recording
-            </div>
-            <div className="max-w-[24rem] text-xs break-words text-muted-foreground">
-              {failed
-                ? (errorMessage ?? "Recording could not load.")
-                : checking
-                  ? "Checking recording..."
-                  : preparing
-                    ? "Preparing recording..."
-                    : "Starts sandbox if needed."}
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={() => void materializeAndLoad()}
-            disabled={busy || !recording.id || !resolvedSandboxId}
-            className="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-background px-3 text-xs font-medium text-foreground/85 transition-colors hover:bg-muted disabled:pointer-events-none disabled:opacity-60"
           >
             {busy ? (
-              <Loader2 className="size-3.5 animate-spin" />
+              <Loader2 className="size-5 animate-spin" />
             ) : failed ? (
-              <RefreshCw className="size-3.5" />
+              <RefreshCw className="size-5" />
             ) : (
-              <Play className="size-3.5 fill-current" />
+              <Play className="size-5 translate-x-px fill-current" />
             )}
-            <span>{failed ? "Retry" : "Load recording"}</span>
-          </button>
-        </div>
+          </span>
+          <span className="flex flex-col gap-0.5">
+            <span className="text-sm font-medium text-foreground/90">
+              {heading}
+            </span>
+            <span className="max-w-[22rem] text-xs break-words text-muted-foreground">
+              {caption}
+            </span>
+          </span>
+        </button>
       </div>
     )
   }
