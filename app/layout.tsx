@@ -36,6 +36,15 @@ export const viewport: Viewport = {
   // shell does not need to chase visual viewport events in JavaScript.
   viewportFit: "cover",
   interactiveWidget: "resizes-content",
+  // Paint the standalone PWA chrome (status bar + home-indicator safe-area
+  // band) with the app background instead of the manifest's static color.
+  // Without a theme-aware value iOS fills those bands with the manifest
+  // theme_color, which in light mode shows as a black strip at the bottom of
+  // every screen. Values mirror `--background` (light: white, dark: #0a0a0a).
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
+    { media: "(prefers-color-scheme: dark)", color: "#0a0a0a" },
+  ],
 }
 
 const geist = Geist({ subsets: ["latin"], variable: "--font-sans" })

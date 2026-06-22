@@ -31,7 +31,7 @@ export function ChatShell({
   topBar,
 }: ChatShellProps) {
   return (
-    <div className="fixed inset-0 flex min-w-0 overflow-hidden bg-background text-foreground">
+    <div className="fixed inset-0 flex h-[100dvh] min-w-0 overflow-hidden bg-background text-foreground">
       {sidebar.open ? (
         <Sidebar
           {...sidebar.props}

@@ -8,8 +8,11 @@ export default function manifest(): MetadataRoute.Manifest {
     start_url: "/",
     scope: "/",
     display: "standalone",
-    background_color: "#000000",
-    theme_color: "#000000",
+    // Match the app's default (dark) background so the launch splash and the
+    // standalone safe-area bands blend with the UI instead of showing pure
+    // black. The live theme-aware override lives in `viewport.themeColor`.
+    background_color: "#0a0a0a",
+    theme_color: "#0a0a0a",
     icons: [
       {
         src: "/icons/icon-192.png",

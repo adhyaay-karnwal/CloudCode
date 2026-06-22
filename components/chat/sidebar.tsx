@@ -63,7 +63,7 @@ export function Sidebar({
 
   return (
     <aside
-      className="fixed inset-0 z-40 flex h-full min-h-0 w-full flex-col overflow-hidden border-r border-border/60 bg-sidebar pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] text-sidebar-foreground md:relative md:inset-auto md:z-auto md:w-[var(--panel-width)] md:shrink-0 md:pt-0 md:pb-0"
+      className="fixed inset-0 z-40 flex h-[100dvh] min-h-0 w-full flex-col overflow-hidden border-r border-border/60 bg-sidebar pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] text-sidebar-foreground md:relative md:inset-auto md:z-auto md:h-full md:w-[var(--panel-width)] md:shrink-0 md:pt-0 md:pb-0"
       style={{ "--panel-width": `${width}px` } as CSSProperties}
     >
       <ResizeHandle
