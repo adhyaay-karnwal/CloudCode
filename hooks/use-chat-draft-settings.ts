@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
 import {
+  AUTO_PRESET_DEFAULT_RESTORED_KEY,
   BASE_BRANCH_KEY,
   BRANCH_MODE_KEY,
   BRANCH_NAME_KEY,
@@ -32,10 +33,12 @@ import type { SandboxPresetRecord } from "@/lib/sandbox/preset-types"
 
 export function useChatDraftSettings({
   autoSandboxPreset,
+  defaultSandboxPreset,
   presetsLoaded,
   sandboxPresets,
 }: {
   autoSandboxPreset: SandboxPresetRecord | null
+  defaultSandboxPreset: SandboxPresetRecord | null
   presetsLoaded: boolean
   sandboxPresets: SandboxPresetRecord[]
 }) {
@@ -78,33 +81,48 @@ export function useChatDraftSettings({
     !draftSandboxPresetId ||
     !presetsLoaded ||
     sandboxPresets.some((preset) => preset.id === draftSandboxPresetId)
+  const autoSandboxPresetId = autoSandboxPreset?.id ?? ""
+  const defaultSandboxPresetId = defaultSandboxPreset?.id ?? ""
   const effectiveDraftSandboxPresetId: Id<"sandboxPresets"> | "" =
     draftSandboxPresetId && draftSandboxPresetValid
       ? draftSandboxPresetId
-      : (autoSandboxPreset?.id ?? "")
+      : autoSandboxPresetId
 
   useEffect(() => {
     if (autoPresetDefaultedRef.current) return
-    if (hasBrowserStorageKey(PRESET_KEY) || draftSandboxPresetId) {
+    if (!autoSandboxPresetId) return
+
+    const shouldRestoreAutoDefault =
+      !hasBrowserStorageKey(AUTO_PRESET_DEFAULT_RESTORED_KEY) &&
+      Boolean(defaultSandboxPresetId) &&
+      draftSandboxPresetId === defaultSandboxPresetId
+
+    if (
+      hasBrowserStorageKey(PRESET_KEY) &&
+      draftSandboxPresetId &&
+      !shouldRestoreAutoDefault
+    ) {
       autoPresetDefaultedRef.current = true
+      writeBrowserStorage(AUTO_PRESET_DEFAULT_RESTORED_KEY, "1")
       return
     }
 
-    if (!autoSandboxPreset) return
     autoPresetDefaultedRef.current = true
-    setDraftSandboxPresetId(autoSandboxPreset.id)
-    writeBrowserStorage(PRESET_KEY, autoSandboxPreset.id)
-  }, [autoSandboxPreset, draftSandboxPresetId])
+    setDraftSandboxPresetId(autoSandboxPresetId)
+    writeBrowserStorage(PRESET_KEY, autoSandboxPresetId)
+    writeBrowserStorage(AUTO_PRESET_DEFAULT_RESTORED_KEY, "1")
+  }, [autoSandboxPresetId, defaultSandboxPresetId, draftSandboxPresetId])
 
   useEffect(() => {
     if (!draftSandboxPresetId || !presetsLoaded) return
     if (draftSandboxPresetValid) return
-    if (!autoSandboxPreset) return
+    if (!autoSandboxPresetId) return
 
-    setDraftSandboxPresetId(autoSandboxPreset.id)
-    writeBrowserStorage(PRESET_KEY, autoSandboxPreset.id)
+    setDraftSandboxPresetId(autoSandboxPresetId)
+    writeBrowserStorage(PRESET_KEY, autoSandboxPresetId)
+    writeBrowserStorage(AUTO_PRESET_DEFAULT_RESTORED_KEY, "1")
   }, [
-    autoSandboxPreset,
+    autoSandboxPresetId,
     draftSandboxPresetId,
     draftSandboxPresetValid,
     presetsLoaded,
@@ -161,6 +179,7 @@ export function useChatDraftSettings({
       setDraftSandboxPresetId(next)
       if (next) writeBrowserStorage(PRESET_KEY, next)
       else removeBrowserStorage(PRESET_KEY)
+      writeBrowserStorage(AUTO_PRESET_DEFAULT_RESTORED_KEY, "1")
     },
     []
   )

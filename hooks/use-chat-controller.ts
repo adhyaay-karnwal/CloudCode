@@ -44,6 +44,7 @@ export function useChatController(): ChatShellProps {
     clearSandbox,
     completeAssistantMessage,
     createThread,
+    defaultSandboxPreset,
     deleteThreadMutation,
     dismissOnboardingMutation,
     ensureDefaultPresets,
@@ -77,6 +78,7 @@ export function useChatController(): ChatShellProps {
     storeModelPreference,
   } = useChatDraftSettings({
     autoSandboxPreset,
+    defaultSandboxPreset,
     presetsLoaded,
     sandboxPresets,
   })

@@ -25,6 +25,7 @@ export type SandboxPresetRecord = {
   id: Id<"sandboxPresets">
   installScript?: string
   isBuiltInAutoEnvironment?: boolean
+  isBuiltInDefault?: boolean
   mode?: "manual" | "auto"
   name: string
   pathInstallScript?: string

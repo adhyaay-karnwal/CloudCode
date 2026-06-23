@@ -1,6 +1,7 @@
 import type { Doc, Id } from "../_generated/dataModel"
 import type { MutationCtx, QueryCtx } from "../_generated/server"
 import { requireCodexAuth } from "./codexRunAuth"
+import { isBuiltInDefaultPreset } from "./sandboxPresetConstants"
 
 async function mcpServersForRun(
   ctx: MutationCtx | QueryCtx,
@@ -84,19 +85,22 @@ export async function workerInputForRun(
     if (!preset || preset.userId !== run.userId) {
       throw new Error("Preset not found.")
     }
-    const secrets = await ctx.db
-      .query("sandboxPresetSecrets")
-      .withIndex("by_preset", (q) => q.eq("presetId", preset._id))
-      .collect()
+    const isDefaultPreset = isBuiltInDefaultPreset(preset)
+    const secrets = isDefaultPreset
+      ? []
+      : await ctx.db
+          .query("sandboxPresetSecrets")
+          .withIndex("by_preset", (q) => q.eq("presetId", preset._id))
+          .collect()
 
     sandboxPreset = {
-      daytonaSnapshot: preset.daytonaSnapshot,
+      daytonaSnapshot: isDefaultPreset ? undefined : preset.daytonaSnapshot,
       environmentSlug: preset.environmentSlug,
       id: preset._id,
-      installScript: preset.installScript,
+      installScript: isDefaultPreset ? undefined : preset.installScript,
       mode: preset.mode ?? "manual",
       name: preset.name,
-      pathInstallScript: preset.pathInstallScript,
+      pathInstallScript: isDefaultPreset ? undefined : preset.pathInstallScript,
       secrets: secrets
         .map((secret) => ({
           name: secret.name,

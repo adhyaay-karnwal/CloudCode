@@ -6,6 +6,8 @@ export function presetRepoLabel(repoUrl: string) {
 }
 
 export function sandboxPresetSubtitle(preset: SandboxPresetRecord) {
+  if (preset.isBuiltInDefault) return "Base Daytona sandbox"
+
   const readyEnvironments =
     preset.environments?.filter((environment) => environment.status === "ready")
       .length ?? 0

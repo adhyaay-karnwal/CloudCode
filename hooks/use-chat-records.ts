@@ -27,8 +27,10 @@ export function useChatRecords() {
   const sandboxPresets = rawPresets
     ? (rawPresets as SandboxPresetRecord[])
     : EMPTY_SANDBOX_PRESETS
+  const defaultSandboxPreset =
+    sandboxPresets.find((preset) => preset.isBuiltInDefault) ?? null
   const autoSandboxPreset =
-    sandboxPresets.find((preset) => preset.mode === "auto") ?? null
+    sandboxPresets.find((preset) => preset.isBuiltInAutoEnvironment) ?? null
   const viewer = useQuery(api.users.viewer)
   const dismissOnboardingMutation = useMutation(api.users.dismissOnboarding)
   const createThread = useMutation(api.chats.createThread)
@@ -95,6 +97,7 @@ export function useChatRecords() {
     clearSandbox,
     completeAssistantMessage,
     createThread,
+    defaultSandboxPreset,
     deleteThreadMutation,
     dismissOnboardingMutation,
     ensureDefaultPresets,

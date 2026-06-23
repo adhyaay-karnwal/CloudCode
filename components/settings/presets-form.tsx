@@ -42,6 +42,7 @@ type PresetEditorFieldsProps = Pick<
   | "secretValue"
   | "selected"
   | "selectedIsAuto"
+  | "selectedIsDefault"
   | "setAutoEnvironment"
   | "setImportText"
   | "setInstallScript"
@@ -56,16 +57,22 @@ export function PresetEditorFields(props: PresetEditorFieldsProps) {
   return (
     <>
       <div className="grid gap-4">
-        <PresetNameField name={props.name} onNameChange={props.setName} />
-
-        {props.selectedIsAuto ? (
-          <AutoPresetEnvironmentSummary
-            selected={props.selected}
-            saving={props.saving}
-            onDeleteEnvironment={props.deleteEnvironment}
-          />
+        {props.selectedIsDefault ? (
+          <DefaultPresetSummary />
+        ) : props.selectedIsAuto ? (
+          <>
+            <PresetNameField name={props.name} onNameChange={props.setName} />
+            <AutoPresetEnvironmentSummary
+              selected={props.selected}
+              saving={props.saving}
+              onDeleteEnvironment={props.deleteEnvironment}
+            />
+          </>
         ) : (
-          <ManualPresetFields {...props} />
+          <>
+            <PresetNameField name={props.name} onNameChange={props.setName} />
+            <ManualPresetFields {...props} />
+          </>
         )}
 
         {props.error ? (
@@ -77,6 +84,18 @@ export function PresetEditorFields(props: PresetEditorFieldsProps) {
 
       <PresetEditorActions {...props} />
     </>
+  )
+}
+
+function DefaultPresetSummary() {
+  return (
+    <div className="space-y-1.5">
+      <div className="text-xs font-medium text-foreground/80">Default</div>
+      <p className={fieldHint}>
+        Starts a sandbox from the base Daytona environment without auto
+        environment setup, install scripts, or preset secrets.
+      </p>
+    </div>
   )
 }
 
@@ -236,6 +255,7 @@ function PresetEditorActions({
   saving,
   selected,
   selectedIsAuto,
+  selectedIsDefault,
 }: Pick<
   PresetEditorFieldsProps,
   | "deletePreset"
@@ -245,7 +265,23 @@ function PresetEditorActions({
   | "saving"
   | "selected"
   | "selectedIsAuto"
+  | "selectedIsDefault"
 >) {
+  if (selectedIsDefault) {
+    return (
+      <div className="mt-4 flex items-center justify-end gap-2 border-t border-border/60 pt-4">
+        <button
+          type="button"
+          onClick={resetEditor}
+          disabled={saving}
+          className={navAction}
+        >
+          Close
+        </button>
+      </div>
+    )
+  }
+
   return (
     <div className="mt-4 flex items-center justify-between gap-2 border-t border-border/60 pt-4">
       {!selectedIsAuto ? (

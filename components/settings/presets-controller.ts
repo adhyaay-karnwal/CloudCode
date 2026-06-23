@@ -19,6 +19,7 @@ export function usePresetSettingsController(presets: SandboxPresetRecord[]) {
   )
   const selected = presets.find((preset) => preset.id === selectedId) ?? null
   const selectedIsAuto = selected?.isBuiltInAutoEnvironment === true
+  const selectedIsDefault = selected?.isBuiltInDefault === true
   const [name, setName] = useState("")
   const [autoEnvironment, setAutoEnvironment] = useState(false)
   const [pathInstallScript, setPathInstallScript] = useState("")
@@ -71,6 +72,11 @@ export function usePresetSettingsController(presets: SandboxPresetRecord[]) {
   }
 
   async function savePreset() {
+    if (selectedIsDefault) {
+      setError("Default preset cannot be edited.")
+      return
+    }
+
     setSaving(true)
     setError("")
     try {
@@ -102,6 +108,10 @@ export function usePresetSettingsController(presets: SandboxPresetRecord[]) {
 
   async function deletePreset() {
     if (!selected || saving) return
+    if (selectedIsDefault) {
+      setError("Default preset cannot be deleted.")
+      return
+    }
     if (selectedIsAuto) {
       setError("Auto environment presets cannot be deleted.")
       return
@@ -138,6 +148,10 @@ export function usePresetSettingsController(presets: SandboxPresetRecord[]) {
   }
 
   async function ensurePresetId(): Promise<Id<"sandboxPresets"> | null> {
+    if (selectedIsDefault) {
+      setError("Default preset cannot have secrets.")
+      return null
+    }
     if (selected?.id) return selected.id
     if (!name.trim()) {
       setError("Name the preset before adding secrets.")
@@ -265,6 +279,7 @@ export function usePresetSettingsController(presets: SandboxPresetRecord[]) {
     selectPreset,
     selected,
     selectedIsAuto,
+    selectedIsDefault,
     setAutoEnvironment,
     setImportText,
     setInstallScript,

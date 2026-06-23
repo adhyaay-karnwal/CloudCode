@@ -18,10 +18,14 @@ import {
 } from "./lib/sandboxPresetRecords"
 import {
   ensureAutoEnvironmentPreset,
+  ensureDefaultPreset,
   getAutoEnvironmentPreset,
   requireOwnedPreset,
 } from "./lib/sandboxPresets"
-import { isBuiltInAutoEnvironmentPreset } from "./lib/sandboxPresetConstants"
+import {
+  isBuiltInAutoEnvironmentPreset,
+  isBuiltInDefaultPreset,
+} from "./lib/sandboxPresetConstants"
 import {
   cleanDaytonaSnapshot,
   cleanEncryptedPresetSecretValue,
@@ -140,15 +144,25 @@ export const create = mutation({
   handler: async (ctx, args) => {
     const userId = await ensureCurrentUser(ctx)
     const now = Date.now()
+    const daytonaSnapshot = cleanDaytonaSnapshot(args.daytonaSnapshot)
+    const environmentSlug = cleanEnvironmentSlug(args.environmentSlug)
+    const installScript = cleanInstallScript(args.installScript)
+    const mode = args.mode ?? "manual"
+    const name = cleanName(args.name)
+    const pathInstallScript = cleanInstallScript(args.pathInstallScript)
+
+    if (isBuiltInDefaultPreset({ environmentSlug, mode, name })) {
+      throw new Error("Default preset is built in.")
+    }
 
     return await ctx.db.insert("sandboxPresets", {
       createdAt: now,
-      daytonaSnapshot: cleanDaytonaSnapshot(args.daytonaSnapshot),
-      environmentSlug: cleanEnvironmentSlug(args.environmentSlug),
-      installScript: cleanInstallScript(args.installScript),
-      mode: args.mode ?? "manual",
-      name: cleanName(args.name),
-      pathInstallScript: cleanInstallScript(args.pathInstallScript),
+      daytonaSnapshot,
+      environmentSlug,
+      installScript,
+      mode,
+      name,
+      pathInstallScript,
       updatedAt: now,
       userId,
     })
@@ -159,7 +173,10 @@ export const ensureDefaultPresets = mutation({
   args: {},
   handler: async (ctx) => {
     const userId = await ensureCurrentUser(ctx)
-    return [await ensureAutoEnvironmentPreset(ctx, userId)]
+    return await Promise.all([
+      ensureDefaultPreset(ctx, userId),
+      ensureAutoEnvironmentPreset(ctx, userId),
+    ])
   },
 })
 
@@ -175,29 +192,48 @@ export const update = mutation({
   },
   handler: async (ctx, args) => {
     const userId = await ensureCurrentUser(ctx)
-    await requireOwnedPreset(ctx, args.presetId, userId).then(() =>
-      ctx.db.patch(args.presetId, {
-        autoSaveSnapshot: undefined,
-        cpuCount: undefined,
-        customToolingCommands: undefined,
-        ...(Object.prototype.hasOwnProperty.call(args, "daytonaSnapshot")
-          ? { daytonaSnapshot: cleanDaytonaSnapshot(args.daytonaSnapshot) }
-          : {}),
-        ...(Object.prototype.hasOwnProperty.call(args, "environmentSlug")
-          ? { environmentSlug: cleanEnvironmentSlug(args.environmentSlug) }
-          : {}),
-        installScript: cleanInstallScript(args.installScript),
-        memoryMB: undefined,
-        ...(Object.prototype.hasOwnProperty.call(args, "mode")
-          ? { mode: args.mode ?? "manual" }
-          : {}),
-        name: cleanName(args.name),
-        pathInstallScript: cleanInstallScript(args.pathInstallScript),
-        toolVersions: undefined,
-        tools: undefined,
-        updatedAt: Date.now(),
-      })
+    const preset = await requireOwnedPreset(ctx, args.presetId, userId)
+    if (isBuiltInDefaultPreset(preset)) {
+      throw new Error("Default preset cannot be edited.")
+    }
+
+    const hasDaytonaSnapshot = Object.prototype.hasOwnProperty.call(
+      args,
+      "daytonaSnapshot"
     )
+    const hasEnvironmentSlug = Object.prototype.hasOwnProperty.call(
+      args,
+      "environmentSlug"
+    )
+    const hasMode = Object.prototype.hasOwnProperty.call(args, "mode")
+    const daytonaSnapshot = cleanDaytonaSnapshot(args.daytonaSnapshot)
+    const environmentSlug = hasEnvironmentSlug
+      ? cleanEnvironmentSlug(args.environmentSlug)
+      : preset.environmentSlug
+    const installScript = cleanInstallScript(args.installScript)
+    const mode = hasMode ? (args.mode ?? "manual") : preset.mode
+    const name = cleanName(args.name)
+    const pathInstallScript = cleanInstallScript(args.pathInstallScript)
+
+    if (isBuiltInDefaultPreset({ environmentSlug, mode, name })) {
+      throw new Error("Default preset is built in.")
+    }
+
+    await ctx.db.patch(args.presetId, {
+      autoSaveSnapshot: undefined,
+      cpuCount: undefined,
+      customToolingCommands: undefined,
+      ...(hasDaytonaSnapshot ? { daytonaSnapshot } : {}),
+      ...(hasEnvironmentSlug ? { environmentSlug } : {}),
+      installScript,
+      memoryMB: undefined,
+      ...(hasMode ? { mode } : {}),
+      name,
+      pathInstallScript,
+      toolVersions: undefined,
+      tools: undefined,
+      updatedAt: Date.now(),
+    })
   },
 })
 
@@ -378,6 +414,9 @@ export const remove = mutation({
   handler: async (ctx, args) => {
     const userId = await ensureCurrentUser(ctx)
     const preset = await requireOwnedPreset(ctx, args.presetId, userId)
+    if (isBuiltInDefaultPreset(preset)) {
+      throw new Error("Default preset cannot be deleted.")
+    }
     if (isBuiltInAutoEnvironmentPreset(preset)) {
       throw new Error("Auto environment presets cannot be deleted.")
     }
@@ -449,7 +488,10 @@ export const upsertSecret = mutation({
   },
   handler: async (ctx, args) => {
     const userId = await ensureCurrentUser(ctx)
-    await requireOwnedPreset(ctx, args.presetId, userId)
+    const preset = await requireOwnedPreset(ctx, args.presetId, userId)
+    if (isBuiltInDefaultPreset(preset)) {
+      throw new Error("Default preset cannot have secrets.")
+    }
 
     const name = cleanEnvName(args.name)
     const value = cleanEncryptedPresetSecretValue(args.value)

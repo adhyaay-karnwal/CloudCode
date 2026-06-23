@@ -11,6 +11,8 @@ export const SPEED_KEY = "cloudcode:speed"
 export const THINKING_KEY = "cloudcode:thinking"
 export const ACTIVE_KEY = "cloudcode:activeChatId"
 export const TERMINAL_OPEN_KEY = "cloudcode:terminalOpen"
+export const AUTO_PRESET_DEFAULT_RESTORED_KEY =
+  "cloudcode:autoPresetDefaultRestored"
 
 export const DRAFT_RUN_KEY = "__draft__"
 export const EMPTY_MESSAGES: Message[] = []

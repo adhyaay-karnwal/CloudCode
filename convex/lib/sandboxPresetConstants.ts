@@ -1,17 +1,43 @@
 import type { Doc } from "../_generated/dataModel"
 
+export const DEFAULT_PRESET = {
+  environmentSlug: "default",
+  mode: "manual" as const,
+  name: "Default",
+}
+
 export const AUTO_ENVIRONMENT_PRESET = {
   environmentSlug: "auto",
   mode: "auto" as const,
   name: "Auto environment",
 }
 
-export function isBuiltInAutoEnvironmentPreset(
-  preset: Pick<Doc<"sandboxPresets">, "environmentSlug" | "mode" | "name">
+type BuiltInPresetIdentity = Pick<
+  Doc<"sandboxPresets">,
+  "environmentSlug" | "mode" | "name"
+>
+
+function matchesBuiltInPreset(
+  preset: BuiltInPresetIdentity,
+  builtIn: typeof DEFAULT_PRESET | typeof AUTO_ENVIRONMENT_PRESET
 ) {
   return (
-    preset.mode === AUTO_ENVIRONMENT_PRESET.mode &&
-    preset.environmentSlug === AUTO_ENVIRONMENT_PRESET.environmentSlug &&
-    preset.name === AUTO_ENVIRONMENT_PRESET.name
+    (preset.mode ?? "manual") === builtIn.mode &&
+    preset.environmentSlug === builtIn.environmentSlug &&
+    preset.name === builtIn.name
+  )
+}
+
+export function isBuiltInDefaultPreset(preset: BuiltInPresetIdentity) {
+  return matchesBuiltInPreset(preset, DEFAULT_PRESET)
+}
+
+export function isBuiltInAutoEnvironmentPreset(preset: BuiltInPresetIdentity) {
+  return matchesBuiltInPreset(preset, AUTO_ENVIRONMENT_PRESET)
+}
+
+export function isBuiltInPreset(preset: BuiltInPresetIdentity) {
+  return (
+    isBuiltInDefaultPreset(preset) || isBuiltInAutoEnvironmentPreset(preset)
   )
 }

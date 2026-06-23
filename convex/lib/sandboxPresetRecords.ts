@@ -1,5 +1,8 @@
 import type { Doc } from "../_generated/dataModel"
-import { isBuiltInAutoEnvironmentPreset } from "./sandboxPresetConstants"
+import {
+  isBuiltInAutoEnvironmentPreset,
+  isBuiltInDefaultPreset,
+} from "./sandboxPresetConstants"
 
 export function isLegacyDefaultPreset(
   preset: {
@@ -68,16 +71,19 @@ export function sandboxPresetListRow({
   preset: Doc<"sandboxPresets">
   secrets: Doc<"sandboxPresetSecrets">[]
 }) {
+  const isDefaultPreset = isBuiltInDefaultPreset(preset)
+
   return {
     createdAt: preset.createdAt,
-    daytonaSnapshot: preset.daytonaSnapshot,
+    daytonaSnapshot: isDefaultPreset ? undefined : preset.daytonaSnapshot,
     environmentSlug: preset.environmentSlug,
     id: preset._id,
-    installScript: preset.installScript,
+    installScript: isDefaultPreset ? undefined : preset.installScript,
     isBuiltInAutoEnvironment: isBuiltInAutoEnvironmentPreset(preset),
+    isBuiltInDefault: isDefaultPreset,
     mode: preset.mode ?? "manual",
     name: preset.name,
-    pathInstallScript: preset.pathInstallScript,
+    pathInstallScript: isDefaultPreset ? undefined : preset.pathInstallScript,
     ...(environments
       ? {
           environments: environmentRowsForPreset(
@@ -86,7 +92,7 @@ export function sandboxPresetListRow({
           ),
         }
       : {}),
-    secrets: secretSummaryRows(secrets),
+    secrets: isDefaultPreset ? [] : secretSummaryRows(secrets),
     updatedAt: preset.updatedAt,
   }
 }
@@ -95,15 +101,17 @@ export function sandboxPresetRunInput(
   preset: Doc<"sandboxPresets">,
   secrets: Doc<"sandboxPresetSecrets">[]
 ) {
+  const isDefaultPreset = isBuiltInDefaultPreset(preset)
+
   return {
-    daytonaSnapshot: preset.daytonaSnapshot,
+    daytonaSnapshot: isDefaultPreset ? undefined : preset.daytonaSnapshot,
     environmentSlug: preset.environmentSlug,
     id: preset._id,
-    installScript: preset.installScript,
+    installScript: isDefaultPreset ? undefined : preset.installScript,
     mode: preset.mode ?? "manual",
     name: preset.name,
-    pathInstallScript: preset.pathInstallScript,
-    secrets: secretValueRows(secrets),
+    pathInstallScript: isDefaultPreset ? undefined : preset.pathInstallScript,
+    secrets: isDefaultPreset ? [] : secretValueRows(secrets),
   }
 }
 
