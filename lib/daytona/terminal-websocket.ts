@@ -7,6 +7,7 @@ import {
   resolveDaytonaPaths,
 } from "@/lib/daytona/sandbox"
 import { refreshDaytonaTerminalGitHubAuth } from "@/lib/daytona/terminal-sessions"
+import type { SandboxGitHubAuth } from "@/lib/sandbox/github-auth"
 import {
   cleanTerminalDimensions,
   cleanTerminalId,
@@ -222,11 +223,13 @@ function terminalWebSocketUrl({
 
 export async function prepareDaytonaTerminalWebSocket({
   cols,
+  githubAuth,
   rows,
   sandboxId,
   terminalId,
 }: {
   cols?: number
+  githubAuth?: SandboxGitHubAuth | null
   rows?: number
   sandboxId: string
   terminalId: string
@@ -242,10 +245,13 @@ export async function prepareDaytonaTerminalWebSocket({
     COLORTERM: "truecolor",
     CODEX_HOME: paths.codexHome,
     FORCE_COLOR: "1",
+    HOME: paths.home,
     LANG: "C.UTF-8",
     LC_ALL: "C.UTF-8",
     PATH: daytonaTerminalPath(paths.home),
+    SHELL: "/bin/bash",
     TERM: "xterm-256color",
+    ...githubAuth?.env,
   }
 
   const terminalSession = await createPtySession({

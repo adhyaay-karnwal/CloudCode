@@ -56,9 +56,24 @@ export async function GET(request: Request) {
     )
       ? null
       : maybeGetCurrentGitHubRepoCredential(access.sandboxAccess.repoUrl)
+    const githubAuth = githubAuthPromise
+      ? await githubAuthPromise.then((credential) =>
+          refreshDaytonaTerminalWebSocketGitHubAuth({
+            githubToken: credential?.token,
+            githubTokenExpiresAt: credential?.expiresAt,
+            githubUserEmail: credential?.gitUserEmail,
+            githubUserName: credential?.gitUserName,
+            githubUsername: credential?.username,
+            repoUrl: access.sandboxAccess.repoUrl,
+            sandboxId,
+            terminalId,
+          })
+        )
+      : null
 
     const terminal = await prepareDaytonaTerminalWebSocket({
       cols,
+      githubAuth,
       rows,
       sandboxId,
       terminalId,
@@ -69,25 +84,6 @@ export async function GET(request: Request) {
       .catch((error: unknown) => {
         console.warn("Unable to observe terminal sandbox billing.", error)
       })
-
-    if (githubAuthPromise) {
-      void githubAuthPromise
-        .then((githubAuth) =>
-          refreshDaytonaTerminalWebSocketGitHubAuth({
-            githubToken: githubAuth?.token,
-            githubTokenExpiresAt: githubAuth?.expiresAt,
-            githubUserEmail: githubAuth?.gitUserEmail,
-            githubUserName: githubAuth?.gitUserName,
-            githubUsername: githubAuth?.username,
-            repoUrl: access.sandboxAccess.repoUrl,
-            sandboxId,
-            terminalId,
-          })
-        )
-        .catch((error: unknown) => {
-          console.warn("Unable to refresh terminal GitHub auth.", error)
-        })
-    }
 
     return NextResponse.json(terminal, {
       headers: { "Cache-Control": "no-store" },

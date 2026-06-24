@@ -16,7 +16,7 @@ import {
 } from "@/lib/sandbox/github-auth"
 
 const MAX_REPLAY_BYTES = 1_000_000
-const GITHUB_AUTH_VERSION = 8
+const GITHUB_AUTH_VERSION = 9
 const GITHUB_AUTH_REFRESH_BUFFER_MS = 5 * 60 * 1000
 const GITHUB_AUTH_UNAVAILABLE_RECHECK_MS = 60_000
 
@@ -342,9 +342,11 @@ export async function connectDaytonaTerminal({
         COLORTERM: "truecolor",
         CODEX_HOME: paths.codexHome,
         FORCE_COLOR: "1",
+        HOME: paths.home,
         LANG: "C.UTF-8",
         LC_ALL: "C.UTF-8",
         PATH: daytonaTerminalPath(paths.home),
+        SHELL: "/bin/bash",
         TERM: "xterm-256color",
         ...githubAuth?.env,
       },

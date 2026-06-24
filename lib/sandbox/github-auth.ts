@@ -3,6 +3,7 @@ import { createHash } from "node:crypto"
 import type { Sandbox } from "@daytona/sdk"
 
 import {
+  daytonaTerminalPath,
   runDaytonaCommand,
   shellQuote,
   writeDaytonaTextFile,
@@ -62,11 +63,73 @@ function credentialPaths(paths: DaytonaSandboxPaths) {
     ghHostsPath: `${ghConfigDir}/hosts.yml`,
     homeGhConfigDir: `${paths.home}/.config/gh`,
     homeGhHostsPath: `${paths.home}/.config/gh/hosts.yml`,
+    runtimeGhConfigDir: `${paths.runtimeHome}/.config/gh`,
+    runtimeGhHostsPath: `${paths.runtimeHome}/.config/gh/hosts.yml`,
     authContentVersionPath: `${dir}/auth-content.sha256`,
     helperPath: `${dir}/git-credential-cloudcode-github`,
     helperVersionPath: `${dir}/git-credential-cloudcode-github.sha256`,
     tokenPath: `${dir}/token`,
   }
+}
+
+function uniquePaths(paths: string[]) {
+  return [...new Set(paths)]
+}
+
+function terminalHomeEnv(paths: DaytonaSandboxPaths) {
+  return {
+    HOME: paths.home,
+    PATH: daytonaTerminalPath(paths.home),
+  }
+}
+
+function gitGlobalCleanupCommands(home: string) {
+  const homeEnv = `HOME=${shellQuote(home)}`
+  return [
+    `case "$(${homeEnv} git config --global --get credential.https://github.com.helper || true)" in *cloudcode-github*|*cloudcode*) ${homeEnv} git config --global --unset-all credential.https://github.com.helper || true ;; esac`,
+    `${homeEnv} git config --global --unset-all credential.https://github.com.useHttpPath || true`,
+    `${homeEnv} git config --global --unset-all url.https://github.com/.insteadOf ${shellQuote(
+      "^git@github\\.com:$"
+    )} || true`,
+    `${homeEnv} git config --global --unset-all url.https://github.com/.insteadOf ${shellQuote(
+      "^ssh://git@github\\.com/$"
+    )} || true`,
+  ]
+}
+
+function gitGlobalSetupCommands({
+  cleanGitUserEmail,
+  cleanGitUserName,
+  helperCommand,
+  home,
+}: {
+  cleanGitUserEmail?: string
+  cleanGitUserName?: string
+  helperCommand: string
+  home: string
+}) {
+  const homeEnv = `HOME=${shellQuote(home)}`
+  return [
+    `${homeEnv} git config --global --unset-all url.https://github.com/.insteadOf ${shellQuote(
+      "^git@github\\.com:$"
+    )} || true`,
+    `${homeEnv} git config --global --unset-all url.https://github.com/.insteadOf ${shellQuote(
+      "^ssh://git@github\\.com/$"
+    )} || true`,
+    `${homeEnv} git config --global --add url.https://github.com/.insteadOf git@github.com:`,
+    `${homeEnv} git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/`,
+    cleanGitUserName
+      ? `${homeEnv} git config --global user.name ${shellQuote(cleanGitUserName)}`
+      : "",
+    cleanGitUserEmail
+      ? `${homeEnv} git config --global user.email ${shellQuote(cleanGitUserEmail)}`
+      : "",
+    `${homeEnv} git config --global --replace-all credential.https://github.com.helper ${shellQuote(
+      helperCommand
+    )}`,
+    `${homeEnv} git config --global --replace-all credential.https://github.com.useHttpPath false`,
+    `printf 'protocol=https\\nhost=github.com\\n\\n' | ${homeEnv} git credential fill | grep -q '^password='`,
+  ]
 }
 
 function cleanGitHubUsername(username?: string | null) {
@@ -168,6 +231,11 @@ async function cleanupSandboxGitHubAuth({
   sandbox: Sandbox
 }) {
   const pathsForAuth = credentialPaths(paths)
+  const globalGitHomes = uniquePaths([paths.home, paths.runtimeHome])
+  const globalGhHostsPaths = uniquePaths([
+    pathsForAuth.homeGhHostsPath,
+    pathsForAuth.runtimeGhHostsPath,
+  ])
 
   await runDaytonaCommand(
     sandbox,
@@ -175,22 +243,18 @@ async function cleanupSandboxGitHubAuth({
       "set -e",
       installGlobal
         ? [
-            `case "$(git config --global --get credential.https://github.com.helper || true)" in *cloudcode-github*|*cloudcode*) git config --global --unset-all credential.https://github.com.helper || true ;; esac`,
-            "git config --global --unset-all credential.https://github.com.useHttpPath || true",
-            `git config --global --unset-all url.https://github.com/.insteadOf ${shellQuote(
-              "^git@github\\.com:$"
-            )} || true`,
-            `git config --global --unset-all url.https://github.com/.insteadOf ${shellQuote(
-              "^ssh://git@github\\.com/$"
-            )} || true`,
-            `if [ -f ${shellQuote(pathsForAuth.homeGhHostsPath)} ] && grep -q '^# Managed by Cloudcode\\.' ${shellQuote(
-              pathsForAuth.homeGhHostsPath
-            )}; then rm -f ${shellQuote(pathsForAuth.homeGhHostsPath)}; fi`,
+            ...globalGitHomes.flatMap(gitGlobalCleanupCommands),
+            ...globalGhHostsPaths.map(
+              (path) =>
+                `if [ -f ${shellQuote(path)} ] && grep -q '^# Managed by Cloudcode\\.' ${shellQuote(
+                  path
+                )}; then rm -f ${shellQuote(path)}; fi`
+            ),
           ].join("\n")
         : "",
       `rm -rf ${shellQuote(pathsForAuth.dir)}`,
     ].join("\n"),
-    { timeoutMs: 10_000 }
+    { env: terminalHomeEnv(paths), timeoutMs: 10_000 }
   ).catch(() => undefined)
 }
 
@@ -231,10 +295,23 @@ export async function setupSandboxGitHubAuth({
   const helperScript = credentialHelperScript(pathsForAuth.tokenPath)
   const helperHash = sha256(helperScript)
   const hostsFile = ghHostsFile({ token, username: githubUsername })
+  const globalGitHomes = installGlobal
+    ? uniquePaths([paths.home, paths.runtimeHome])
+    : []
+  const globalGhConfigDirs = installGlobal
+    ? uniquePaths([
+        pathsForAuth.homeGhConfigDir,
+        pathsForAuth.runtimeGhConfigDir,
+      ])
+    : []
+  const globalGhHostsPaths = installGlobal
+    ? uniquePaths([
+        pathsForAuth.homeGhHostsPath,
+        pathsForAuth.runtimeGhHostsPath,
+      ])
+    : []
   const authContentHash = sha256(
-    [token, hostsFile, installGlobal ? pathsForAuth.homeGhHostsPath : ""].join(
-      "\0"
-    )
+    [token, hostsFile, ...globalGhHostsPaths].join("\0")
   )
   const setupResult = await runDaytonaCommand(
     sandbox,
@@ -242,14 +319,10 @@ export async function setupSandboxGitHubAuth({
       "set -e",
       `mkdir -p ${shellQuote(pathsForAuth.dir)}`,
       `mkdir -p ${shellQuote(pathsForAuth.ghConfigDir)}`,
-      installGlobal
-        ? `mkdir -p ${shellQuote(pathsForAuth.homeGhConfigDir)}`
-        : "",
+      ...globalGhConfigDirs.map((path) => `mkdir -p ${shellQuote(path)}`),
       `chmod 700 ${shellQuote(pathsForAuth.dir)}`,
       `chmod 700 ${shellQuote(pathsForAuth.ghConfigDir)}`,
-      installGlobal
-        ? `chmod 700 ${shellQuote(pathsForAuth.homeGhConfigDir)}`
-        : "",
+      ...globalGhConfigDirs.map((path) => `chmod 700 ${shellQuote(path)}`),
       `helper_hash=${shellQuote(helperHash)}`,
       `if [ ! -x ${shellQuote(pathsForAuth.helperPath)} ] || ! grep -qxF -- "$helper_hash" ${shellQuote(pathsForAuth.helperVersionPath)} 2>/dev/null; then`,
       `  cat > ${shellQuote(pathsForAuth.helperPath)} <<'EOF'`,
@@ -259,11 +332,9 @@ export async function setupSandboxGitHubAuth({
       `  printf '%s\\n' "$helper_hash" > ${shellQuote(pathsForAuth.helperVersionPath)}`,
       "fi",
       `auth_hash=${shellQuote(authContentHash)}`,
-      `if [ -s ${shellQuote(pathsForAuth.tokenPath)} ] && [ -s ${shellQuote(pathsForAuth.ghHostsPath)} ] && grep -qxF -- "$auth_hash" ${shellQuote(pathsForAuth.authContentVersionPath)} 2>/dev/null${
-        installGlobal
-          ? ` && [ -s ${shellQuote(pathsForAuth.homeGhHostsPath)} ]`
-          : ""
-      }; then`,
+      `if [ -s ${shellQuote(pathsForAuth.tokenPath)} ] && [ -s ${shellQuote(pathsForAuth.ghHostsPath)} ] && grep -qxF -- "$auth_hash" ${shellQuote(pathsForAuth.authContentVersionPath)} 2>/dev/null${globalGhHostsPaths
+        .map((path) => ` && [ -s ${shellQuote(path)} ]`)
+        .join("")}; then`,
       `  printf '%s\\n' ${shellQuote(GITHUB_AUTH_CONTENT_CURRENT)}`,
       "fi",
     ].join("\n"),
@@ -284,15 +355,9 @@ export async function setupSandboxGitHubAuth({
     await Promise.all([
       writeDaytonaTextFile(sandbox, pathsForAuth.tokenPath, token),
       writeDaytonaTextFile(sandbox, pathsForAuth.ghHostsPath, hostsFile),
-      ...(installGlobal
-        ? [
-            writeDaytonaTextFile(
-              sandbox,
-              pathsForAuth.homeGhHostsPath,
-              hostsFile
-            ),
-          ]
-        : []),
+      ...globalGhHostsPaths.map((path) =>
+        writeDaytonaTextFile(sandbox, path, hostsFile)
+      ),
     ])
   }
   const helperCommand = credentialHelperCommand(pathsForAuth.tokenPath)
@@ -316,37 +381,25 @@ export async function setupSandboxGitHubAuth({
         : [
             `chmod 600 ${shellQuote(pathsForAuth.tokenPath)}`,
             `chmod 600 ${shellQuote(pathsForAuth.ghHostsPath)}`,
-            installGlobal
-              ? `chmod 600 ${shellQuote(pathsForAuth.homeGhHostsPath)}`
-              : "",
+            ...globalGhHostsPaths.map(
+              (path) => `chmod 600 ${shellQuote(path)}`
+            ),
             `printf '%s\\n' ${shellQuote(authContentHash)} > ${shellQuote(pathsForAuth.authContentVersionPath)}`,
             `chmod 600 ${shellQuote(pathsForAuth.authContentVersionPath)}`,
           ].join("\n"),
       `chmod 700 ${shellQuote(pathsForAuth.helperPath)}`,
       ...(installGlobal
-        ? [
-            `git config --global --unset-all url.https://github.com/.insteadOf ${shellQuote(
-              "^git@github\\.com:$"
-            )} || true`,
-            `git config --global --unset-all url.https://github.com/.insteadOf ${shellQuote(
-              "^ssh://git@github\\.com/$"
-            )} || true`,
-            "git config --global --add url.https://github.com/.insteadOf git@github.com:",
-            "git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/",
-            cleanGitUserName
-              ? `git config --global user.name ${shellQuote(cleanGitUserName)}`
-              : "",
-            cleanGitUserEmail
-              ? `git config --global user.email ${shellQuote(cleanGitUserEmail)}`
-              : "",
-            `git config --global --replace-all credential.https://github.com.helper ${shellQuote(
-              helperCommand
-            )}`,
-            "git config --global --replace-all credential.https://github.com.useHttpPath false",
-          ]
+        ? globalGitHomes.flatMap((home) =>
+            gitGlobalSetupCommands({
+              cleanGitUserEmail,
+              cleanGitUserName,
+              helperCommand,
+              home,
+            })
+          )
         : []),
     ].join("\n"),
-    { signal, timeoutMs: 10_000 }
+    { env: terminalHomeEnv(paths), signal, timeoutMs: 10_000 }
   )
   if (configResult.exitCode !== 0) {
     throw new Error(

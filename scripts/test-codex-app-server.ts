@@ -150,8 +150,24 @@ const daytonaCodexAppServerRunSource = await readFile(
   new URL("../lib/daytona/codex-app-server-run.ts", import.meta.url),
   "utf8"
 )
+const daytonaDesktopSource = await readFile(
+  new URL("../lib/daytona/desktop.ts", import.meta.url),
+  "utf8"
+)
 const sandboxGithubAuthSource = await readFile(
   new URL("../lib/sandbox/github-auth.ts", import.meta.url),
+  "utf8"
+)
+const terminalSessionsSource = await readFile(
+  new URL("../lib/daytona/terminal-sessions.ts", import.meta.url),
+  "utf8"
+)
+const terminalWebSocketSource = await readFile(
+  new URL("../lib/daytona/terminal-websocket.ts", import.meta.url),
+  "utf8"
+)
+const terminalWsRouteSource = await readFile(
+  new URL("../app/api/sandbox/terminal/ws/route.ts", import.meta.url),
   "utf8"
 )
 assert.ok(!daytonaCodexAgentSource.includes("restoredConversationPrompt"))
@@ -174,6 +190,21 @@ assert.ok(!sandboxGithubAuthSource.includes("if (!remoteUrl) return null"))
 assert.ok(
   sandboxGithubAuthSource.includes("GH_CONFIG_DIR: pathsForAuth.ghConfigDir")
 )
+assert.ok(sandboxGithubAuthSource.includes("function terminalHomeEnv"))
+assert.ok(sandboxGithubAuthSource.includes("runtimeGhHostsPath"))
+assert.ok(sandboxGithubAuthSource.includes("[paths.home, paths.runtimeHome]"))
+assert.ok(sandboxGithubAuthSource.includes("env: terminalHomeEnv(paths)"))
+assert.ok(terminalSessionsSource.includes("HOME: paths.home"))
+assert.ok(terminalWebSocketSource.includes("HOME: paths.home"))
+assert.ok(terminalWebSocketSource.includes("githubAuth?: SandboxGitHubAuth"))
+const terminalWsAuthIndex = terminalWsRouteSource.indexOf("const githubAuth =")
+const terminalWsPrepareIndex = terminalWsRouteSource.indexOf(
+  "const terminal = await prepareDaytonaTerminalWebSocket"
+)
+assert.ok(terminalWsAuthIndex > 0)
+assert.ok(terminalWsPrepareIndex > terminalWsAuthIndex)
+assert.ok(daytonaDesktopSource.includes("Use ordinary `git` commands"))
+assert.ok(daytonaDesktopSource.includes("It may not be installed."))
 assert.ok(
   daytonaCodexAppServerRunSource.includes(
     "isCodexRefreshTokenReusedRunResult({"

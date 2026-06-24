@@ -604,8 +604,10 @@ function daytonaDesktopAgentsMd() {
     "",
     "## GitHub Operations",
     "",
-    "Use the GitHub connector for GitHub actions, including creating pull requests, reading pull requests, inspecting review comments, issues, branches, and checks.",
-    "Do not use the `gh` CLI for GitHub operations unless the GitHub connector is unavailable, fails for a connector-specific reason, or the user explicitly asks for `gh`. If falling back to `gh`, say why.",
+    "Cloudcode preconfigures GitHub HTTPS credentials in this sandbox when the user has connected GitHub.",
+    "Use ordinary `git` commands for repository writes: `git status`, `git add`, `git commit`, and `git push`.",
+    "Do not use the `gh` CLI unless `command -v gh` succeeds and the user explicitly asks for it. It may not be installed.",
+    "For pull requests, use an available GitHub MCP connector if one is listed. If no GitHub PR tool is available, push the branch with `git push` and tell the user the branch is ready for the Cloudcode GitHub panel or GitHub compare page.",
   ].join("\n")
 }
 
