@@ -100,11 +100,8 @@ export async function resolveOwnedPresetOrAutoDefault(
   userId: Id<"users">
 ) {
   if (!presetId) {
-    const [, autoPresetId] = await Promise.all([
-      ensureDefaultPreset(ctx, userId),
-      ensureAutoEnvironmentPreset(ctx, userId),
-    ])
-    return autoPresetId
+    await ensureDefaultPreset(ctx, userId)
+    return await ensureAutoEnvironmentPreset(ctx, userId)
   }
 
   const preset = await ctx.db.get(presetId)

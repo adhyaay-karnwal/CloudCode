@@ -39,6 +39,34 @@ import { requireWorkerSecret } from "./lib/workerAuth"
 
 const ENVIRONMENT_LIST_LIMIT = 80
 
+function presetListRank(preset: {
+  isBuiltInAutoEnvironment?: boolean
+  isBuiltInDefault?: boolean
+}) {
+  if (preset.isBuiltInAutoEnvironment) return 0
+  if (preset.isBuiltInDefault) return 1
+  return 2
+}
+
+function sortPresetRows<
+  T extends {
+    isBuiltInAutoEnvironment?: boolean
+    isBuiltInDefault?: boolean
+    name: string
+    updatedAt: number
+  },
+>(rows: T[]) {
+  return rows.toSorted((a, b) => {
+    const rankDelta = presetListRank(a) - presetListRank(b)
+    if (rankDelta !== 0) return rankDelta
+
+    const updatedDelta = b.updatedAt - a.updatedAt
+    if (updatedDelta !== 0) return updatedDelta
+
+    return a.name.localeCompare(b.name)
+  })
+}
+
 export const list = query({
   args: {},
   handler: async (ctx) => {
@@ -64,7 +92,7 @@ export const list = query({
       })
     )
 
-    return rows.filter((row) => row !== null)
+    return sortPresetRows(rows.filter((row) => row !== null))
   },
 })
 
@@ -108,7 +136,7 @@ export const listWithEnvironments = query({
       })
     )
 
-    return rows.filter((row) => row !== null)
+    return sortPresetRows(rows.filter((row) => row !== null))
   },
 })
 
@@ -173,10 +201,9 @@ export const ensureDefaultPresets = mutation({
   args: {},
   handler: async (ctx) => {
     const userId = await ensureCurrentUser(ctx)
-    return await Promise.all([
-      ensureDefaultPreset(ctx, userId),
-      ensureAutoEnvironmentPreset(ctx, userId),
-    ])
+    const defaultPresetId = await ensureDefaultPreset(ctx, userId)
+    const autoPresetId = await ensureAutoEnvironmentPreset(ctx, userId)
+    return [defaultPresetId, autoPresetId]
   },
 })
 

@@ -31,7 +31,7 @@ export {
 
 const DAYTONA_DESKTOP_PORT = 6080
 const DESKTOP_PREVIEW_TTL_SECONDS = 60 * 60
-const DESKTOP_TOOL_VERSION = "10"
+const DESKTOP_TOOL_VERSION = "13"
 const DESKTOP_BROWSER_URL = "about:blank"
 const DESKTOP_READ_TIMEOUT_MS = 8_000
 const DESKTOP_PREVIEW_TIMEOUT_MS = 8_000
@@ -130,6 +130,28 @@ type LocalDesktopStatus = {
   missing: string[]
   processes: Record<string, string>
   running: boolean
+}
+
+function localDesktopInactiveStatus(
+  computerUseStatus: string,
+  localStatus: LocalDesktopStatus
+) {
+  if (localStatus.error) return localStatus.error
+  if (!computerUseStatusLooksActive(computerUseStatus)) return computerUseStatus
+  if (!localStatus.missing.length) return "stopped"
+  return `not running (${localStatus.missing.join(", ")} stopped)`
+}
+
+function desktopStatusLabel(
+  computerUseStatus: string,
+  localStatus: LocalDesktopStatus
+) {
+  if (!localStatus.running) {
+    return localDesktopInactiveStatus(computerUseStatus, localStatus)
+  }
+  return computerUseStatusLooksActive(computerUseStatus)
+    ? computerUseStatus
+    : "running (fallback)"
 }
 
 function desktopServiceStatusCommand() {
@@ -383,24 +405,15 @@ export async function readDaytonaDesktopStatus(
     }
   }
 
-  const status = await readComputerUseStatus(sandbox)
-  if (computerUseStatusLooksActive(status)) {
-    return {
-      previewUrl: await safeDesktopPreviewUrl(sandbox),
-      status,
-    }
-  }
-
-  const localStatus = await readLocalDesktopStatus(sandbox).catch(
-    localDesktopStatusFromError
-  )
+  const [status, localStatus] = await Promise.all([
+    readComputerUseStatus(sandbox),
+    readLocalDesktopStatus(sandbox).catch(localDesktopStatusFromError),
+  ])
   return {
     previewUrl: localStatus.running
       ? await safeDesktopPreviewUrl(sandbox)
       : null,
-    status: localStatus.running
-      ? "running (fallback)"
-      : (localStatus.error ?? status),
+    status: desktopStatusLabel(status, localStatus),
   }
 }
 
@@ -419,20 +432,35 @@ export async function startDaytonaDesktop(sandboxId: string) {
     fallbackStatus = await startDesktopServicesFallback(sandbox, error)
   }
 
-  const [previewUrl, status] = await Promise.all([
-    safeDesktopPreviewUrl(sandbox),
-    readComputerUseStatus(sandbox),
-  ])
-  const usingFallback =
-    Boolean(fallbackStatus?.running) && !computerUseStatusLooksActive(status)
+  let status = await readComputerUseStatus(sandbox)
+  let localStatus =
+    fallbackStatus ??
+    (await readLocalDesktopStatus(sandbox).catch(localDesktopStatusFromError))
+
+  if (!fallbackStatus && !localStatus.running) {
+    fallbackStatus = await startDesktopServicesFallback(
+      sandbox,
+      new Error(
+        `Daytona computer use reported ${status}, but local desktop services were ${localDesktopInactiveStatus(status, localStatus)}.`
+      )
+    )
+    localStatus = fallbackStatus
+    status = await readComputerUseStatus(sandbox)
+  }
+
+  const usedFallback = Boolean(fallbackStatus?.running)
+  const previewUrl = localStatus.running
+    ? await safeDesktopPreviewUrl(sandbox)
+    : null
 
   return {
-    message: usingFallback
+    message: usedFallback
       ? "Desktop started with local fallback."
       : (start?.message ?? "Desktop started."),
     previewUrl,
-    processes: start?.status ?? fallbackStatus?.processes ?? {},
-    status: usingFallback ? "running (fallback)" : status,
+    processes:
+      fallbackStatus?.processes ?? start?.status ?? localStatus.processes,
+    status: desktopStatusLabel(status, localStatus),
   }
 }
 
@@ -554,11 +582,23 @@ export function daytonaDesktopToolVersion() {
   return DESKTOP_TOOL_VERSION
 }
 
-function desktopAgentInstructions() {
+function daytonaDesktopAgentsMd() {
   return [
     "# Cloudcode Daytona Desktop",
     "",
-    "A graphical Daytona desktop may be available in this sandbox.",
+    "## Daytona Desktop Context",
+    "",
+    "Cloudcode may provide a Daytona desktop for GUI/browser work.",
+    "When a task needs visual interaction, use the `cloudcode_desktop` MCP tools: start with `desktop_start`, open Cloudcode Browser with `desktop_open_browser` when needed, inspect with `desktop_screenshot`, act with click/type/key/scroll tools, then take another screenshot to verify the state.",
+    "When the desktop is available, prioritize visual UI testing in the desktop over headless checks: drive Cloudcode Browser and inspect screenshots instead of headless browsers, headless Playwright or Puppeteer runs, curl HTML dumps, or DOM-only assertions. Fall back to headless tools only when the desktop cannot be started or when specifically requested.",
+    "After UI-facing code changes, decide whether browser verification is needed. Use the Daytona desktop for layout, styling, visible component, browser behavior, form, navigation, and interaction changes; skip it only when the edit is clearly non-visual or cannot affect rendered UI.",
+    "When UI verification is needed, open the relevant local URL with `desktop_open_browser`, and exercise the changed workflow end-to-end the way a user would; confirm with screenshots that the expected outcome actually occurred before reporting back.",
+    "Confirming the app starts, the page loads, or no errors appear is not verification. Verify the specific behavior the change was meant to produce — the new element is visible, the interaction has the intended effect, the fixed bug no longer reproduces — and treat the change as unverified if the screenshots do not show it.",
+    "For UI verification, never use shortcuts that bypass the user interface, including `javascript:` URLs, direct DOM mutation, localStorage edits, console commands, injected scripts, or headless assertions, unless the user explicitly asks for that. Verify UI behavior only by interacting with visible controls in the browser the way a user would: click, type, scroll, navigate, then inspect the resulting screenshot. If the screenshot is unavailable or unreadable, treat the behavior as unverified and say so.",
+    "When opening a local URL for visual verification, confirm the browser actually loaded the app page before reporting success. A successful `desktop_open_browser` call is not verification. If the page shows a browser error, blank page, stale tab, or unreadable screenshot, do not claim verification; fix the loading issue or report it.",
+    "If desktop verification requires starting a dev server, watcher, or another long-running process, use `desktop_open_terminal` so it runs in the visible desktop terminal. Keep ordinary shell commands for finite setup and checks.",
+    "Do not launch `chromium`, `chromium-browser`, `google-chrome`, `google-chrome-stable`, `firefox`, `x-www-browser`, or `xdg-open` directly; `desktop_open_browser` uses `/usr/local/bin/cloudcode-browser`.",
+    "Daytona Computer Use recording starts automatically before desktop actions and Cloudcode stops it after the run; use `desktop_record_stop` only when an intermediate video artifact is needed before the run ends.",
     "",
     "Use the `cloudcode_desktop` MCP tools for GUI tasks:",
     "- `desktop_start` starts or verifies the desktop.",
@@ -566,42 +606,14 @@ function desktopAgentInstructions() {
     "- `desktop_open_terminal` opens a visible desktop terminal, optionally running a shell command from the repository.",
     "- `desktop_screenshot` returns an image of the current desktop.",
     "- `desktop_click`, `desktop_type`, `desktop_key`, `desktop_hotkey`, and `desktop_scroll` control the desktop.",
-    "- Daytona Computer Use recording starts automatically before desktop actions and Cloudcode stops it after the run.",
     "- `desktop_record_start` returns the active recording, and `desktop_record_stop` stops it early when an intermediate video is needed.",
     "",
-    "Do not open `chromium`, `chromium-browser`, `google-chrome`, `google-chrome-stable`, `firefox`, `x-www-browser`, or `xdg-open` directly. For browser work, use `desktop_open_browser`; if a shell fallback is unavoidable, run `/usr/local/bin/cloudcode-browser` directly.",
-    "",
-    "For visual work, use this loop: start the desktop, take a screenshot, act, take another screenshot, and repeat until the UI state is verified.",
-    "When the desktop is available, prioritize visual UI testing in the desktop over headless checks: verify UI changes by driving Cloudcode Browser on the desktop and inspecting screenshots, not with headless browsers, headless Playwright or Puppeteer runs, curl HTML dumps, or DOM-only assertions. Fall back to headless tools only when the desktop cannot be started.",
-    "After making UI-facing changes, decide whether visual verification is needed. Use the Daytona desktop when the change affects layout, styling, visible components, browser behavior, forms, navigation, or user interactions. Skip desktop verification only when the change is clearly non-visual or cannot affect rendered UI.",
-    "When UI verification is needed, assume the dev server is already running, open the relevant local URL with `desktop_open_browser`, and exercise the changed workflow end-to-end the way a user would: click, type, and navigate through it, then confirm with screenshots that the expected outcome actually occurred.",
-    "Confirming the app starts, the page loads, or no errors appear is not verification. Verify the specific behavior the change was meant to produce — the new element is visible, the interaction has the intended effect, the fixed bug no longer reproduces — and treat the change as unverified if the screenshots do not show it.",
-    "",
-    "## UI Verification Guardrails",
-    "",
-    "For UI verification, never use shortcuts that bypass the user interface, including `javascript:` URLs, direct DOM mutation, localStorage edits, console commands, injected scripts, or headless assertions, unless the user explicitly asks for that. Verify UI behavior only by interacting with visible controls in the browser the way a user would: click, type, scroll, navigate, then inspect the resulting screenshot. If the screenshot is unavailable or unreadable, treat the behavior as unverified and say so.",
-    "",
-    "When opening a local URL for visual verification, confirm the browser actually loaded the app page before reporting success. A successful `desktop_open_browser` call is not verification. If the page shows a browser error, blank page, stale tab, or unreadable screenshot, do not claim verification; fix the loading issue or report it.",
-    "",
-    "If desktop verification requires starting a dev server, watcher, or other long-running process, run it with `desktop_open_terminal` so it stays visible in the graphical desktop. Use ordinary shell commands only for finite setup and checks.",
-    "",
     "A shell fallback is also available as `cloudcode-computer`, including `cloudcode-computer terminal '<command>'`, but prefer the MCP tools because screenshots are returned as inspectable images.",
-  ].join("\n")
-}
-
-export function daytonaDesktopAgentContext() {
-  return [
-    "Cloudcode may provide a Daytona desktop for GUI/browser work.",
-    "When a task needs visual interaction, use the `cloudcode_desktop` MCP tools: start with `desktop_start`, open Cloudcode Browser with `desktop_open_browser` when needed, inspect with `desktop_screenshot`, act with click/type/key/scroll tools, then take another screenshot to verify the state.",
-    "When the desktop is available, prioritize visual UI testing in the desktop over headless checks: drive Cloudcode Browser and inspect screenshots instead of headless browsers, headless Playwright or Puppeteer runs, curl HTML dumps, or DOM-only assertions. Fall back to headless tools only when the desktop cannot be started.",
-    "After UI-facing code changes, decide whether browser verification is needed. Use the Daytona desktop for layout, styling, visible component, browser behavior, form, navigation, and interaction changes; skip it only when the edit is clearly non-visual or cannot affect rendered UI.",
-    "When UI verification is needed, assume the dev server is already running, open the relevant local URL with `desktop_open_browser`, and exercise the changed workflow end-to-end the way a user would; confirm with screenshots that the expected outcome actually occurred before reporting back.",
-    "Confirming the app starts, the page loads, or no errors appear is not verification. Verify the specific behavior the change was meant to produce — the new element is visible, the interaction has the intended effect, the fixed bug no longer reproduces — and treat the change as unverified if the screenshots do not show it.",
-    "For UI verification, never use shortcuts that bypass the user interface, including `javascript:` URLs, direct DOM mutation, localStorage edits, console commands, injected scripts, or headless assertions, unless the user explicitly asks for that. Verify UI behavior only by interacting with visible controls in the browser the way a user would: click, type, scroll, navigate, then inspect the resulting screenshot. If the screenshot is unavailable or unreadable, treat the behavior as unverified and say so.",
-    "When opening a local URL for visual verification, confirm the browser actually loaded the app page before reporting success. A successful `desktop_open_browser` call is not verification. If the page shows a browser error, blank page, stale tab, or unreadable screenshot, do not claim verification; fix the loading issue or report it.",
-    "If desktop verification requires starting a dev server, watcher, or another long-running process, use `desktop_open_terminal` so it runs in the visible desktop terminal. Keep ordinary shell commands for finite setup and checks.",
-    "Do not launch `chromium`, `chromium-browser`, `google-chrome`, `google-chrome-stable`, `firefox`, `x-www-browser`, or `xdg-open` directly; `desktop_open_browser` uses `/usr/local/bin/cloudcode-browser`.",
-    "Daytona Computer Use recording starts automatically before desktop actions and Cloudcode stops it after the run; use `desktop_record_stop` only when an intermediate video artifact is needed before the run ends.",
+    "",
+    "## GitHub Operations",
+    "",
+    "Use the GitHub connector for GitHub actions, including creating pull requests, reading pull requests, inspecting review comments, issues, branches, and checks.",
+    "Do not use the `gh` CLI for GitHub operations unless the GitHub connector is unavailable, fails for a connector-specific reason, or the user explicitly asks for `gh`. If falling back to `gh`, say why.",
   ].join("\n")
 }
 
@@ -631,19 +643,19 @@ function desktopCodexConfig(
 }
 
 function desktopToolFingerprint({
+  agentsMd,
   agentsPath,
   binPath,
   config,
   configPath,
-  instructions,
   script,
   scriptPath,
 }: {
+  agentsMd: string
   agentsPath: string
   binPath: string
   config: string
   configPath: string
-  instructions: string
   script: string
   scriptPath: string
 }) {
@@ -655,7 +667,7 @@ function desktopToolFingerprint({
       agentsPath,
       configPath,
       script,
-      instructions,
+      agentsMd,
       config,
     ].join("\0")
   )
@@ -668,7 +680,7 @@ export async function installDaytonaDesktopTools(
   extras: DaytonaDesktopToolExtras = {}
 ) {
   const script = desktopMcpServerScript()
-  const instructions = [desktopAgentInstructions(), extras.instructions]
+  const agentsMd = [daytonaDesktopAgentsMd(), extras.instructions]
     .filter(Boolean)
     .join("\n\n")
   const toolboxPreview = await sandbox.getPreviewLink(1)
@@ -680,15 +692,15 @@ export async function installDaytonaDesktopTools(
     .join("\n")
   const scriptPath = `${paths.codexHome}/desktop/cloudcode-desktop-mcp.mjs`
   const binPath = `${paths.home}/.local/bin/cloudcode-computer`
-  const agentsPath = `${paths.codexHome}/AGENTS.md`
+  const agentsMdPath = `${paths.codexHome}/AGENTS.md`
   const configPath = `${paths.codexHome}/config.toml`
   const markerPath = `${paths.codexHome}/desktop/tool-version`
   const fingerprint = desktopToolFingerprint({
-    agentsPath,
+    agentsMd,
+    agentsPath: agentsMdPath,
     binPath,
     config,
     configPath,
-    instructions,
     script,
     scriptPath,
   })
@@ -700,7 +712,7 @@ export async function installDaytonaDesktopTools(
       `fingerprint=${shellQuote(fingerprint)}`,
       `test -x ${shellQuote(scriptPath)}`,
       `test -L ${shellQuote(binPath)}`,
-      `test -s ${shellQuote(agentsPath)}`,
+      `test -s ${shellQuote(agentsMdPath)}`,
       `test -s ${shellQuote(configPath)}`,
       `grep -qxF -- "$fingerprint" ${shellQuote(markerPath)}`,
     ].join("\n"),
@@ -716,7 +728,7 @@ export async function installDaytonaDesktopTools(
       "set -e",
       `mkdir -p ${shellQuote(`${paths.codexHome}/desktop/state`)} ${shellQuote(`${paths.home}/.local/bin`)}`,
       base64FileCommand(scriptPath, script),
-      base64FileCommand(agentsPath, instructions),
+      base64FileCommand(agentsMdPath, agentsMd),
       base64FileCommand(configPath, config),
       `ln -sf ${shellQuote(scriptPath)} ${shellQuote(binPath)}`,
       `chmod +x ${shellQuote(scriptPath)} ${shellQuote(binPath)}`,

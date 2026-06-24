@@ -12,7 +12,6 @@ import {
   updateCodexCli,
 } from "@/lib/daytona/codex-cli-setup"
 import {
-  daytonaDesktopAgentContext,
   daytonaDesktopToolVersion,
   installDaytonaDesktopTools,
   stopDaytonaDesktopAgentRecording,
@@ -491,7 +490,6 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
     const contextBlocks = [
       cloudcodeYamlAgentContext(input.sandboxPreset?.cloudcodeYaml),
       sharedNotesEnabled ? cloudcodeContextAgentContext() : undefined,
-      daytonaDesktopAgentContext(),
       buildImageAttachmentPromptBlock(sandboxImageAttachments),
     ].filter((value): value is string => Boolean(value))
     const promptForTask = (task: string) =>

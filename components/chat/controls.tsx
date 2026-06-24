@@ -79,7 +79,7 @@ export function PresetPill({
         <div
           className={cn(
             popoverPanel,
-            "right-0 bottom-10 min-w-52 sm:right-auto sm:left-0"
+            "right-0 bottom-10 max-h-80 min-w-52 overflow-y-auto sm:right-auto sm:left-0"
           )}
         >
           <div className="px-3 pt-1.5 pb-1 text-xs text-muted-foreground">
