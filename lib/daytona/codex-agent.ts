@@ -26,6 +26,14 @@ import {
   installCloudcodeContextTools,
   writeCloudcodeContextState,
 } from "@/lib/daytona/context"
+import {
+  cloudcodeGitHubAgentContext,
+  cloudcodeGitHubAgentInstructions,
+  cloudcodeGitHubCodexConfig,
+  cloudcodeGitHubToolVersion,
+  installCloudcodeGitHubTools,
+  writeCloudcodeGitHubState,
+} from "@/lib/daytona/github"
 import { buildImageAttachmentPromptBlock } from "@/lib/chat/attachments"
 import { compactLine } from "@/lib/shared/compact-line"
 import {
@@ -166,6 +174,7 @@ function hotContinuationFingerprint({
         codexCliVersion: desiredCodexCliVersion(),
         codexDaemonVersion: CODEX_APP_SERVER_DAEMON_VERSION,
         contextToolVersion: cloudcodeContextToolVersion(),
+        githubToolVersion: cloudcodeGitHubToolVersion(),
         desktopToolFingerprint: daytonaDesktopToolContentFingerprint(),
         mcpConfig,
         paths: {
@@ -216,6 +225,7 @@ async function readHotContinuationState({
   enabled,
   expectedFingerprint,
   expectedRemoteUrl,
+  githubEnabled,
   paths,
   sandbox,
   signal,
@@ -224,6 +234,7 @@ async function readHotContinuationState({
   enabled: boolean
   expectedFingerprint: string
   expectedRemoteUrl?: string | null
+  githubEnabled: boolean
   paths: DaytonaSandboxPaths
   sandbox: Sandbox
   signal?: AbortSignal
@@ -239,6 +250,7 @@ async function readHotContinuationState({
       `expected_fingerprint=${shellQuote(expectedFingerprint)}`,
       `expected_remote=${shellQuote(expectedRemoteUrl ?? "")}`,
       `context_enabled=${contextEnabled ? "1" : "0"}`,
+      `github_enabled=${githubEnabled ? "1" : "0"}`,
       hotContinuationHashHelpers(),
       "miss() {",
       `  printf '${HOT_CONTINUATION_STATUS_MARKER} miss %s\\n' "$1"`,
@@ -255,6 +267,8 @@ async function readHotContinuationState({
       `[ -s ${shellQuote(`${paths.codexHome}/desktop/tool-version`)} ] || miss desktop-marker`,
       `[ "$context_enabled" != "1" ] || [ -x ${shellQuote(`${paths.codexHome}/context/cloudcode-context-mcp.mjs`)} ] || miss context-tool`,
       `[ "$context_enabled" != "1" ] || [ -s ${shellQuote(`${paths.codexHome}/context/tool-version`)} ] || miss context-marker`,
+      `[ "$github_enabled" != "1" ] || [ -x ${shellQuote(`${paths.codexHome}/github/cloudcode-github-mcp.mjs`)} ] || miss github-tool`,
+      `[ "$github_enabled" != "1" ] || [ -s ${shellQuote(`${paths.codexHome}/github/tool-version`)} ] || miss github-marker`,
       "yaml_hash=$(repo_cloudcode_hash)",
       "mise_hash=$(repo_mise_hash)",
       'expected_line="$expected_fingerprint $yaml_hash $mise_hash"',
@@ -495,6 +509,7 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
     )
     const contextBlocks = [
       cloudcodeYamlAgentContext(input.sandboxPreset?.cloudcodeYaml),
+      gitAuth ? cloudcodeGitHubAgentContext() : undefined,
       sharedNotesEnabled ? cloudcodeContextAgentContext() : undefined,
       buildImageAttachmentPromptBlock(sandboxImageAttachments),
     ].filter((value): value is string => Boolean(value))
@@ -510,9 +525,37 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
       runId: input.runId,
       threadId: input.threadId,
     })
-    const mcpConfig = [contextConfig, userMcpCodexConfig(input.mcpServers)]
+    const githubConfig = cloudcodeGitHubCodexConfig({
+      enabled: Boolean(gitAuth),
+      paths,
+    })
+    const mcpConfig = [
+      githubConfig,
+      contextConfig,
+      userMcpCodexConfig(input.mcpServers),
+    ]
       .filter(Boolean)
       .join("\n")
+
+    const writeRunToolState = async () => {
+      await Promise.all([
+        gitAuth
+          ? writeCloudcodeGitHubState(sandbox, paths, {
+              baseBranch,
+              repoUrl,
+              tokenPath: gitAuth.tokenPath,
+            })
+          : Promise.resolve(),
+        contextConfig
+          ? writeCloudcodeContextState(sandbox, paths, {
+              convexUrl: input.convexUrl,
+              notesAccessToken: input.notesAccessToken,
+              runId: input.runId,
+              threadId: input.threadId,
+            })
+          : Promise.resolve(),
+      ])
+    }
 
     const finishRun = async () => {
       await writeDaytonaDesktopAgentRunState(
@@ -595,25 +638,17 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
       ),
       expectedFingerprint: hotFingerprint,
       expectedRemoteUrl: gitAuth?.remoteUrl,
+      githubEnabled: Boolean(githubConfig),
       paths,
       sandbox,
       signal: input.signal,
     })
     if (hotContinuation.ready) {
-      if (contextConfig) {
-        const contextStateReady = await writeCloudcodeContextState(
-          sandbox,
-          paths,
-          {
-            convexUrl: input.convexUrl,
-            notesAccessToken: input.notesAccessToken,
-            runId: input.runId,
-            threadId: input.threadId,
-          }
-        )
+      if (contextConfig || githubConfig) {
+        const toolStateReady = await writeRunToolState()
           .then(() => true)
           .catch(() => false)
-        if (!contextStateReady) {
+        if (!toolStateReady) {
           await emitLog(input, {
             kind: "setup",
             message: "Hot sandbox continuation skipped",
@@ -737,26 +772,25 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
     await prepareSandboxRuntime(sandbox, input, paths)
       .then(() => runLiveCloudcodeYamlSetup(sandbox, input, paths, gitAuth))
       .then(() =>
+        githubConfig
+          ? installCloudcodeGitHubTools(sandbox, paths, input.signal)
+          : undefined
+      )
+      .then(() =>
         contextConfig
           ? installCloudcodeContextTools(sandbox, paths, input.signal)
           : undefined
       )
-      .then(() =>
-        contextConfig
-          ? writeCloudcodeContextState(sandbox, paths, {
-              convexUrl: input.convexUrl,
-              notesAccessToken: input.notesAccessToken,
-              runId: input.runId,
-              threadId: input.threadId,
-            })
-          : undefined
-      )
+      .then(() => writeRunToolState())
       .then(() =>
         installDaytonaDesktopTools(sandbox, paths, input.signal, {
           config: mcpConfig,
-          instructions: contextConfig
-            ? cloudcodeContextAgentInstructions()
-            : undefined,
+          instructions: [
+            githubConfig ? cloudcodeGitHubAgentInstructions() : undefined,
+            contextConfig ? cloudcodeContextAgentInstructions() : undefined,
+          ]
+            .filter(Boolean)
+            .join("\n\n"),
         })
       )
       .then(() => runPathInstallScript(sandbox, input, paths, gitAuth))

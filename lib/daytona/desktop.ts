@@ -607,7 +607,7 @@ function daytonaDesktopAgentsMd() {
     "Cloudcode preconfigures GitHub HTTPS credentials in this sandbox when the user has connected GitHub.",
     "Use ordinary `git` commands for repository writes: `git status`, `git add`, `git commit`, and `git push`.",
     "Do not use the `gh` CLI unless `command -v gh` succeeds and the user explicitly asks for it. It may not be installed.",
-    "For pull requests, use an available GitHub MCP connector if one is listed. If no GitHub PR tool is available, push the branch with `git push` and tell the user the branch is ready for the Cloudcode GitHub panel or GitHub compare page.",
+    "For pull requests, use `cloudcode_github.pull_request_create` when that MCP tool is available. If no GitHub PR tool is available, push the branch with `git push` and tell the user the branch is ready for the Cloudcode GitHub panel or GitHub compare page.",
   ].join("\n")
 }
 

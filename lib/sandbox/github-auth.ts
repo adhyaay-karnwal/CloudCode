@@ -16,6 +16,7 @@ export type SandboxGitHubAuth = {
   cleanup: () => Promise<void>
   env: Record<string, string>
   remoteUrl: string | null
+  tokenPath: string
 }
 
 function sha256(value: string) {
@@ -435,6 +436,7 @@ export async function setupSandboxGitHubAuth({
         : {}),
     },
     remoteUrl,
+    tokenPath: pathsForAuth.tokenPath,
   }
 }
 

@@ -30,6 +30,7 @@ import {
   type McpServerInput,
 } from "@/lib/daytona/codex-runtime"
 import { cloudcodeContextToolVersion } from "@/lib/daytona/context"
+import { cloudcodeGitHubToolFingerprint } from "@/lib/daytona/github"
 import { daytonaDesktopToolContentFingerprint } from "@/lib/daytona/desktop"
 import type { SandboxGitHubAuth } from "@/lib/sandbox/github-auth"
 import type { SandboxPresetEnvVar } from "@/lib/sandbox/env"
@@ -113,6 +114,7 @@ function codexAppServerDaemonEnv({
     CLOUDCODE_DAEMON_SOCKET: daemonPaths.socketPath,
     CLOUDCODE_DAEMON_STATE: daemonPaths.statePath,
     CLOUDCODE_DESKTOP_TOOL_FINGERPRINT: daytonaDesktopToolContentFingerprint(),
+    CLOUDCODE_GITHUB_TOOL_FINGERPRINT: cloudcodeGitHubToolFingerprint(paths),
     CLOUDCODE_MCP_CONFIG_HASH: sha256(userMcpCodexConfig(mcpServers)),
     CLOUDCODE_REPO_PATH: paths.repoPath,
   }

@@ -40,6 +40,10 @@ import {
   cloudcodeContextStatePath,
 } from "@/lib/daytona/context"
 import {
+  cloudcodeGitHubCodexConfig,
+  cloudcodeGitHubStatePath,
+} from "@/lib/daytona/github"
+import {
   codexAppServerDaemonCommand,
   codexAppServerNotificationRoute,
   codexAppServerStdioCommand,
@@ -154,8 +158,16 @@ const daytonaDesktopSource = await readFile(
   new URL("../lib/daytona/desktop.ts", import.meta.url),
   "utf8"
 )
+const daytonaGitHubSource = await readFile(
+  new URL("../lib/daytona/github.ts", import.meta.url),
+  "utf8"
+)
 const sandboxGithubAuthSource = await readFile(
   new URL("../lib/sandbox/github-auth.ts", import.meta.url),
+  "utf8"
+)
+const codexAppServerDaemonRuntimeSource = await readFile(
+  new URL("../lib/codex/app-server-daemon-runtime.ts", import.meta.url),
   "utf8"
 )
 const terminalSessionsSource = await readFile(
@@ -205,6 +217,18 @@ assert.ok(terminalWsAuthIndex > 0)
 assert.ok(terminalWsPrepareIndex > terminalWsAuthIndex)
 assert.ok(daytonaDesktopSource.includes("Use ordinary `git` commands"))
 assert.ok(daytonaDesktopSource.includes("It may not be installed."))
+assert.ok(daytonaGitHubSource.includes("pull_request_create"))
+assert.ok(daytonaGitHubSource.includes("Cloudcode GitHub App bot"))
+assert.ok(daytonaCodexAgentSource.includes("installCloudcodeGitHubTools"))
+assert.ok(daytonaCodexAgentSource.includes("writeCloudcodeGitHubState"))
+assert.ok(
+  daytonaCodexAgentSource.includes("githubEnabled: Boolean(githubConfig)")
+)
+assert.ok(
+  codexAppServerDaemonRuntimeSource.includes(
+    "CLOUDCODE_GITHUB_TOOL_FINGERPRINT"
+  )
+)
 assert.ok(
   daytonaCodexAppServerRunSource.includes(
     "isCodexRefreshTokenReusedRunResult({"
@@ -421,6 +445,23 @@ assert.equal(
     paths: testPaths,
     runId: "run-1",
     threadId: "thread-1",
+  }),
+  ""
+)
+const githubMcpConfig = cloudcodeGitHubCodexConfig({
+  enabled: true,
+  paths: testPaths,
+})
+assert.ok(githubMcpConfig.includes("[mcp_servers.cloudcode_github]"))
+assert.ok(githubMcpConfig.includes("cloudcode-github-mcp.mjs"))
+assert.ok(githubMcpConfig.includes("CLOUDCODE_GITHUB_STATE_PATH"))
+assert.ok(githubMcpConfig.includes(cloudcodeGitHubStatePath(testPaths)))
+assert.ok(githubMcpConfig.includes("pull_request_create"))
+assert.ok(githubMcpConfig.includes('approval_mode = "auto"'))
+assert.equal(
+  cloudcodeGitHubCodexConfig({
+    enabled: false,
+    paths: testPaths,
   }),
   ""
 )
