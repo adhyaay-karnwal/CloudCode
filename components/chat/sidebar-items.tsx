@@ -1,7 +1,6 @@
 "use client"
 
 import { ChevronRight, Ellipsis, Plus } from "lucide-react"
-import { motion } from "motion/react"
 import { useEffect, useRef, useState } from "react"
 
 import { ContextMenu } from "@/components/ui/context-menu"
@@ -148,89 +147,74 @@ function SidebarItem({
       }}
       className={cn(
         "group/item relative flex items-center rounded-lg transition-colors",
-        !active && "hover:bg-muted/60"
+        active ? "bg-muted" : "hover:bg-muted/60"
       )}
     >
-      {/* Single shared highlight that slides between threads as the active one
-          changes, instead of the background blinking from item to item. Same
-          look (bg-muted, rounded-lg, full bleed) — it just animates position.
-          It sits at the base layer (no isolate) while the content below is
-          lifted to z-10, so the highlight always stays behind every item's
-          text as it slides and the context menu (z-50) is never trapped. */}
-      {active ? (
-        <motion.div
-          layoutId="sidebar-active-thread"
-          transition={{ type: "spring", stiffness: 450, damping: 40 }}
-          className="absolute inset-0 rounded-lg bg-muted"
+      {editing ? (
+        <input
+          ref={inputRef}
+          aria-label="Chat title"
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={(event) => commit(event.target.value)}
+          onFocus={(event) => event.currentTarget.select()}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault()
+              commit(event.currentTarget.value)
+            } else if (event.key === "Escape") {
+              event.preventDefault()
+              setEditing(false)
+            }
+          }}
+          onClick={(event) => event.stopPropagation()}
+          className="min-w-0 flex-1 truncate rounded-md bg-background px-2 py-1 text-[0.8125rem] text-foreground ring-1 ring-border outline-none focus:ring-foreground/40"
         />
-      ) : null}
-      <div className="relative z-10 flex min-w-0 flex-1 items-center">
-        {editing ? (
-          <input
-            ref={inputRef}
-            aria-label="Chat title"
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            onBlur={(event) => commit(event.target.value)}
-            onFocus={(event) => event.currentTarget.select()}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault()
-                commit(event.currentTarget.value)
-              } else if (event.key === "Escape") {
-                event.preventDefault()
-                setEditing(false)
-              }
-            }}
-            onClick={(event) => event.stopPropagation()}
-            className="min-w-0 flex-1 truncate rounded-md bg-background px-2 py-1 text-[0.8125rem] text-foreground ring-1 ring-border outline-none focus:ring-foreground/40"
-          />
-        ) : (
-          <>
-            <button
-              type="button"
-              onClick={onSelect}
-              className="flex min-w-0 flex-1 items-center gap-2 py-2 pr-1 pl-2.5 text-left md:pr-2.5"
-            >
-              <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <span className="min-w-0 truncate text-[0.8125rem] text-foreground">
-                  {chat.title || "Untitled"}
-                </span>
-                <span className="min-w-0 truncate text-[0.6875rem] text-muted-foreground">
-                  {relativeTime(chat.lastUserMessageAt)}
-                </span>
-              </div>
-              <span className="flex size-5 shrink-0 items-center justify-center">
-                {pending ? (
-                  <BrailleSpinner className="text-muted-foreground" />
-                ) : (
-                  <SandboxDot state={chat.sandboxState} starting={false} />
-                )}
+      ) : (
+        <>
+          <button
+            type="button"
+            onClick={onSelect}
+            className="flex min-w-0 flex-1 items-center gap-2 py-2 pr-1 pl-2.5 text-left md:pr-2.5"
+          >
+            <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+              <span className="min-w-0 truncate text-[0.8125rem] text-foreground">
+                {chat.title || "Untitled"}
               </span>
-            </button>
-            <button
-              type="button"
-              aria-label="Chat options"
-              onClick={(event) => {
-                event.stopPropagation()
-                const rect = event.currentTarget.getBoundingClientRect()
-                const menuWidth = 180
-                const menuHeight = 96
-                setMenu({
-                  x: Math.max(
-                    8,
-                    Math.min(rect.right, window.innerWidth - 8) - menuWidth
-                  ),
-                  y: Math.min(rect.bottom + 4, window.innerHeight - menuHeight),
-                })
-              }}
-              className="mr-1 grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground md:hidden"
-            >
-              <Ellipsis className="size-4" />
-            </button>
-          </>
-        )}
-      </div>
+              <span className="min-w-0 truncate text-[0.6875rem] text-muted-foreground">
+                {relativeTime(chat.lastUserMessageAt)}
+              </span>
+            </div>
+            <span className="flex size-5 shrink-0 items-center justify-center">
+              {pending ? (
+                <BrailleSpinner className="text-muted-foreground" />
+              ) : (
+                <SandboxDot state={chat.sandboxState} starting={false} />
+              )}
+            </span>
+          </button>
+          <button
+            type="button"
+            aria-label="Chat options"
+            onClick={(event) => {
+              event.stopPropagation()
+              const rect = event.currentTarget.getBoundingClientRect()
+              const menuWidth = 180
+              const menuHeight = 96
+              setMenu({
+                x: Math.max(
+                  8,
+                  Math.min(rect.right, window.innerWidth - 8) - menuWidth
+                ),
+                y: Math.min(rect.bottom + 4, window.innerHeight - menuHeight),
+              })
+            }}
+            className="mr-1 grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground md:hidden"
+          >
+            <Ellipsis className="size-4" />
+          </button>
+        </>
+      )}
 
       {menu ? (
         <ContextMenu
