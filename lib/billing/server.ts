@@ -4,6 +4,7 @@ import type { ConvexHttpClient } from "convex/browser"
 import { api } from "@/convex/_generated/api"
 import {
   daytonaSandboxBillingResources,
+  getDaytonaSandbox,
   getStartedDaytonaSandbox,
   readDaytonaSandboxInfo,
   stopDaytonaSandbox,
@@ -21,6 +22,13 @@ export class BillingRequiredError extends Error {
   constructor() {
     super("A plan with remaining usage is required.")
     this.name = "BillingRequiredError"
+  }
+}
+
+export class SandboxNotRunningError extends Error {
+  constructor() {
+    super("Sandbox is not running.")
+    this.name = "SandboxNotRunningError"
   }
 }
 
@@ -163,5 +171,31 @@ export async function getStartedCurrentUserDaytonaSandbox(
     sandboxId,
     state: "running",
   })
+  return { access, sandbox }
+}
+
+export async function getRunningCurrentUserDaytonaSandbox(
+  sandboxId: string
+): Promise<{
+  access: CurrentUserSandbox
+  sandbox: Awaited<ReturnType<typeof getDaytonaSandbox>>
+}> {
+  const access = await requireCurrentUserSandbox(sandboxId)
+  const info = await readDaytonaSandboxInfo(sandboxId)
+  if (info.state !== "running") throw new SandboxNotRunningError()
+
+  try {
+    await requireCurrentUserInfraAccess()
+  } catch (error) {
+    if (error instanceof BillingRequiredError) {
+      await pauseCurrentUserSandboxForBilling(sandboxId)
+    }
+    throw error
+  }
+
+  const sandbox = await getDaytonaSandbox(sandboxId)
+  if (sandbox.state !== "started") throw new SandboxNotRunningError()
+
+  await observeCurrentUserDaytonaBillingInfo(info)
   return { access, sandbox }
 }

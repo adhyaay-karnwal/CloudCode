@@ -2,7 +2,9 @@ import { NextResponse } from "next/server"
 
 import {
   BillingRequiredError,
+  getRunningCurrentUserDaytonaSandbox,
   getStartedCurrentUserDaytonaSandbox,
+  SandboxNotRunningError,
 } from "@/lib/billing/server"
 import { jsonError, searchStringParam } from "@/lib/http/api-route"
 import {
@@ -38,6 +40,7 @@ export async function GET(request: Request) {
   const sandboxId = searchStringParam(request, "sandboxId")
   const relPath = searchParams.get("path")
   const format = searchParams.get("format")
+  const wakeSandbox = searchParams.get("wakeSandbox") !== "0"
 
   if (!sandboxId || !relPath) {
     return jsonError("sandboxId and path required", 400)
@@ -54,7 +57,9 @@ export async function GET(request: Request) {
   }
 
   try {
-    const { sandbox } = await getStartedCurrentUserDaytonaSandbox(sandboxId)
+    const { sandbox } = await (wakeSandbox
+      ? getStartedCurrentUserDaytonaSandbox(sandboxId)
+      : getRunningCurrentUserDaytonaSandbox(sandboxId))
     const paths = await resolveDaytonaPaths(sandbox)
     const fullPath = `${paths.repoPath}/${cleaned}`
     const info = await sandbox.fs.getFileDetails(fullPath)
@@ -101,6 +106,9 @@ export async function GET(request: Request) {
   } catch (error) {
     if (error instanceof BillingRequiredError) {
       return jsonError(error.message, 402)
+    }
+    if (error instanceof SandboxNotRunningError) {
+      return jsonError(error.message, 409, { sandboxNotRunning: true })
     }
 
     return jsonError(

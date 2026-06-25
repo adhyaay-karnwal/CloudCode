@@ -176,12 +176,14 @@ export async function fetchSandboxTextFileIntoCache({
   path,
   sandboxId,
   scope,
+  wakeSandbox = true,
 }: {
   diffKey?: string
   force?: boolean
   path: string
   sandboxId: string
   scope: string
+  wakeSandbox?: boolean
 }) {
   const cached = await readCachedTextFile(scope, path)
   if (!force && cached && (!diffKey || cached.diffKey === diffKey)) {
@@ -196,6 +198,7 @@ export async function fetchSandboxTextFileIntoCache({
 
   const promise = (async () => {
     const params = new URLSearchParams({ path, sandboxId })
+    if (!wakeSandbox) params.set("wakeSandbox", "0")
     const res = await fetch(`/api/sandbox/files/read?${params}`, {
       cache: "no-store",
     })

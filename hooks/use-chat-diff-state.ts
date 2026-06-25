@@ -89,6 +89,7 @@ export function useChatDiffState({
         path,
         sandboxId,
         scope,
+        wakeSandbox: false,
       }).catch(() => undefined)
       return worker()
     }
