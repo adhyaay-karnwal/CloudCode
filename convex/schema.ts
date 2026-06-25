@@ -401,6 +401,7 @@ export default defineSchema({
     imageUrl: v.optional(v.string()),
     name: v.optional(v.string()),
     onboardingDismissedAt: v.optional(v.number()),
+    sandboxIdleMinutes: v.optional(v.number()),
     subject: v.string(),
     tokenIdentifier: v.string(),
     updatedAt: v.number(),

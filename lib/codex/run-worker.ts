@@ -109,6 +109,7 @@ type WorkerRunInputResponse =
       canceled: false
       mcpServers?: WorkerMcpServerRecord[]
       run: WorkerRunRecord
+      sandboxIdleMinutes?: number
       sandboxPreset?: WorkerPresetRecord
     }
 
@@ -400,6 +401,7 @@ export async function startAndLoadWorkerRun(
       resumeContext: response.run.resumeContext,
       runId: runId as string,
       sandboxId: response.run.sandboxId,
+      sandboxIdleMinutes: response.sandboxIdleMinutes,
       sandboxPreset,
       speed: response.run.speed,
       threadId: response.run.threadId as string,

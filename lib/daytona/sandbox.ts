@@ -7,6 +7,7 @@ import {
 } from "@/lib/billing/model"
 import { envNumber } from "@/lib/daytona/env"
 import { installDaytonaTarWrapper } from "@/lib/daytona/sandbox-command"
+import { clampSandboxIdleMinutes } from "@/lib/sandbox/idle"
 
 export {
   installDaytonaTarWrapper,
@@ -23,7 +24,6 @@ const DEFAULT_SSH_ACCESS_MINUTES = 60
 const DEFAULT_DAYTONA_HOME =
   process.env.DAYTONA_SANDBOX_HOME?.trim() || "/home/daytona"
 
-const DEFAULT_AUTO_STOP_MINUTES = 7
 const DEFAULT_AUTO_ARCHIVE_MINUTES = 7 * 24 * 60
 const DEFAULT_AUTO_DELETE_MINUTES = 14 * 24 * 60
 const DEFAULT_CREATE_TIMEOUT_SECONDS = 480
@@ -112,12 +112,23 @@ export type DaytonaSandboxPaths = {
   runtimeHome: string
 }
 
-function defaultDaytonaAutostopMinutes() {
-  return DEFAULT_AUTO_STOP_MINUTES
-}
+async function ensureDaytonaAutostopInterval(
+  sandbox: Sandbox,
+  autoStopMinutes?: number
+) {
+  // Secondary operations (terminal, desktop, env edits) start a sandbox without
+  // knowing the owner's preference. When no explicit value is supplied, keep any
+  // interval the sandbox already carries so we never clobber a user's choice
+  // back to the default.
+  if (
+    autoStopMinutes == null &&
+    sandbox.autoStopInterval != null &&
+    sandbox.autoStopInterval > 0
+  ) {
+    return
+  }
 
-async function ensureDaytonaAutostopInterval(sandbox: Sandbox) {
-  const interval = defaultDaytonaAutostopMinutes()
+  const interval = clampSandboxIdleMinutes(autoStopMinutes)
   if (sandbox.autoStopInterval === interval) return
 
   await sandbox.setAutostopInterval(interval)
@@ -481,7 +492,10 @@ export async function findDaytonaSandboxInfoForRun(runId: string) {
   return daytonaSandboxInfo(sandbox)
 }
 
-export async function ensureDaytonaSandboxStarted(sandbox: Sandbox) {
+export async function ensureDaytonaSandboxStarted(
+  sandbox: Sandbox,
+  autoStopMinutes?: number
+) {
   const timeout = defaultDaytonaCreateTimeoutSeconds()
   await sandbox.refreshData().catch(() => undefined)
 
@@ -491,17 +505,19 @@ export async function ensureDaytonaSandboxStarted(sandbox: Sandbox) {
     await sandbox.start(timeout)
   }
 
-  await ensureDaytonaAutostopInterval(sandbox)
+  await ensureDaytonaAutostopInterval(sandbox, autoStopMinutes)
   await sandbox.refreshActivity().catch(() => undefined)
   return sandbox
 }
 
 export async function createDaytonaSandbox({
+  autoStopMinutes,
   envVars,
   labels,
   name,
   snapshot,
 }: {
+  autoStopMinutes?: number
   envVars?: Record<string, string>
   labels?: Record<string, string | undefined>
   name?: string
@@ -514,7 +530,7 @@ export async function createDaytonaSandbox({
   const baseParams = {
     autoArchiveInterval: defaultDaytonaArchiveMinutes(),
     autoDeleteInterval: defaultDaytonaDeleteMinutes(),
-    autoStopInterval: defaultDaytonaAutostopMinutes(),
+    autoStopInterval: clampSandboxIdleMinutes(autoStopMinutes),
     envVars,
     language: "typescript",
     labels: {
@@ -548,7 +564,7 @@ export async function createDaytonaSandbox({
       { timeout: defaultDaytonaCreateTimeoutSeconds() }
     )
   }
-  await ensureDaytonaSandboxStarted(sandbox)
+  await ensureDaytonaSandboxStarted(sandbox, autoStopMinutes)
   await installDaytonaTarWrapper(sandbox, await resolveDaytonaPaths(sandbox))
   return sandbox
 }
@@ -563,8 +579,14 @@ export async function getDaytonaSandbox(
   })
 }
 
-export async function getStartedDaytonaSandbox(sandboxId: string) {
-  return await ensureDaytonaSandboxStarted(await getDaytonaSandbox(sandboxId))
+export async function getStartedDaytonaSandbox(
+  sandboxId: string,
+  autoStopMinutes?: number
+) {
+  return await ensureDaytonaSandboxStarted(
+    await getDaytonaSandbox(sandboxId),
+    autoStopMinutes
+  )
 }
 
 export async function deleteDaytonaSandboxQuietly(sandboxId?: string) {
@@ -588,12 +610,15 @@ export async function resumeDaytonaSandbox(sandboxId: string) {
   return await readDaytonaSandboxInfo(sandboxId)
 }
 
-export function startDaytonaActivityHeartbeat(sandbox: Sandbox) {
+export function startDaytonaActivityHeartbeat(
+  sandbox: Sandbox,
+  autoStopMinutes?: number
+) {
   const intervalMs = Math.min(
     DAYTONA_ACTIVITY_HEARTBEAT_MAX_MS,
     Math.max(
       DAYTONA_ACTIVITY_HEARTBEAT_MIN_MS,
-      Math.floor((defaultDaytonaAutostopMinutes() * 60_000) / 2)
+      Math.floor((clampSandboxIdleMinutes(autoStopMinutes) * 60_000) / 2)
     )
   )
   let stopped = false

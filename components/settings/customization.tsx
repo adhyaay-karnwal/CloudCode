@@ -16,7 +16,13 @@ import {
   SegmentedControl,
   type SegmentedOption,
 } from "@/components/ui/segmented-control"
+import { Slider } from "@/components/ui/slider"
 import { api } from "@/convex/_generated/api"
+import {
+  clampSandboxIdleMinutes,
+  SANDBOX_IDLE_MINUTES_MAX,
+  SANDBOX_IDLE_MINUTES_MIN,
+} from "@/lib/sandbox/idle"
 import { cn } from "@/lib/shared/utils"
 
 const MAX_INSTRUCTIONS_LENGTH = 10_000
@@ -107,6 +113,59 @@ function InstructionsSetting() {
   )
 }
 
+function IdleTimeoutSetting() {
+  const viewer = useQuery(api.users.viewer)
+  const saveIdleMinutes = useMutation(api.users.setSandboxIdleMinutes)
+
+  const persisted = clampSandboxIdleMinutes(viewer?.sandboxIdleMinutes)
+  const [value, setValue] = useState(persisted)
+  const [loaded, setLoaded] = useState(false)
+
+  // Adopt the stored value once the viewer query resolves; afterwards the
+  // slider owns the value so dragging never fights an in-flight save.
+  useEffect(() => {
+    if (!loaded && viewer !== undefined) {
+      setValue(clampSandboxIdleMinutes(viewer?.sandboxIdleMinutes))
+      setLoaded(true)
+    }
+  }, [loaded, viewer])
+
+  function handleCommit(next: number) {
+    const clamped = clampSandboxIdleMinutes(next)
+    setValue(clamped)
+    if (clamped !== persisted) {
+      void saveIdleMinutes({ minutes: clamped })
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-2 border-t border-border/60 pt-6">
+      <div className="flex items-center justify-between gap-4">
+        <div className="text-sm font-medium text-foreground/90">
+          Idle timeout
+        </div>
+        <div className="text-sm text-foreground/70 tabular-nums">
+          {value} {value === 1 ? "minute" : "minutes"}
+        </div>
+      </div>
+      <Slider
+        aria-label="Sandbox idle timeout in minutes"
+        min={SANDBOX_IDLE_MINUTES_MIN}
+        max={SANDBOX_IDLE_MINUTES_MAX}
+        step={1}
+        disabled={!loaded}
+        value={value}
+        onValueChange={setValue}
+        onValueCommitted={handleCommit}
+      />
+      <span className={fieldHint}>
+        How long a sandbox stays running with no activity before it’s stopped to
+        save resources. Applies the next time an agent starts in a sandbox.
+      </span>
+    </div>
+  )
+}
+
 export function CustomizationSettings() {
   const { theme, setTheme } = useTheme()
   // next-themes can't know the resolved theme until mounted; render a stable
@@ -127,6 +186,7 @@ export function CustomizationSettings() {
       description="Personalize Cloudcode and how your agents behave."
     >
       <InstructionsSetting />
+      <IdleTimeoutSetting />
       <div className="flex items-center justify-between gap-4 border-t border-border/60 pt-6">
         <div className="text-sm font-medium text-foreground/90">Theme</div>
         <SegmentedControl

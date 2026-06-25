@@ -341,6 +341,7 @@ function sandboxIsUnderResourced(sandbox: Sandbox) {
 async function connectOrCreateSandbox(input: RunCodexInSandboxInput) {
   const createNewSandbox = () =>
     createDaytonaSandbox({
+      autoStopMinutes: input.sandboxIdleMinutes,
       envVars: presetSecretEnv(input.sandboxPreset?.secrets),
       labels: {
         "cloudcode-run-id": input.runId,
@@ -356,7 +357,8 @@ async function connectOrCreateSandbox(input: RunCodexInSandboxInput) {
   if (input.sandboxId) {
     try {
       const sandbox = await ensureDaytonaSandboxStarted(
-        await getDaytonaSandbox(input.sandboxId)
+        await getDaytonaSandbox(input.sandboxId),
+        input.sandboxIdleMinutes
       )
       const snapshotMismatch =
         desiredSnapshot && sandbox.snapshot !== desiredSnapshot
@@ -471,7 +473,10 @@ export async function runCodexInSandbox(input: RunCodexInSandboxInput) {
   }
 
   try {
-    stopDaytonaActivityHeartbeat = startDaytonaActivityHeartbeat(sandbox)
+    stopDaytonaActivityHeartbeat = startDaytonaActivityHeartbeat(
+      sandbox,
+      input.sandboxIdleMinutes
+    )
     gitAuth = await setupSandboxGitHubAuth({
       githubToken,
       githubUserEmail: input.githubUserEmail,

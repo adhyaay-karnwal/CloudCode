@@ -117,6 +117,7 @@ export async function workerInputForRun(
     canceled: false as const,
     mcpServers,
     run,
+    sandboxIdleMinutes: user?.sandboxIdleMinutes,
     sandboxPreset,
   }
 }

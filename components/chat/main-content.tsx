@@ -117,11 +117,7 @@ export function ChatMainContent({
 
   return (
     <>
-      <ChatWorkspaceMainPanel
-        composer={composer}
-        thread={thread}
-        workspace={workspace}
-      />
+      <ChatWorkspaceMainPanel thread={thread} workspace={workspace} />
 
       {terminal.mounted ? (
         <SandboxTerminalPanel
@@ -133,9 +129,9 @@ export function ChatMainContent({
         />
       ) : null}
 
-      <ChatComposerDock
+      <ChatComposerRegion
         composer={composer}
-        empty={thread.empty}
+        thread={thread}
         hidden={
           Boolean(workspace.activeFilePath) ||
           workspace.allDiffsOpen ||
@@ -149,11 +145,9 @@ export function ChatMainContent({
 }
 
 function ChatWorkspaceMainPanel({
-  composer,
   thread,
   workspace,
 }: {
-  composer: ComposerContent
   thread: ThreadContent
   workspace: WorkspaceMainPanel
 }) {
@@ -194,16 +188,14 @@ function ChatWorkspaceMainPanel({
     )
   }
 
-  return <ChatThreadContent composer={composer} thread={thread} />
+  return <ChatThreadContent thread={thread} />
 }
 
-function ChatThreadContent({
-  composer,
-  thread,
-}: {
-  composer: ComposerContent
-  thread: ThreadContent
-}) {
+function ChatThreadContent({ thread }: { thread: ThreadContent }) {
+  // The empty/new-chat state lives entirely in ChatComposerRegion so the
+  // composer is never duplicated; nothing scrolls here until messages exist.
+  if (thread.empty) return null
+
   /* The thread owns a single setup line, rendered in place of the last
      pending assistant message and keyed by the thread. Message identity
      changes during send (optimistic -> server) therefore never remount it,
@@ -228,58 +220,106 @@ function ChatThreadContent({
       style={{ scrollPaddingBottom: thread.bottomInset }}
     >
       <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-4 pt-16 md:px-6">
-        {thread.empty ? (
-          <ChatEmptyState composer={composer} thread={thread} />
-        ) : (
-          <div className="mx-auto w-full max-w-2xl space-y-6 md:space-y-8">
-            {thread.messages.map((message) =>
-              message === setupMessage ? (
-                <RunSetupSummary
-                  key={`setup-${thread.threadViewKey}`}
-                  createdAt={message.createdAt}
-                  logs={logsForMessage(message.id, message.meta?.logs)}
-                />
-              ) : (
-                <MessageBlock
-                  key={message.id}
-                  message={message}
-                  repoName={thread.activeRepoName}
-                  sandboxId={thread.activeSandboxId}
-                  onOpenFile={thread.onOpenFile}
-                  onOpenFileDiff={thread.onOpenFileDiff}
-                />
-              )
-            )}
-          </div>
-        )}
+        <div className="mx-auto w-full max-w-2xl space-y-6 md:space-y-8">
+          {thread.messages.map((message) =>
+            message === setupMessage ? (
+              <RunSetupSummary
+                key={`setup-${thread.threadViewKey}`}
+                createdAt={message.createdAt}
+                logs={logsForMessage(message.id, message.meta?.logs)}
+              />
+            ) : (
+              <MessageBlock
+                key={message.id}
+                message={message}
+                repoName={thread.activeRepoName}
+                sandboxId={thread.activeSandboxId}
+                onOpenFile={thread.onOpenFile}
+                onOpenFileDiff={thread.onOpenFileDiff}
+              />
+            )
+          )}
+        </div>
         <div
           aria-hidden="true"
           className="shrink-0"
-          style={{ height: thread.empty ? 0 : thread.bottomInset }}
+          style={{ height: thread.bottomInset }}
         />
       </div>
     </div>
   )
 }
 
-function ChatEmptyState({
+/* A single composer element is kept mounted across every state — centered in
+   the empty/new-chat view, docked above the thread, and floating above the
+   terminal — by giving it a stable key inside a parent that never changes
+   identity. The parent collapses to `display: contents` when docked so the
+   composer participates in the column layout directly. Because the composer
+   never unmounts, promoting a draft to a thread on send no longer drops focus,
+   re-measures height, or flashes the empty state. */
+function ChatComposerRegion({
   composer,
   thread,
+  hidden,
+  terminalHeight,
+  terminalVisible,
 }: {
   composer: ComposerContent
   thread: ThreadContent
+  hidden: boolean
+  terminalHeight: number
+  terminalVisible: boolean
 }) {
+  const empty = thread.empty
+  const showOnboarding = empty && thread.showOnboarding
+
+  const composerSlot =
+    composer.enabled && !showOnboarding ? (
+      <div
+        key="composer"
+        ref={composer.ref}
+        className={cn(
+          "flex w-full justify-center",
+          empty
+            ? "mt-10 md:mt-8"
+            : terminalVisible
+              ? "pointer-events-none absolute inset-x-0 z-10 bg-background px-3 pt-3 pb-4 md:px-4 md:pb-6"
+              : "shrink-0 bg-background px-3 pt-1 pb-[max(var(--chat-composer-dock-bottom-space),env(safe-area-inset-bottom))] md:px-4 md:pt-3 md:pb-[max(1.5rem,env(safe-area-inset-bottom))]",
+          !empty && hidden && "hidden"
+        )}
+        style={
+          !empty && terminalVisible ? { bottom: terminalHeight } : undefined
+        }
+      >
+        <ChatComposerInstance composer={composer} />
+      </div>
+    ) : null
+
   return (
-    <div className="flex min-h-full flex-col items-center justify-end pb-[max(var(--chat-empty-bottom-space),env(safe-area-inset-bottom))] md:min-h-0 md:justify-start md:pt-[22vh] md:pb-0">
-      <h1 className="text-center text-2xl font-normal tracking-tight text-balance text-foreground/90 md:text-3xl">
-        {thread.showOnboarding
-          ? thread.userFirstName
-            ? `Let’s set you up, ${thread.userFirstName}`
-            : "Let’s set you up"
-          : thread.emptyPromptTitle}
-      </h1>
-      {thread.showOnboarding ? (
-        <div className="mt-10 flex w-full justify-center md:mt-8">
+    <div
+      className={cn(
+        empty
+          ? "mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col items-center justify-end overflow-y-auto overscroll-contain px-4 pt-16 pb-[max(var(--chat-empty-bottom-space),env(safe-area-inset-bottom))] md:justify-start md:px-6 md:pt-[22vh] md:pb-0"
+          : "contents"
+      )}
+    >
+      {empty ? (
+        <h1
+          key="greeting"
+          className="text-center text-2xl font-normal tracking-tight text-balance text-foreground/90 md:text-3xl"
+        >
+          {showOnboarding
+            ? thread.userFirstName
+              ? `Let’s set you up, ${thread.userFirstName}`
+              : "Let’s set you up"
+            : thread.emptyPromptTitle}
+        </h1>
+      ) : null}
+      {showOnboarding ? (
+        <div
+          key="onboarding"
+          className="mt-10 flex w-full justify-center md:mt-8"
+        >
           <OnboardingChecklist
             codexConnected={thread.codexConnected}
             githubAppReady={thread.githubAppReady}
@@ -290,55 +330,8 @@ function ChatEmptyState({
           />
         </div>
       ) : (
-        <div
-          ref={composer.ref}
-          className="mt-10 flex w-full justify-center md:mt-8"
-        >
-          <ChatComposerInstance composer={composer} />
-        </div>
+        composerSlot
       )}
-    </div>
-  )
-}
-
-function ChatComposerDock({
-  composer,
-  empty,
-  hidden,
-  terminalHeight,
-  terminalVisible,
-}: {
-  composer: ComposerContent
-  empty: boolean
-  hidden: boolean
-  terminalHeight: number
-  terminalVisible: boolean
-}) {
-  if (!composer.enabled || empty) return null
-
-  if (terminalVisible) {
-    return (
-      <div
-        ref={composer.ref}
-        className={cn(
-          "pointer-events-none absolute inset-x-0 z-10 flex justify-center bg-background px-3 pt-3 pb-4 md:px-4 md:pb-6",
-          hidden && "hidden"
-        )}
-        style={{ bottom: terminalHeight }}
-      >
-        <ChatComposerInstance composer={composer} />
-      </div>
-    )
-  }
-
-  return (
-    <div
-      ref={composer.ref}
-      className="shrink-0 bg-background px-3 pt-1 pb-[max(var(--chat-composer-dock-bottom-space),env(safe-area-inset-bottom))] md:px-4 md:pt-3 md:pb-[max(1.5rem,env(safe-area-inset-bottom))]"
-    >
-      <div className="flex justify-center">
-        <ChatComposerInstance composer={composer} />
-      </div>
     </div>
   )
 }

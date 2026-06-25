@@ -1,5 +1,7 @@
 import { v } from "convex/values"
 
+import { clampSandboxIdleMinutes } from "@/lib/sandbox/idle"
+
 import { mutation, query } from "./_generated/server"
 import { ensureCurrentUser, getCurrentUser } from "./lib/users"
 
@@ -177,6 +179,21 @@ export const setAgentInstructions = mutation({
 
     await ctx.db.patch(userId, {
       agentInstructions: trimmed ? trimmed : undefined,
+      updatedAt: Date.now(),
+    })
+
+    return null
+  },
+})
+
+export const setSandboxIdleMinutes = mutation({
+  args: { minutes: v.number() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const userId = await ensureCurrentUser(ctx)
+
+    await ctx.db.patch(userId, {
+      sandboxIdleMinutes: clampSandboxIdleMinutes(args.minutes),
       updatedAt: Date.now(),
     })
 

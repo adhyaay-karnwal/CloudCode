@@ -51,6 +51,7 @@ export type RunCodexInSandboxInput = {
   repoUrl: string
   runId?: string
   sandboxId?: string
+  sandboxIdleMinutes?: number
   sandboxPreset?: SandboxPresetInput
   signal?: AbortSignal
   speed?: CodexSpeed
