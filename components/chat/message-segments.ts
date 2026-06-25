@@ -78,7 +78,11 @@ function groupAssistantSegments(
   for (const segment of segments) {
     if (segment.kind === "tool") {
       toolBuf.push(segment.detail)
-      toolBufKey = toolBufKey ? `${toolBufKey}-${segment.key}` : segment.key
+      // Key the group by its first tool only. Concatenating every tool's key
+      // changed the group key as more commands streamed in, remounting the
+      // group and collapsing any command the user had expanded. The first
+      // tool's offset is stable (streaming only appends), so the key is too.
+      if (!toolBufKey) toolBufKey = segment.key
     } else if (segment.text.trim()) {
       flushToolBuf()
       grouped.push(segment)

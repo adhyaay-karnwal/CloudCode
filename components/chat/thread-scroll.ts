@@ -5,12 +5,24 @@ import {
   useCallback,
   useLayoutEffect,
   useRef,
+  useState,
 } from "react"
 
 type ThreadScrollSnapshot = {
   atBottom: boolean
   runKey: string
   scrollTop: number
+}
+
+// Fraction of the remaining distance covered each frame — small enough to read
+// as an eased "settle", high enough to keep up with fast streaming.
+const EASE_FACTOR = 0.22
+
+function prefersReducedMotion() {
+  return (
+    typeof window !== "undefined" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  )
 }
 
 export function useChatThreadScroll({
@@ -33,6 +45,16 @@ export function useChatThreadScroll({
   const promptFocusedRef = useRef(false)
   const pendingRestoreRef = useRef<ThreadScrollSnapshot | null>(null)
   const pendingRestoreFrameRef = useRef<number | null>(null)
+  // Eased auto-follow: a rAF loop that walks scrollTop toward the bottom so
+  // streaming output glides into view instead of snapping. `easeActiveRef`
+  // marks the loop as the scroll source so its own scroll events are not
+  // mistaken for the user scrolling away.
+  const easeFrameRef = useRef<number | null>(null)
+  const easeActiveRef = useRef(false)
+  const lastEaseTopRef = useRef(0)
+  // New, unread output that arrived while the user was scrolled up. Drives the
+  // minimal "jump to latest" pill.
+  const [showNewActivity, setShowNewActivity] = useState(false)
 
   const isThreadAtBottom = useCallback((el: HTMLDivElement) => {
     return el.scrollHeight - el.scrollTop - el.clientHeight < 80
@@ -45,6 +67,49 @@ export function useChatThreadScroll({
     el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight)
     isAtBottomRef.current = true
   }, [])
+
+  const cancelEase = useCallback(() => {
+    if (easeFrameRef.current !== null) {
+      cancelAnimationFrame(easeFrameRef.current)
+      easeFrameRef.current = null
+    }
+    easeActiveRef.current = false
+  }, [])
+
+  const easeThreadToBottom = useCallback(() => {
+    const el = threadRef.current
+    if (!el) return
+    // Reduced motion (or no animation budget): jump straight to the bottom.
+    if (prefersReducedMotion()) {
+      cancelEase()
+      scrollThreadToBottom()
+      return
+    }
+    if (easeFrameRef.current !== null)
+      cancelAnimationFrame(easeFrameRef.current)
+    easeActiveRef.current = true
+    const step = () => {
+      const node = threadRef.current
+      if (!node) {
+        cancelEase()
+        return
+      }
+      const target = Math.max(0, node.scrollHeight - node.clientHeight)
+      node.style.scrollBehavior = "auto"
+      if (target - node.scrollTop < 1) {
+        node.scrollTop = target
+        lastEaseTopRef.current = target
+        isAtBottomRef.current = true
+        easeFrameRef.current = null
+        easeActiveRef.current = false
+        return
+      }
+      node.scrollTop = node.scrollTop + (target - node.scrollTop) * EASE_FACTOR
+      lastEaseTopRef.current = node.scrollTop
+      easeFrameRef.current = requestAnimationFrame(step)
+    }
+    easeFrameRef.current = requestAnimationFrame(step)
+  }, [cancelEase, scrollThreadToBottom])
 
   const settleThreadAtBottom = useCallback(() => {
     if (isMobile && promptFocusedRef.current) return
@@ -119,10 +184,27 @@ export function useChatThreadScroll({
   const onThreadScroll = useCallback(
     (event: ReactUIEvent<HTMLDivElement>) => {
       const el = event.currentTarget
-      isAtBottomRef.current = isThreadAtBottom(el)
+      // While the ease loop owns the scroll, ignore its own events — unless the
+      // user scrolls up past where the loop left off, which hands control back.
+      if (easeActiveRef.current) {
+        if (el.scrollTop < lastEaseTopRef.current - 2) {
+          cancelEase()
+          isAtBottomRef.current = false
+        }
+        return
+      }
+      const atBottom = isThreadAtBottom(el)
+      isAtBottomRef.current = atBottom
+      if (atBottom) setShowNewActivity(false)
     },
-    [isThreadAtBottom]
+    [cancelEase, isThreadAtBottom]
   )
+
+  const scrollToLatest = useCallback(() => {
+    setShowNewActivity(false)
+    isAtBottomRef.current = true
+    easeThreadToBottom()
+  }, [easeThreadToBottom])
 
   const setThreadElement = useCallback(
     (el: HTMLDivElement | null) => {
@@ -141,6 +223,10 @@ export function useChatThreadScroll({
   }, [])
 
   useLayoutEffect(() => {
+    // Switching threads starts fresh: drop any in-flight ease and unread state,
+    // then snap to the bottom instantly (a thread should open already settled).
+    setShowNewActivity(false)
+    cancelEase()
     if (isMobile && empty) return
     cancelPendingRestoreFrame()
     pendingRestoreRef.current = null
@@ -148,6 +234,7 @@ export function useChatThreadScroll({
     settleThreadAtBottom()
   }, [
     activeRunKey,
+    cancelEase,
     cancelPendingRestoreFrame,
     empty,
     isMobile,
@@ -155,7 +242,12 @@ export function useChatThreadScroll({
     settleThreadAtBottom,
   ])
 
-  useLayoutEffect(() => cancelPendingRestoreFrame, [cancelPendingRestoreFrame])
+  useLayoutEffect(() => {
+    return () => {
+      cancelPendingRestoreFrame()
+      cancelEase()
+    }
+  }, [cancelEase, cancelPendingRestoreFrame])
 
   useLayoutEffect(() => {
     if (isMobile && promptFocusedRef.current) return
@@ -163,16 +255,23 @@ export function useChatThreadScroll({
     settleThreadAtBottom()
   }, [isMobile, settleThreadAtBottom, threadBottomInset])
 
+  // New content arrived. If the user is following the bottom, ease down to it;
+  // otherwise flag the unread activity so the pill can offer a jump.
   useLayoutEffect(() => {
     if (isMobile && promptFocusedRef.current) return
-    if (!isAtBottomRef.current) return
-    scrollThreadToBottom()
-  }, [isMobile, scrollThreadToBottom, threadContentVersion])
+    if (isAtBottomRef.current) {
+      easeThreadToBottom()
+    } else {
+      setShowNewActivity(true)
+    }
+  }, [easeThreadToBottom, isMobile, threadContentVersion])
 
   return {
     captureThreadScrollForPanel,
     onThreadScroll,
+    scrollToLatest,
     setPromptFocused,
     setThreadElement,
+    showNewActivity,
   }
 }

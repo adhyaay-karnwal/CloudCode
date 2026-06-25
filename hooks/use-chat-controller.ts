@@ -257,8 +257,10 @@ export function useChatController(): ChatShellProps {
   const {
     captureThreadScrollForPanel,
     onThreadScroll,
+    scrollToLatest,
     setPromptFocused,
     setThreadElement,
+    showNewActivity,
   } = useChatThreadScroll({
     activeRunKey,
     empty,
@@ -607,8 +609,10 @@ export function useChatController(): ChatShellProps {
         onOpenFile: openFile,
         onOpenFileDiff: openFileDiff,
         onScroll: onThreadScroll,
+        onScrollToLatest: scrollToLatest,
         scrollable: threadScrollable,
         setElement: setThreadElement,
+        showNewActivity,
         showOnboarding,
         threadViewKey,
         userFirstName,

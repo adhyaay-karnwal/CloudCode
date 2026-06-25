@@ -3,7 +3,8 @@
 import type { RefObject, UIEventHandler } from "react"
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import { motion } from "motion/react"
+import { ArrowDown } from "lucide-react"
+import { AnimatePresence, motion } from "motion/react"
 
 import {
   ChatComposer,
@@ -78,8 +79,10 @@ type ThreadContent = {
   onOpenConnectionsSettings: () => void
   onOpenFileDiff: (path: string, diff: string) => void
   onScroll: UIEventHandler<HTMLDivElement>
+  onScrollToLatest: () => void
   scrollable: boolean
   setElement: (element: HTMLDivElement | null) => void
+  showNewActivity: boolean
   showOnboarding: boolean
   threadViewKey: string
   userFirstName: string | null
@@ -273,43 +276,80 @@ function ChatThreadMessages({ thread }: { thread: ThreadContent }) {
       : null
 
   return (
-    <div
-      key={thread.threadViewKey}
-      ref={thread.setElement}
-      onScroll={thread.onScroll}
-      className={cn(
-        "min-h-0 flex-1 overscroll-contain [contain:paint] [overflow-anchor:none]",
-        thread.scrollable ? "overflow-y-auto" : "overflow-hidden"
-      )}
-      style={{ scrollPaddingBottom: thread.bottomInset }}
-    >
-      <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-4 pt-16 md:px-6">
-        <div className="mx-auto w-full max-w-2xl space-y-6 md:space-y-8">
-          {thread.messages.map((message) =>
-            message === setupMessage ? (
-              <RunSetupSummary
-                key={`setup-${thread.threadViewKey}`}
-                createdAt={message.createdAt}
-                logs={logsForMessage(message.id, message.meta?.logs)}
-              />
-            ) : (
-              <MessageBlock
-                key={message.id}
-                message={message}
-                repoName={thread.activeRepoName}
-                sandboxId={thread.activeSandboxId}
-                onOpenFile={thread.onOpenFile}
-                onOpenFileDiff={thread.onOpenFileDiff}
-              />
-            )
-          )}
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      <div
+        key={thread.threadViewKey}
+        ref={thread.setElement}
+        onScroll={thread.onScroll}
+        className={cn(
+          "min-h-0 flex-1 overscroll-contain [contain:paint] [overflow-anchor:none]",
+          thread.scrollable ? "overflow-y-auto" : "overflow-hidden"
+        )}
+        style={{ scrollPaddingBottom: thread.bottomInset }}
+      >
+        <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-4 pt-16 md:px-6">
+          <div className="mx-auto w-full max-w-2xl space-y-6 md:space-y-8">
+            {thread.messages.map((message) =>
+              message === setupMessage ? (
+                <RunSetupSummary
+                  key={`setup-${thread.threadViewKey}`}
+                  createdAt={message.createdAt}
+                  logs={logsForMessage(message.id, message.meta?.logs)}
+                />
+              ) : (
+                <MessageBlock
+                  key={message.id}
+                  message={message}
+                  repoName={thread.activeRepoName}
+                  sandboxId={thread.activeSandboxId}
+                  onOpenFile={thread.onOpenFile}
+                  onOpenFileDiff={thread.onOpenFileDiff}
+                />
+              )
+            )}
+          </div>
+          <div
+            aria-hidden="true"
+            className="shrink-0"
+            style={{ height: thread.bottomInset }}
+          />
         </div>
-        <div
-          aria-hidden="true"
-          className="shrink-0"
-          style={{ height: thread.bottomInset }}
-        />
       </div>
+      <NewActivityPill
+        show={thread.showNewActivity}
+        onClick={thread.onScrollToLatest}
+      />
+    </div>
+  )
+}
+
+/* Minimal "jump to latest" affordance: a small circular button that springs in
+   at the bottom of the thread only when new output arrives while scrolled up. */
+function NewActivityPill({
+  show,
+  onClick,
+}: {
+  show: boolean
+  onClick: () => void
+}) {
+  return (
+    <div className="pointer-events-none absolute inset-x-0 bottom-3 z-10 flex justify-center">
+      <AnimatePresence>
+        {show ? (
+          <motion.button
+            type="button"
+            onClick={onClick}
+            aria-label="Jump to latest"
+            initial={{ opacity: 0, y: 8, scale: 0.9 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 8, scale: 0.9 }}
+            transition={{ duration: 0.16, ease: "easeOut" }}
+            className="pointer-events-auto grid size-8 place-items-center rounded-full border border-border bg-background text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <ArrowDown className="size-4" />
+          </motion.button>
+        ) : null}
+      </AnimatePresence>
     </div>
   )
 }
