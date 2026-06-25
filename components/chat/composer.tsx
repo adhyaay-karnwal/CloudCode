@@ -8,7 +8,7 @@ import type {
   KeyboardEvent,
   RefObject,
 } from "react"
-import { useState } from "react"
+import { useEffect, useState } from "react"
 
 import { AnimatePresence, motion } from "motion/react"
 
@@ -161,8 +161,17 @@ export function ChatComposer({
   // The settings collapse needs overflow-hidden to clip the height animation,
   // but the repo/branch/preset menus open upward beyond the panel, so overflow
   // must be visible while the panel is at rest — otherwise the menus are
-  // clipped and can't be used. Clip only while the height is actually animating.
-  const [settingsAnimating, setSettingsAnimating] = useState(false)
+  // clipped and can't be used. Clip only for a brief window around an open/close
+  // toggle (driven by settingsOpen, not motion callbacks, which can desync and
+  // leave it permanently clipped). At rest, overflow stays visible so every chip
+  // menu — including the base-branch one with its own internal open state — can
+  // escape the panel.
+  const [clipSettings, setClipSettings] = useState(false)
+  useEffect(() => {
+    setClipSettings(true)
+    const timer = setTimeout(() => setClipSettings(false), 260)
+    return () => clearTimeout(timer)
+  }, [settingsOpen])
 
   return (
     <div className="pointer-events-auto w-full max-w-3xl rounded-3xl">
@@ -256,11 +265,9 @@ export function ChatComposer({
               height: { duration: 0.22, ease: [0.4, 0, 0.2, 1] },
               opacity: { duration: 0.16, ease: "easeOut" },
             }}
-            onAnimationStart={() => setSettingsAnimating(true)}
-            onAnimationComplete={() => setSettingsAnimating(false)}
             className={cn(
               "-mt-3",
-              settingsAnimating ? "overflow-hidden" : "overflow-visible"
+              clipSettings ? "overflow-hidden" : "overflow-visible"
             )}
           >
             <NewChatComposerSettings
