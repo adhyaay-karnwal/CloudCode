@@ -9,6 +9,8 @@ import type {
   RefObject,
 } from "react"
 
+import { AnimatePresence, motion } from "motion/react"
+
 import { DraftAttachmentList } from "@/components/chat/composer-attachments"
 import { QueuedMessages } from "@/components/chat/composer-queue"
 import { NewChatComposerSettings } from "@/components/chat/composer-settings"
@@ -71,6 +73,12 @@ export type ChatComposerProps = {
   onModelSelect: (value: Model) => void
   onOpenAttachmentPicker: () => void
   onRemoveDraftAttachment: (attachmentId: string) => void
+  /** Fired once the new-chat settings finish collapsing on send, so the
+   *  layout can sequence the composer's move to its docked position. */
+  onSettingsCollapsed?: () => void
+  /** Whether the new-chat git/preset settings are shown. The layout drives this
+   *  so it can sequence the collapse (on send) and expand (on new chat). */
+  settingsOpen?: boolean
   onRemoveQueuedMessage: (threadKey: string, queuedId: string) => void
   onRepoChange: (value: string) => void
   onSandboxPresetSelect: (value: Id<"sandboxPresets"> | "") => void
@@ -131,6 +139,8 @@ export function ChatComposer({
   onModelSelect,
   onOpenAttachmentPicker,
   onRemoveDraftAttachment,
+  onSettingsCollapsed,
+  settingsOpen,
   onRemoveQueuedMessage,
   onRepoChange,
   onSandboxPresetSelect,
@@ -228,27 +238,41 @@ export function ChatComposer({
         />
       </form>
 
-      {hasActiveChat ? null : (
-        <NewChatComposerSettings
-          baseBranch={baseBranch}
-          branchTargetOpen={branchTargetOpen}
-          draftBranchMode={draftBranchMode}
-          draftBranchName={draftBranchName}
-          editingRepo={editingRepo}
-          presetOpen={presetOpen}
-          repoUrl={repoUrl}
-          sandboxPresetId={sandboxPresetId}
-          sandboxPresets={sandboxPresets}
-          onBaseBranchChange={onBaseBranchChange}
-          onBranchModeChange={onBranchModeChange}
-          onBranchNameChange={onBranchNameChange}
-          onRepoChange={onRepoChange}
-          onSandboxPresetSelect={onSandboxPresetSelect}
-          setBranchTargetOpen={setBranchTargetOpen}
-          setEditingRepo={setEditingRepo}
-          setPresetOpen={setPresetOpen}
-        />
-      )}
+      <AnimatePresence initial={false} onExitComplete={onSettingsCollapsed}>
+        {settingsOpen ? (
+          <motion.div
+            key="new-chat-settings"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{
+              height: { duration: 0.22, ease: [0.4, 0, 0.2, 1] },
+              opacity: { duration: 0.16, ease: "easeOut" },
+            }}
+            className="-mt-3 overflow-hidden"
+          >
+            <NewChatComposerSettings
+              baseBranch={baseBranch}
+              branchTargetOpen={branchTargetOpen}
+              draftBranchMode={draftBranchMode}
+              draftBranchName={draftBranchName}
+              editingRepo={editingRepo}
+              presetOpen={presetOpen}
+              repoUrl={repoUrl}
+              sandboxPresetId={sandboxPresetId}
+              sandboxPresets={sandboxPresets}
+              onBaseBranchChange={onBaseBranchChange}
+              onBranchModeChange={onBranchModeChange}
+              onBranchNameChange={onBranchNameChange}
+              onRepoChange={onRepoChange}
+              onSandboxPresetSelect={onSandboxPresetSelect}
+              setBranchTargetOpen={setBranchTargetOpen}
+              setEditingRepo={setEditingRepo}
+              setPresetOpen={setPresetOpen}
+            />
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
     </div>
   )
 }

@@ -4,6 +4,7 @@ import {
   disconnectCodexAuthProfile,
   getCodexAuthStatus,
   renameCodexAuthProfile,
+  saveCodexApiKey,
   saveCodexAuthJson,
   setActiveCodexAuthProfile,
 } from "@/lib/codex/auth"
@@ -38,21 +39,29 @@ export async function POST(request: Request) {
 
   try {
     const body = await readJsonRecord(request)
+    const profile = jsonRawStringField(body, "profile")
+
+    if ("apiKey" in body) {
+      const apiKey = jsonRawStringField(body, "apiKey")
+      if (apiKey === undefined) {
+        return jsonError("apiKey must be a string.", 400)
+      }
+
+      return NextResponse.json(await saveCodexApiKey(profile, apiKey))
+    }
+
     const authJson = jsonRawStringField(body, "authJson")
 
     if (authJson === undefined) {
       return jsonError("authJson must be a string.", 400)
     }
 
-    const status = await saveCodexAuthJson(
-      jsonRawStringField(body, "profile"),
-      authJson
-    )
+    const status = await saveCodexAuthJson(profile, authJson)
 
     return NextResponse.json(status)
   } catch (error) {
     return jsonError(
-      error instanceof Error ? error.message : "Unable to store auth.json.",
+      error instanceof Error ? error.message : "Unable to store credentials.",
       400
     )
   }

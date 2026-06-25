@@ -69,23 +69,27 @@ const daytonaBillingState = v.union(
 
 export default defineSchema({
   codexAuth: defineTable({
-    accessToken: v.string(),
+    // OAuth ("chatgpt") records populate accessToken/idToken/refreshToken;
+    // API-key ("apikey") records leave them unset and store the encrypted key in
+    // openaiApiKey instead.
+    accessToken: v.optional(v.string()),
     accountEmail: v.optional(v.string()),
-    accountId: v.union(v.string(), v.null()),
+    accountId: v.optional(v.union(v.string(), v.null())),
     accountName: v.optional(v.string()),
-    authMode: v.literal("chatgpt"),
+    authMode: v.union(v.literal("chatgpt"), v.literal("apikey")),
     displayName: v.optional(v.string()),
     fingerprint: v.string(),
-    idToken: v.string(),
+    idToken: v.optional(v.string()),
     invalidReason: v.optional(v.string()),
     invalidatedAt: v.optional(v.string()),
+    keyHint: v.optional(v.string()),
     lastRefresh: v.string(),
     openaiApiKey: v.optional(v.string()),
     profile: v.string(),
     refreshLeaseExpiresAt: v.optional(v.number()),
     refreshLeaseId: v.optional(v.string()),
     refreshLeaseRunId: v.optional(v.string()),
-    refreshToken: v.string(),
+    refreshToken: v.optional(v.string()),
     updatedAt: v.string(),
     userId: v.id("users"),
   })

@@ -49,7 +49,7 @@ export function NewChatComposerSettings({
   setPresetOpen: (value: boolean) => void
 }) {
   return (
-    <div className="-mt-3 flex flex-col items-stretch gap-1 rounded-b-3xl border border-t-0 border-field/60 bg-muted/40 px-2.5 pt-5 pb-2.5 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-1 sm:gap-y-0.5 sm:px-3 sm:pb-2">
+    <div className="flex flex-col items-stretch gap-1 rounded-b-3xl border border-t-0 border-field/60 bg-muted/40 px-2.5 pt-5 pb-2.5 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-1 sm:gap-y-0.5 sm:px-3 sm:pb-2">
       <ComposerSettingRow label="Repository">
         <RepoChip
           value={repoUrl}

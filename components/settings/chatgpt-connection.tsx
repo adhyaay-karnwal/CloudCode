@@ -1,10 +1,11 @@
 "use client"
 
-import { FileUp } from "lucide-react"
+import { FileUp, KeyRound } from "lucide-react"
 import { useReducer } from "react"
 
 import { ChatGPTAccountEditRow } from "@/components/settings/chatgpt-account-edit-row"
 import { ChatGPTAccountRow } from "@/components/settings/chatgpt-account-row"
+import { ChatGPTApiKeyDialog } from "@/components/settings/chatgpt-apikey-dialog"
 import { ChatGPTImportDialog } from "@/components/settings/chatgpt-import-dialog"
 import {
   chatGPTConnectionReducer,
@@ -37,6 +38,10 @@ export function ChatGPTConnectionRow({
     initialChatGPTConnectionState
   )
   const {
+    apiKeyError,
+    apiKeyOpen,
+    apiKeySaving,
+    apiKeyValue,
     disconnectingProfile,
     draftDisplayName,
     editingProfile,
@@ -61,7 +66,7 @@ export function ChatGPTConnectionRow({
       : activeAccount
         ? `Using ${codexAccountTitle(activeAccount)}`
         : "auth.json imported. Codex runs are authorized with ChatGPT."
-    : "Import auth.json to authorize Codex runs."
+    : "Import auth.json or add an API key to authorize Codex runs."
   const visibleError = switchError || authError
 
   async function selectProfile(profile: string) {
@@ -120,6 +125,35 @@ export function ChatGPTConnectionRow({
             ? error.message
             : "Unable to import auth.json.",
         type: "import-error",
+      })
+    }
+  }
+
+  async function saveApiKey() {
+    if (apiKeySaving) return
+
+    const apiKey = apiKeyValue.trim()
+    if (!apiKey) return
+
+    dispatch({ type: "apikey-start" })
+
+    try {
+      await requestJson(
+        "/api/codex-auth",
+        "POST",
+        { apiKey },
+        {
+          fallbackError: "Unable to save API key.",
+        }
+      )
+
+      dispatch({ type: "apikey-success" })
+      await onCodexAuthChanged()
+    } catch (error) {
+      dispatch({
+        error:
+          error instanceof Error ? error.message : "Unable to save API key.",
+        type: "apikey-error",
       })
     }
   }
@@ -199,16 +233,28 @@ export function ChatGPTConnectionRow({
           <div className="text-sm font-medium text-foreground">ChatGPT</div>
           <div className="text-xs text-muted-foreground">{detail}</div>
         </div>
-        <button
-          type="button"
-          className={
-            connected && !activeAccount?.invalidatedAt ? navAction : navPrimary
-          }
-          onClick={() => dispatch({ type: "import-open" })}
-        >
-          <FileUp className="size-3.5" />
-          Import auth.json
-        </button>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <button
+            type="button"
+            className={navAction}
+            onClick={() => dispatch({ type: "apikey-open" })}
+          >
+            <KeyRound className="size-3.5" />
+            Add API key
+          </button>
+          <button
+            type="button"
+            className={
+              connected && !activeAccount?.invalidatedAt
+                ? navAction
+                : navPrimary
+            }
+            onClick={() => dispatch({ type: "import-open" })}
+          >
+            <FileUp className="size-3.5" />
+            Import auth.json
+          </button>
+        </div>
       </div>
       {status?.invalidatedAt ? (
         <div className="mt-2 text-[11px] leading-4 text-destructive">
@@ -266,6 +312,18 @@ export function ChatGPTConnectionRow({
             )
           })}
         </div>
+      ) : null}
+      {apiKeyOpen ? (
+        <ChatGPTApiKeyDialog
+          value={apiKeyValue}
+          busy={apiKeySaving}
+          error={apiKeyError}
+          onValueChange={(value) =>
+            dispatch({ type: "apikey-set-value", value })
+          }
+          onConfirm={() => void saveApiKey()}
+          onCancel={() => dispatch({ type: "apikey-close" })}
+        />
       ) : null}
       {importOpen ? (
         <ChatGPTImportDialog

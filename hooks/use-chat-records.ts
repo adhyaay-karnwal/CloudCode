@@ -78,6 +78,16 @@ export function useChatRecords() {
     setActiveIdState(threadId)
   }, [])
 
+  // Launch animation trigger. It must bump at the very start of a draft send —
+  // before the optimistic messages flip the view out of the empty state — so
+  // the composer holds its centered position from the first frame instead of
+  // snapping to the docked layout and bouncing back. It fires only on a draft
+  // send, so navigating to an existing thread never animates.
+  const [composerLaunchToken, setComposerLaunchToken] = useState(0)
+  const beginComposerLaunch = useCallback(() => {
+    setComposerLaunchToken((token) => token + 1)
+  }, [])
+
   // Threads removed locally while their server delete is in flight. They are
   // hidden from the sidebar immediately for instant feedback and restored if
   // the delete ultimately fails.
@@ -160,6 +170,8 @@ export function useChatRecords() {
     activeId,
     activeRunKey,
     activeThreadLoading,
+    beginComposerLaunch,
+    composerLaunchToken,
     appendRunMessages,
     autoSandboxPreset,
     chats,

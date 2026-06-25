@@ -6,8 +6,12 @@ import { ConvexHttpClient } from "convex/browser"
 import { api } from "@/convex/_generated/api"
 import type { Id } from "@/convex/_generated/dataModel"
 import {
+  buildCodexApiKeyAuthJson,
   buildCodexAuthJsonFromParsed,
+  codexApiKeyHint,
   getCodexProfileFromIdToken,
+  isCodexApiKeyAuthJson,
+  parseCodexApiKey,
   parseCodexAuthJson,
 } from "@/lib/codex/auth-json"
 import {
@@ -15,6 +19,7 @@ import {
   type CodexAuthOverview,
 } from "@/lib/codex/auth-types"
 import { requireConvexUrl } from "@/lib/convex/env"
+import { encryptSecret } from "@/lib/security/secret-crypto"
 
 const CONVEX_JWT_TEMPLATE = "convex"
 type CodexClerkAuthSession = Awaited<ReturnType<typeof auth>>
@@ -33,6 +38,21 @@ export type CodexChatGptAuth = {
   refreshToken: string
   updatedAt: string
 }
+
+// API-key credentials carry only the key (encrypted at rest); the OAuth-only
+// fields are absent. `openaiApiKey` holds the encrypted key in storage and the
+// decrypted key when handed to a run.
+export type CodexApiKeyAuth = {
+  authMode: "apikey"
+  fingerprint: string
+  keyHint?: string
+  lastRefresh: string
+  openaiApiKey?: string
+  profile: string
+  updatedAt: string
+}
+
+export type CodexRunAuth = CodexChatGptAuth | CodexApiKeyAuth
 
 export type AuthStatus = CodexAuthOverview
 
@@ -111,7 +131,20 @@ function profileFromAccount(accountId: string | null, idToken: string) {
   return normalizeCodexProfile(`${safePrefix}_${suffix}`)
 }
 
-export function buildCodexAuthJson(auth: CodexChatGptAuth) {
+function profileFromApiKey(fingerprint: string) {
+  return normalizeCodexProfile(`apikey_${fingerprint.slice(0, 8)}`)
+}
+
+// Builds the sandbox auth.json from a stored credential. For API-key auth the
+// caller must pass the decrypted key in `openaiApiKey`.
+export function buildCodexAuthJson(auth: CodexRunAuth) {
+  if (auth.authMode === "apikey") {
+    if (!auth.openaiApiKey) {
+      throw new Error("Codex API key auth is missing its key.")
+    }
+    return buildCodexApiKeyAuthJson(auth.openaiApiKey)
+  }
+
   return buildCodexAuthJsonFromParsed({
     accessToken: auth.accessToken,
     accountId: auth.accountId,
@@ -178,9 +211,40 @@ export async function saveCodexAuthJson(
   })
 }
 
+export async function saveCodexApiKey(
+  profileInput: string | undefined,
+  apiKeyInput: string
+) {
+  const apiKey = parseCodexApiKey(apiKeyInput)
+  // Fingerprint the plaintext key so re-adding the same key updates the same
+  // profile instead of creating a duplicate. Encrypt before it ever leaves this
+  // server so Convex only stores ciphertext.
+  const fingerprint = codexAuthFingerprint(apiKey)
+  const profile = normalizeCodexProfile(
+    profileInput ?? profileFromApiKey(fingerprint)
+  )
+  const lastRefresh = new Date().toISOString()
+  const client = await getClient()
+
+  return (await client.mutation(api.codexAuth.saveApiKey, {
+    fingerprint,
+    keyHint: codexApiKeyHint(apiKey),
+    lastRefresh,
+    openaiApiKey: encryptSecret(apiKey),
+    profile,
+  })) satisfies CodexAuthOverview
+}
+
 export async function saveCodexAuthJsonForWorker(
   input: SaveCodexAuthJsonForWorkerInput
 ) {
+  // API-key auth has no rotating tokens to persist, and the stored key is
+  // encrypted (not the plaintext the sandbox holds). Persisting it back would
+  // both be meaningless and clobber the ciphertext, so skip it.
+  if (isCodexApiKeyAuthJson(input.authJson)) {
+    return null
+  }
+
   const parsed = parseCodexAuthJson(input.authJson)
   const profile = normalizeCodexProfile(input.profile)
   const lastRefresh = new Date().toISOString()

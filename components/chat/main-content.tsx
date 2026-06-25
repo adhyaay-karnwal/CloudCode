@@ -1,6 +1,9 @@
 "use client"
 
 import type { RefObject, UIEventHandler } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
+
+import { motion } from "motion/react"
 
 import {
   ChatComposer,
@@ -63,6 +66,7 @@ type ThreadContent = {
   activeSandboxId: string | null
   bottomInset: number
   codexConnected: boolean
+  composerLaunchToken: number
   empty: boolean
   emptyPromptTitle: string
   githubAppReady: boolean
@@ -111,13 +115,72 @@ export function ChatMainContent({
   view: ChatView
   workspace: WorkspaceMainPanel
 }) {
+  /* Composer launch choreography. The composer is one persistent element
+     (PersistentComposer) that only ever moves vertically; the git/preset
+     settings collapse/expand inside it. Two flags sequence the two phases:
+
+       - launching (send from a draft, composerLaunchToken bumps): hold the
+         composer centered while the settings collapse up into it, then drop the
+         hold so the composer glides down to the dock.
+       - opening (entering the empty view from a thread = new chat): the
+         composer glides up to center first, then the settings expand back down.
+
+     This makes the new-chat action the exact 1:1 reverse of send. */
+  const [launching, setLaunching] = useState(false)
+  const [opening, setOpening] = useState(false)
+  const launchTokenRef = useRef(thread.composerLaunchToken)
+  const wasEmptyRef = useRef(thread.empty)
+  // Both transitions are detected during render (not in an effect) so the hold
+  // applies in the same commit as the data change — a frame's delay would flash
+  // the wrong layout. Each self-terminates because its ref updates immediately.
+  if (thread.composerLaunchToken !== launchTokenRef.current) {
+    launchTokenRef.current = thread.composerLaunchToken
+    setLaunching(true)
+  }
+  const enteringEmpty = thread.empty && !wasEmptyRef.current
+  if (wasEmptyRef.current !== thread.empty) {
+    wasEmptyRef.current = thread.empty
+  }
+  if (enteringEmpty && !launching) {
+    setOpening(true)
+  }
+
+  // Centered while empty, and held centered through the send collapse.
+  const composerCentered = thread.empty || launching
+  // Settings rest open only in the idle new-chat state; closed while the send
+  // collapse runs and while the reverse up-glide runs (they expand afterwards).
+  const settingsOpen = composerCentered && !launching && !opening
+
+  const onSettingsCollapsed = useCallback(() => setLaunching(false), [])
+  const onComposerMoved = useCallback(() => setOpening(false), [])
+  // Safety nets so a missed completion signal can never wedge a transition.
+  useEffect(() => {
+    if (!launching) return
+    const timeout = setTimeout(() => setLaunching(false), 700)
+    return () => clearTimeout(timeout)
+  }, [launching])
+  useEffect(() => {
+    if (!opening) return
+    const timeout = setTimeout(() => setOpening(false), 700)
+    return () => clearTimeout(timeout)
+  }, [opening])
+
   if (view === "settings") {
     return <SettingsScreen {...settings} />
   }
 
+  const panelOpen =
+    Boolean(workspace.activeFilePath) ||
+    workspace.allDiffsOpen ||
+    workspace.notesOpen
+
   return (
-    <>
-      <ChatWorkspaceMainPanel thread={thread} workspace={workspace} />
+    <div className="flex min-h-0 flex-1 flex-col justify-end md:justify-start">
+      <ChatMainArea
+        composerCentered={composerCentered}
+        thread={thread}
+        workspace={workspace}
+      />
 
       {terminal.mounted ? (
         <SandboxTerminalPanel
@@ -129,25 +192,26 @@ export function ChatMainContent({
         />
       ) : null}
 
-      <ChatComposerRegion
+      <PersistentComposer
         composer={composer}
-        thread={thread}
-        hidden={
-          Boolean(workspace.activeFilePath) ||
-          workspace.allDiffsOpen ||
-          workspace.notesOpen
-        }
+        centered={composerCentered}
+        hidden={panelOpen}
+        settingsOpen={settingsOpen}
         terminalHeight={terminal.height}
         terminalVisible={terminal.visible}
+        onSettingsCollapsed={onSettingsCollapsed}
+        onComposerMoved={onComposerMoved}
       />
-    </>
+    </div>
   )
 }
 
-function ChatWorkspaceMainPanel({
+function ChatMainArea({
+  composerCentered,
   thread,
   workspace,
 }: {
+  composerCentered: boolean
   thread: ThreadContent
   workspace: WorkspaceMainPanel
 }) {
@@ -188,14 +252,14 @@ function ChatWorkspaceMainPanel({
     )
   }
 
-  return <ChatThreadContent thread={thread} />
+  if (composerCentered) {
+    return <ChatEmptyContent thread={thread} />
+  }
+
+  return <ChatThreadMessages thread={thread} />
 }
 
-function ChatThreadContent({ thread }: { thread: ThreadContent }) {
-  // The empty/new-chat state lives entirely in ChatComposerRegion so the
-  // composer is never duplicated; nothing scrolls here until messages exist.
-  if (thread.empty) return null
-
+function ChatThreadMessages({ thread }: { thread: ThreadContent }) {
   /* The thread owns a single setup line, rendered in place of the last
      pending assistant message and keyed by the thread. Message identity
      changes during send (optimistic -> server) therefore never remount it,
@@ -250,76 +314,23 @@ function ChatThreadContent({ thread }: { thread: ThreadContent }) {
   )
 }
 
-/* A single composer element is kept mounted across every state — centered in
-   the empty/new-chat view, docked above the thread, and floating above the
-   terminal — by giving it a stable key inside a parent that never changes
-   identity. The parent collapses to `display: contents` when docked so the
-   composer participates in the column layout directly. Because the composer
-   never unmounts, promoting a draft to a thread on send no longer drops focus,
-   re-measures height, or flashes the empty state. */
-function ChatComposerRegion({
-  composer,
-  thread,
-  hidden,
-  terminalHeight,
-  terminalVisible,
-}: {
-  composer: ComposerContent
-  thread: ThreadContent
-  hidden: boolean
-  terminalHeight: number
-  terminalVisible: boolean
-}) {
-  const empty = thread.empty
-  const showOnboarding = empty && thread.showOnboarding
-
-  const composerSlot =
-    composer.enabled && !showOnboarding ? (
-      <div
-        key="composer"
-        ref={composer.ref}
-        className={cn(
-          "flex w-full justify-center",
-          empty
-            ? "mt-10 md:mt-8"
-            : terminalVisible
-              ? "pointer-events-none absolute inset-x-0 z-10 bg-background px-3 pt-3 pb-4 md:px-4 md:pb-6"
-              : "shrink-0 bg-background px-3 pt-1 pb-[max(var(--chat-composer-dock-bottom-space),env(safe-area-inset-bottom))] md:px-4 md:pt-3 md:pb-[max(1.5rem,env(safe-area-inset-bottom))]",
-          !empty && hidden && "hidden"
-        )}
-        style={
-          !empty && terminalVisible ? { bottom: terminalHeight } : undefined
-        }
-      >
-        <ChatComposerInstance composer={composer} />
-      </div>
-    ) : null
-
+/* The greeting only — never the composer. The composer is the persistent
+   element below it (PersistentComposer); keeping them separate is what lets the
+   composer glide on its own without remounting. Auto height (no flex-1) so the
+   column's justify positions the greeting + composer together: centered at 22vh
+   on desktop, bottom-aligned on mobile. */
+function ChatEmptyContent({ thread }: { thread: ThreadContent }) {
   return (
-    <div
-      className={cn(
-        empty
-          ? "mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col items-center justify-end overflow-y-auto overscroll-contain px-4 pt-16 pb-[max(var(--chat-empty-bottom-space),env(safe-area-inset-bottom))] md:justify-start md:px-6 md:pt-[22vh] md:pb-0"
-          : "contents"
-      )}
-    >
-      {empty ? (
-        <h1
-          key="greeting"
-          className="text-center text-2xl font-normal tracking-tight text-balance text-foreground/90 md:text-3xl"
-        >
-          {showOnboarding
-            ? thread.userFirstName
-              ? `Let’s set you up, ${thread.userFirstName}`
-              : "Let’s set you up"
-            : thread.emptyPromptTitle}
-        </h1>
-      ) : null}
-      {showOnboarding ? (
-        <div
-          key="onboarding"
-          className="mt-10 flex w-full justify-center md:mt-8"
-        >
+    <div className="mx-auto flex w-full max-w-3xl flex-col items-center px-4 md:px-6 md:pt-[22vh]">
+      <h1 className="text-center text-2xl font-normal tracking-tight text-balance text-foreground/90 md:text-3xl">
+        {thread.showOnboarding
+          ? thread.userFirstName
+            ? `Let’s set you up, ${thread.userFirstName}`
+            : "Let’s set you up"
+          : thread.emptyPromptTitle}
+      </h1>
+      {thread.showOnboarding ? (
+        <div className="mt-10 flex w-full justify-center md:mt-8">
           <OnboardingChecklist
             codexConnected={thread.codexConnected}
             githubAppReady={thread.githubAppReady}
@@ -329,15 +340,84 @@ function ChatComposerRegion({
             onOpenConnectionsSettings={thread.onOpenConnectionsSettings}
           />
         </div>
-      ) : (
-        composerSlot
-      )}
+      ) : null}
     </div>
   )
 }
 
-function ChatComposerInstance({ composer }: { composer: ComposerContent }) {
+/* One persistent composer for every state. Its horizontal box is identical in
+   both positions (mx-auto max-w-3xl, same padding), so it only ever moves
+   vertically — no diagonal drift. `layout="position"` with
+   `layoutDependency={centered}` animates that move only when the position flips
+   (send / new chat), never on textarea resize. The outer wrapper carries the
+   vertical spacing for each state and is swapped instantly. */
+function PersistentComposer({
+  composer,
+  centered,
+  hidden,
+  settingsOpen,
+  terminalHeight,
+  terminalVisible,
+  onSettingsCollapsed,
+  onComposerMoved,
+}: {
+  composer: ComposerContent
+  centered: boolean
+  hidden: boolean
+  settingsOpen: boolean
+  terminalHeight: number
+  terminalVisible: boolean
+  onSettingsCollapsed: () => void
+  onComposerMoved: () => void
+}) {
   if (!composer.enabled) return null
 
-  return <ChatComposer {...composer.props} />
+  return (
+    <div
+      className={cn(
+        "shrink-0",
+        terminalVisible
+          ? "pointer-events-none absolute inset-x-0 z-10"
+          : centered
+            ? "mt-10 pb-[max(var(--chat-empty-bottom-space),env(safe-area-inset-bottom))] md:mt-8 md:pb-0"
+            : "pt-1 pb-[max(var(--chat-composer-dock-bottom-space),env(safe-area-inset-bottom))] md:pt-3 md:pb-[max(1.5rem,env(safe-area-inset-bottom))]",
+        hidden && "hidden"
+      )}
+      style={terminalVisible ? { bottom: terminalHeight } : undefined}
+    >
+      <motion.div
+        layout="position"
+        layoutDependency={centered}
+        ref={composer.ref}
+        onLayoutAnimationComplete={onComposerMoved}
+        className="mx-auto flex w-full max-w-3xl justify-center px-4 md:px-6"
+      >
+        <ChatComposerInstance
+          composer={composer}
+          settingsOpen={settingsOpen}
+          onSettingsCollapsed={onSettingsCollapsed}
+        />
+      </motion.div>
+    </div>
+  )
+}
+
+function ChatComposerInstance({
+  composer,
+  settingsOpen,
+  onSettingsCollapsed,
+}: {
+  composer: ComposerContent
+  settingsOpen: boolean
+  onSettingsCollapsed: () => void
+}) {
+  if (!composer.enabled) return null
+
+  return (
+    <ChatComposer
+      {...composer.props}
+      settingsOpen={settingsOpen}
+      onSettingsCollapsed={onSettingsCollapsed}
+    />
+  )
 }

@@ -437,7 +437,21 @@ function getAccountIdFromIdToken(idToken) {
 function parseAuthJson(authJson) {
   const parsed = JSON.parse(authJson)
   const tokens = objectRecord(parsed.tokens)
-  if (!tokens) throw new Error("auth.json tokens are missing.")
+  // API-key auth carries OPENAI_API_KEY and no OAuth tokens. It needs no refresh
+  // machinery, so return early without token validation.
+  if (!tokens) {
+    if (typeof parsed.OPENAI_API_KEY === "string" && parsed.OPENAI_API_KEY) {
+      return {
+        authMode: "apikey",
+        openaiApiKey: parsed.OPENAI_API_KEY,
+        lastRefresh:
+          typeof parsed.last_refresh === "string"
+            ? parsed.last_refresh
+            : new Date().toISOString(),
+      }
+    }
+    throw new Error("auth.json tokens are missing.")
+  }
   if (
     typeof tokens.id_token !== "string" ||
     typeof tokens.access_token !== "string" ||
@@ -446,6 +460,7 @@ function parseAuthJson(authJson) {
     throw new Error("auth.json tokens must include id_token, access_token, and refresh_token.")
   }
   return {
+    authMode: "chatgpt",
     accessToken: tokens.access_token,
     accountId:
       typeof tokens.account_id === "string"
@@ -463,6 +478,17 @@ function parseAuthJson(authJson) {
 }
 
 function buildAuthJson(auth) {
+  if (auth.authMode === "apikey") {
+    return JSON.stringify(
+      {
+        OPENAI_API_KEY: auth.openaiApiKey,
+        tokens: null,
+        last_refresh: null,
+      },
+      null,
+      2
+    )
+  }
   return JSON.stringify(
     {
       auth_mode: "chatgpt",
@@ -643,6 +669,10 @@ async function refreshChatgptAuthTokens(params) {
   const run = activeRun
   if (!run || !run.auth) {
     throw new Error("No active Codex auth is available for token refresh.")
+  }
+
+  if (run.auth.authMode === "apikey") {
+    throw new Error("API key auth does not support token refresh.")
   }
 
   if (

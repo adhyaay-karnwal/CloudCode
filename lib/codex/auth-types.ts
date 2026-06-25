@@ -1,15 +1,18 @@
 const DEFAULT_CODEX_PROFILE = "default"
 
+export type CodexAuthMode = "chatgpt" | "apikey"
+
 export type CodexAuthAccountStatus = {
   accountEmail?: string
   accountId?: string | null
   accountName?: string
-  authMode: "chatgpt"
+  authMode: CodexAuthMode
   displayName?: string
   exists: true
   fingerprint: string
   invalidReason?: string
   invalidatedAt?: string
+  keyHint?: string
   lastRefresh: string
   profile: string
   updatedAt: string
@@ -21,12 +24,13 @@ export type CodexAuthOverview = {
   accountName?: string
   accounts: CodexAuthAccountStatus[]
   activeProfile: string
-  authMode?: "chatgpt"
+  authMode?: CodexAuthMode
   displayName?: string
   exists: boolean
   fingerprint?: string
   invalidReason?: string
   invalidatedAt?: string
+  keyHint?: string
   lastRefresh?: string
   profile: string
   updatedAt?: string

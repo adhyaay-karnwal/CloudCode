@@ -7,6 +7,70 @@ export type ParsedCodexAuthJson = {
   refreshToken: string
 }
 
+// OpenAI keys are prefixed `sk-` (including project keys such as `sk-proj-`).
+const OPENAI_API_KEY_PREFIX = "sk-"
+const OPENAI_API_KEY_MIN_LENGTH = 20
+const OPENAI_API_KEY_MAX_LENGTH = 300
+
+// Shared validator so every entry point (API route, worker import, settings UI)
+// rejects malformed keys the same way before anything is stored or written to a
+// sandbox auth.json.
+export function parseCodexApiKey(input: string): string {
+  const apiKey = input.trim()
+
+  if (!apiKey) {
+    throw new Error("OpenAI API key is required.")
+  }
+  if (/\s/.test(apiKey)) {
+    throw new Error("OpenAI API key must not contain whitespace.")
+  }
+  if (!apiKey.startsWith(OPENAI_API_KEY_PREFIX)) {
+    throw new Error('OpenAI API key must start with "sk-".')
+  }
+  if (
+    apiKey.length < OPENAI_API_KEY_MIN_LENGTH ||
+    apiKey.length > OPENAI_API_KEY_MAX_LENGTH
+  ) {
+    throw new Error("OpenAI API key length looks invalid.")
+  }
+
+  return apiKey
+}
+
+// Non-sensitive masked tail used purely for display in settings (e.g. "…a1b2").
+export function codexApiKeyHint(apiKey: string): string {
+  return apiKey.slice(-4)
+}
+
+// True when an auth.json represents API-key auth (OPENAI_API_KEY present, no
+// OAuth tokens). Used to skip OAuth-only persistence/refresh paths.
+export function isCodexApiKeyAuthJson(authJson: string): boolean {
+  try {
+    const parsed = JSON.parse(authJson) as Record<string, unknown>
+    if (!parsed || typeof parsed !== "object") return false
+    const tokens = parsed.tokens
+    const hasTokens = Boolean(tokens && typeof tokens === "object")
+
+    return !hasTokens && typeof parsed.OPENAI_API_KEY === "string"
+  } catch {
+    return false
+  }
+}
+
+// Codex selects API-key auth when auth.json carries OPENAI_API_KEY and no OAuth
+// tokens, so emit exactly that shape.
+export function buildCodexApiKeyAuthJson(apiKey: string): string {
+  return JSON.stringify(
+    {
+      OPENAI_API_KEY: apiKey,
+      tokens: null,
+      last_refresh: null,
+    },
+    null,
+    2
+  )
+}
+
 export type CodexIdTokenProfile = {
   accountEmail?: string
   accountId: string | null

@@ -66,6 +66,7 @@ export function useChatRunActions({
   appendReadyDraftAttachments,
   appendRunMessages,
   authStatus,
+  beginComposerLaunch,
   cancelRequestedThreadIds,
   clearDraftAttachments,
   clearOptimisticRun,
@@ -111,6 +112,7 @@ export function useChatRunActions({
   appendReadyDraftAttachments: (attachments: ChatImageAttachment[]) => void
   appendRunMessages: AppendRunMessages
   authStatus: AuthStatus | null
+  beginComposerLaunch: () => void
   cancelRequestedThreadIds: Set<string>
   clearDraftAttachments: () => void
   clearOptimisticRun: (runKey: string) => void
@@ -241,6 +243,12 @@ export function useChatRunActions({
 
     queueingRunKeys.add(runKey)
     markRunActive(runKey)
+    // Trigger the launch animation for a draft send in the same batch as the
+    // optimistic messages, so the composer holds its centered position from the
+    // first frame instead of flashing the docked layout before the hold.
+    if (!active) {
+      beginComposerLaunch()
+    }
     showOptimisticRun(
       runKey,
       trimmed,

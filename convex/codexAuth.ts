@@ -12,22 +12,25 @@ import {
 
 const OAUTH_REFRESH_LEASE_MS = 90_000
 
+// Never include secrets (tokens or openaiApiKey) here: this shape is returned to
+// the browser. keyHint is the only non-sensitive credential detail exposed.
 function toStatus(auth: {
   accountEmail?: string
-  accountId: string | null
+  accountId?: string | null
   accountName?: string
-  authMode: "chatgpt"
+  authMode: "chatgpt" | "apikey"
   displayName?: string
   fingerprint: string
   invalidReason?: string
   invalidatedAt?: string
+  keyHint?: string
   lastRefresh: string
   profile: string
   updatedAt: string
 }) {
   return {
     ...(auth.accountEmail ? { accountEmail: auth.accountEmail } : {}),
-    accountId: auth.accountId,
+    accountId: auth.accountId ?? null,
     ...(auth.accountName ? { accountName: auth.accountName } : {}),
     authMode: auth.authMode,
     ...(auth.displayName ? { displayName: auth.displayName } : {}),
@@ -35,22 +38,25 @@ function toStatus(auth: {
     fingerprint: auth.fingerprint,
     ...(auth.invalidReason ? { invalidReason: auth.invalidReason } : {}),
     ...(auth.invalidatedAt ? { invalidatedAt: auth.invalidatedAt } : {}),
+    ...(auth.keyHint ? { keyHint: auth.keyHint } : {}),
     lastRefresh: auth.lastRefresh,
     profile: auth.profile,
     updatedAt: auth.updatedAt,
   }
 }
 
+// Only the OAuth refresh path consumes this, and that path only runs for
+// "chatgpt" records, so the token fields are always present at the call site.
 function toWorkerAuth(auth: Doc<"codexAuth">) {
   return {
-    accessToken: auth.accessToken,
-    accountId: auth.accountId,
+    accessToken: auth.accessToken ?? "",
+    accountId: auth.accountId ?? null,
     fingerprint: auth.fingerprint,
-    idToken: auth.idToken,
+    idToken: auth.idToken ?? "",
     lastRefresh: auth.lastRefresh,
     openaiApiKey: auth.openaiApiKey,
     profile: auth.profile,
-    refreshToken: auth.refreshToken,
+    refreshToken: auth.refreshToken ?? "",
   }
 }
 
@@ -235,6 +241,7 @@ export const saveOAuthTokens = mutation({
       idToken: args.idToken,
       invalidReason: undefined,
       invalidatedAt: undefined,
+      keyHint: undefined,
       lastRefresh: args.lastRefresh,
       openaiApiKey: args.openaiApiKey,
       profile,
@@ -268,6 +275,76 @@ export const saveOAuthTokens = mutation({
       },
       auths,
       profile
+    )
+  },
+})
+
+export const saveApiKey = mutation({
+  args: {
+    activate: v.optional(v.boolean()),
+    fingerprint: v.string(),
+    keyHint: v.optional(v.string()),
+    lastRefresh: v.string(),
+    // Already encrypted by the caller (lib/codex/auth.ts) before it reaches here.
+    openaiApiKey: v.string(),
+    profile: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const userId = await ensureCurrentUser(ctx)
+    const user = await ctx.db.get(userId)
+    if (!user) throw new Error("Not authenticated.")
+
+    const existing = await ctx.db
+      .query("codexAuth")
+      .withIndex("by_user_profile", (q) =>
+        q.eq("userId", userId).eq("profile", args.profile)
+      )
+      .unique()
+
+    const auth = {
+      accessToken: undefined,
+      accountEmail: undefined,
+      accountId: null,
+      accountName: undefined,
+      authMode: "apikey" as const,
+      fingerprint: args.fingerprint,
+      idToken: undefined,
+      invalidReason: undefined,
+      invalidatedAt: undefined,
+      keyHint: args.keyHint,
+      lastRefresh: args.lastRefresh,
+      openaiApiKey: args.openaiApiKey,
+      profile: args.profile,
+      refreshLeaseExpiresAt: undefined,
+      refreshLeaseId: undefined,
+      refreshLeaseRunId: undefined,
+      refreshToken: undefined,
+      updatedAt: args.lastRefresh,
+      userId,
+    }
+
+    if (existing) {
+      // Preserve a user-set display name across key rotation.
+      await ctx.db.patch(existing._id, auth)
+    } else {
+      await ctx.db.insert("codexAuth", auth)
+    }
+
+    if (args.activate !== false) {
+      await ctx.db.patch(userId, {
+        activeCodexProfile: args.profile,
+        updatedAt: Date.now(),
+      })
+    }
+
+    return overviewForUser(
+      {
+        ...user,
+        activeCodexProfile:
+          args.activate === false ? user.activeCodexProfile : args.profile,
+      },
+      await authRecordsForUser(ctx, userId),
+      args.profile
     )
   },
 })
@@ -423,6 +500,14 @@ export const beginOAuthRefreshForWorker = mutation({
         acquired: false as const,
         invalidated: true as const,
         message: codexAuthReconnectMessage(args.profile),
+        profile: args.profile,
+      }
+    }
+
+    if (auth.authMode !== "chatgpt") {
+      return {
+        acquired: false as const,
+        message: "API key auth does not support token refresh.",
         profile: args.profile,
       }
     }
@@ -624,6 +709,7 @@ export const saveOAuthTokensForWorker = mutation({
       idToken: args.idToken,
       invalidReason: undefined,
       invalidatedAt: undefined,
+      keyHint: undefined,
       lastRefresh: args.lastRefresh,
       openaiApiKey: args.openaiApiKey,
       profile: args.profile,

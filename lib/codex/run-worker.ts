@@ -12,6 +12,7 @@ import {
   codexAuthFingerprint,
   invalidateCodexAuthForWorker,
   saveCodexAuthJsonForWorker,
+  type CodexChatGptAuth,
 } from "@/lib/codex/auth"
 import {
   buildCodexAuthJsonFromParsed,
@@ -77,8 +78,9 @@ type WorkerRunRecord = {
 
 type WorkerAuthRecord = Parameters<typeof buildCodexAuthJson>[0]
 
+// Token refresh only applies to OAuth ("chatgpt") credentials.
 type WorkerRefreshAuth = Pick<
-  WorkerAuthRecord,
+  CodexChatGptAuth,
   | "accessToken"
   | "accountId"
   | "fingerprint"
@@ -371,7 +373,17 @@ export async function startAndLoadWorkerRun(
 
   const sandboxPreset = decryptPreset(response.sandboxPreset)
   const mcpServers = decryptMcpServers(response.mcpServers)
-  const authJson = buildCodexAuthJson(response.auth)
+  // openaiApiKey is stored encrypted (always for API-key auth; possibly for
+  // OAuth records that carried one). Decrypt before it reaches the sandbox
+  // auth.json. decryptSecret is a no-op on already-plaintext values.
+  const authJson = buildCodexAuthJson(
+    response.auth.openaiApiKey
+      ? {
+          ...response.auth,
+          openaiApiKey: decryptSecret(response.auth.openaiApiKey),
+        }
+      : response.auth
+  )
 
   return {
     authFingerprint: response.auth.fingerprint,

@@ -1,6 +1,10 @@
 import type { CodexAuthAccountStatus } from "@/lib/codex/auth-types"
 
 export type ChatGPTConnectionState = {
+  apiKeyError: string
+  apiKeyOpen: boolean
+  apiKeySaving: boolean
+  apiKeyValue: string
   disconnectingProfile: string | null
   draftDisplayName: string
   editingProfile: string | null
@@ -15,6 +19,12 @@ export type ChatGPTConnectionState = {
 }
 
 export type ChatGPTConnectionAction =
+  | { type: "apikey-open" }
+  | { type: "apikey-close" }
+  | { type: "apikey-set-value"; value: string }
+  | { type: "apikey-start" }
+  | { type: "apikey-success" }
+  | { error: string; type: "apikey-error" }
   | { type: "disconnect-finish" }
   | { profile: string; type: "disconnect-start" }
   | { profile: string; type: "disconnect-success" }
@@ -36,6 +46,10 @@ export type ChatGPTConnectionAction =
   | { type: "set-draft-display-name"; value: string }
 
 export const initialChatGPTConnectionState: ChatGPTConnectionState = {
+  apiKeyError: "",
+  apiKeyOpen: false,
+  apiKeySaving: false,
+  apiKeyValue: "",
   disconnectingProfile: null,
   draftDisplayName: "",
   editingProfile: null,
@@ -54,6 +68,30 @@ export function chatGPTConnectionReducer(
   action: ChatGPTConnectionAction
 ): ChatGPTConnectionState {
   switch (action.type) {
+    case "apikey-open":
+      return { ...state, apiKeyError: "", apiKeyOpen: true, switchError: "" }
+    case "apikey-close":
+      return {
+        ...state,
+        apiKeyError: "",
+        apiKeyOpen: false,
+        apiKeySaving: false,
+        apiKeyValue: "",
+      }
+    case "apikey-set-value":
+      return { ...state, apiKeyError: "", apiKeyValue: action.value }
+    case "apikey-start":
+      return { ...state, apiKeyError: "", apiKeySaving: true }
+    case "apikey-success":
+      return {
+        ...state,
+        apiKeyError: "",
+        apiKeyOpen: false,
+        apiKeySaving: false,
+        apiKeyValue: "",
+      }
+    case "apikey-error":
+      return { ...state, apiKeyError: action.error, apiKeySaving: false }
     case "disconnect-finish":
       return { ...state, disconnectingProfile: null }
     case "disconnect-start":
@@ -128,6 +166,10 @@ export function chatGPTConnectionReducer(
 }
 
 export function codexAccountTitle(account: CodexAuthAccountStatus) {
+  if (account.authMode === "apikey") {
+    return account.displayName || "OpenAI API key"
+  }
+
   return (
     account.displayName ||
     account.accountEmail ||
@@ -140,13 +182,22 @@ export function codexAccountTitle(account: CodexAuthAccountStatus) {
 }
 
 // Profiles created automatically: the "default" profile and the per-account
-// profiles derived on import/add (e.g. "chatgpt_<accountId>_<hash>"). Their raw
-// slugs are not meant for display.
+// profiles derived on import/add (e.g. "chatgpt_<accountId>_<hash>" or
+// "apikey_<hash>"). Their raw slugs are not meant for display.
 function isAutoProfile(profile: string) {
-  return profile === "default" || profile.startsWith("chatgpt_")
+  return (
+    profile === "default" ||
+    profile.startsWith("chatgpt_") ||
+    profile.startsWith("apikey_")
+  )
 }
 
 export function codexAccountSubtitle(account: CodexAuthAccountStatus) {
+  if (account.authMode === "apikey") {
+    if (account.invalidatedAt) return "API key required"
+    return account.keyHint ? `API key …${account.keyHint}` : "API key"
+  }
+
   if (account.invalidatedAt) return "Fresh auth.json required"
 
   const label =
