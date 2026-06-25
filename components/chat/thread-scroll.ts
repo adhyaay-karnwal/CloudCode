@@ -14,9 +14,10 @@ type ThreadScrollSnapshot = {
   scrollTop: number
 }
 
-// Fraction of the remaining distance covered each frame — small enough to read
-// as an eased "settle", high enough to keep up with fast streaming.
-const EASE_FACTOR = 0.22
+// Time constant (ms) for the eased follow. The per-frame fraction is derived
+// from real elapsed time, so the glide feels identical at 60Hz and 120Hz.
+// Higher = gentler/slower settle.
+const EASE_TAU_MS = 105
 
 function prefersReducedMotion() {
   return (
@@ -85,10 +86,14 @@ export function useChatThreadScroll({
       scrollThreadToBottom()
       return
     }
-    if (easeFrameRef.current !== null)
-      cancelAnimationFrame(easeFrameRef.current)
+    // One continuous loop. While streaming, content updates call this every
+    // bump; restarting the rAF each time resets the smoothing and reads
+    // scrollHeight mid-commit (a forced reflow) — both cause the choppiness.
+    // If the loop is already running, just let it keep chasing the new bottom.
+    if (easeActiveRef.current) return
     easeActiveRef.current = true
-    const step = () => {
+    let lastTs = 0
+    const step = (now: number) => {
       const node = threadRef.current
       if (!node) {
         cancelEase()
@@ -96,7 +101,8 @@ export function useChatThreadScroll({
       }
       const target = Math.max(0, node.scrollHeight - node.clientHeight)
       node.style.scrollBehavior = "auto"
-      if (target - node.scrollTop < 1) {
+      const remaining = target - node.scrollTop
+      if (remaining < 0.5) {
         node.scrollTop = target
         lastEaseTopRef.current = target
         isAtBottomRef.current = true
@@ -104,7 +110,20 @@ export function useChatThreadScroll({
         easeActiveRef.current = false
         return
       }
-      node.scrollTop = node.scrollTop + (target - node.scrollTop) * EASE_FACTOR
+      if (remaining > node.clientHeight) {
+        // A large gap — entering a thread, the skeleton being replaced, a huge
+        // block landing — snaps so we never do a long visible scroll.
+        node.scrollTop = target
+        lastTs = now
+        lastEaseTopRef.current = node.scrollTop
+        easeFrameRef.current = requestAnimationFrame(step)
+        return
+      }
+      // Frame-rate independent exponential smoothing toward the (moving) bottom.
+      const dt = lastTs ? now - lastTs : 16.7
+      lastTs = now
+      const factor = 1 - Math.exp(-dt / EASE_TAU_MS)
+      node.scrollTop = node.scrollTop + remaining * factor
       lastEaseTopRef.current = node.scrollTop
       easeFrameRef.current = requestAnimationFrame(step)
     }
@@ -255,8 +274,10 @@ export function useChatThreadScroll({
     settleThreadAtBottom()
   }, [isMobile, settleThreadAtBottom, threadBottomInset])
 
-  // New content arrived. If the user is following the bottom, ease down to it;
-  // otherwise flag the unread activity so the pill can offer a jump.
+  // New content arrived. If the user is following the bottom, make sure the
+  // ease loop is running (it chases the bottom and snaps large jumps itself);
+  // otherwise flag unread activity for the pill. No scrollHeight read here, so
+  // streaming never forces a reflow during the commit.
   useLayoutEffect(() => {
     if (isMobile && promptFocusedRef.current) return
     if (isAtBottomRef.current) {
