@@ -175,7 +175,7 @@ export function ChatMainContent({
     workspace.notesOpen
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col justify-end md:justify-start">
+    <div className="flex min-h-0 flex-1 flex-col">
       <ChatMainArea
         composerCentered={composerCentered}
         thread={thread}
@@ -321,7 +321,7 @@ function ChatThreadMessages({ thread }: { thread: ThreadContent }) {
    on desktop, bottom-aligned on mobile. */
 function ChatEmptyContent({ thread }: { thread: ThreadContent }) {
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col items-center px-4 md:px-6 md:pt-[22vh]">
+    <div className="mx-auto flex w-full max-w-3xl flex-col items-center px-4 pt-[16vh] md:px-6 md:pt-[22vh]">
       <h1 className="text-center text-2xl font-normal tracking-tight text-balance text-foreground/90 md:text-3xl">
         {thread.showOnboarding
           ? thread.userFirstName
@@ -379,7 +379,7 @@ function PersistentComposer({
         terminalVisible
           ? "pointer-events-none absolute inset-x-0 z-10"
           : centered
-            ? "mt-10 pb-[max(var(--chat-empty-bottom-space),env(safe-area-inset-bottom))] md:mt-8 md:pb-0"
+            ? "mt-6 md:mt-8"
             : "pt-1 pb-[max(var(--chat-composer-dock-bottom-space),env(safe-area-inset-bottom))] md:pt-3 md:pb-[max(1.5rem,env(safe-area-inset-bottom))]",
         hidden && "hidden"
       )}
