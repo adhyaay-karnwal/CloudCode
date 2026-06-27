@@ -23,27 +23,15 @@ const CODEX_OAUTH_ORIGINATOR =
   process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE ?? "codex_cli_rs"
 const CODEX_OAUTH_SCOPE =
   "openid profile email offline_access api.connectors.read api.connectors.invoke"
-export const CODEX_DEVICE_AUTH_COOKIE = "cloudcode_codex_device_auth"
-export const CODEX_DEVICE_AUTH_COOKIE_PATH = "/api/codex-auth"
-const CODEX_DEVICE_AUTH_TTL_MS = 15 * 60 * 1000
+const CODEX_HOSTED_OAUTH_SESSION_TTL_MS = 15 * 60 * 1000
+
+export const CODEX_OAUTH_STATE_COOKIE = "cloudcode_codex_oauth"
+export const CODEX_OAUTH_STATE_COOKIE_PATH = "/api/codex-auth"
 
 type CodexOAuthTokens = {
   accessToken: string
   idToken: string
   refreshToken: string
-}
-
-export type CodexDeviceLoginSession = {
-  deviceAuthId: string
-  expiresAt: number
-  intervalSeconds: number
-  userCode: string
-  verificationUrl: string
-}
-
-type CodexDeviceTokenResponse = {
-  authorizationCode: string
-  codeVerifier: string
 }
 
 type PendingCodexOAuthLogin = {
@@ -59,6 +47,14 @@ type CodexOAuthCallbackServerState = {
   pending: Map<string, PendingCodexOAuthLogin>
   port: number
   server: Server
+}
+
+export type CodexHostedOAuthSession = {
+  appOrigin: string
+  codeVerifier: string
+  expiresAt: number
+  redirectUri: string
+  state: string
 }
 
 const globalCodexOAuthState = globalThis as typeof globalThis & {
@@ -88,6 +84,10 @@ function createPkce() {
 
 function createState() {
   return base64UrlRandom(32)
+}
+
+function hostedOAuthClientConfigured() {
+  return Boolean(process.env.OPENAI_CODEX_CLIENT_ID)
 }
 
 function buildCodexOAuthAuthorizeUrl({
@@ -143,6 +143,10 @@ async function exchangeCodexOAuthCode({
     grant_type: "authorization_code",
     redirect_uri: redirectUri,
   })
+  const clientSecret = process.env.OPENAI_CODEX_CLIENT_SECRET
+  if (clientSecret) {
+    body.set("client_secret", clientSecret)
+  }
 
   const response = await fetch(`${issuer}/oauth/token`, {
     body,
@@ -187,130 +191,229 @@ function optionalString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined
 }
 
-async function readJsonResponse(response: Response): Promise<unknown> {
-  const text = await response.text()
-  if (!text) return {}
+function hostedOAuthCookieSecret() {
+  const secret =
+    process.env.CODEX_OAUTH_COOKIE_SECRET ??
+    process.env.CLERK_SECRET_KEY ??
+    process.env.TRIGGER_WORKER_SECRET ??
+    process.env.SECRET_ENCRYPTION_KEY ??
+    process.env.AUTH_SECRET ??
+    process.env.NEXTAUTH_SECRET
 
+  if (!secret) {
+    throw new Error(
+      "Set CODEX_OAUTH_COOKIE_SECRET or CLERK_SECRET_KEY before using hosted ChatGPT popup sign-in."
+    )
+  }
+
+  return secret
+}
+
+function signHostedOAuthCookiePayload(payload: string) {
+  return createHmac("sha256", hostedOAuthCookieSecret())
+    .update(payload)
+    .digest("base64url")
+}
+
+function signaturesMatch(actual: string, expected: string) {
+  const actualBuffer = Buffer.from(actual)
+  const expectedBuffer = Buffer.from(expected)
+
+  return (
+    actualBuffer.length === expectedBuffer.length &&
+    timingSafeEqual(actualBuffer, expectedBuffer)
+  )
+}
+
+export function encodeCodexHostedOAuthSession(
+  session: CodexHostedOAuthSession
+) {
+  const payload = Buffer.from(JSON.stringify(session), "utf8").toString(
+    "base64url"
+  )
+  const signature = signHostedOAuthCookiePayload(payload)
+
+  return `${payload}.${signature}`
+}
+
+export function decodeCodexHostedOAuthSession(value?: string) {
+  if (!value) return null
+  const [payload, signature, ...extraParts] = value.split(".")
+
+  if (!payload || !signature || extraParts.length > 0) return null
+  if (!signaturesMatch(signature, signHostedOAuthCookiePayload(payload))) {
+    return null
+  }
+
+  let parsed: unknown
   try {
-    return JSON.parse(text) as unknown
+    parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"))
   } catch {
-    return { message: text }
-  }
-}
-
-function deviceAuthErrorMessage(data: unknown, fallback: string) {
-  return tokenErrorMessage(data, fallback)
-}
-
-async function requestCodexDeviceCode(): Promise<CodexDeviceLoginSession> {
-  const issuer = issuerBaseUrl()
-  const response = await fetch(`${issuer}/api/accounts/deviceauth/usercode`, {
-    body: JSON.stringify({
-      client_id: codexOAuthClientId(),
-    }),
-    cache: "no-store",
-    headers: { "Content-Type": "application/json" },
-    method: "POST",
-  })
-  const data = await readJsonResponse(response)
-
-  if (!response.ok) {
-    throw new Error(
-      deviceAuthErrorMessage(
-        data,
-        `ChatGPT device sign-in could not start (${response.status}).`
-      )
-    )
+    return null
   }
 
-  if (!data || typeof data !== "object") {
-    throw new Error("ChatGPT device sign-in response was malformed.")
-  }
+  if (!parsed || typeof parsed !== "object") return null
+  const record = parsed as Record<string, unknown>
+  const appOrigin = optionalString(record.appOrigin)
+  const codeVerifier = optionalString(record.codeVerifier)
+  const redirectUri = optionalString(record.redirectUri)
+  const state = optionalString(record.state)
+  const expiresAt =
+    typeof record.expiresAt === "number" && Number.isFinite(record.expiresAt)
+      ? record.expiresAt
+      : undefined
 
-  const record = data as Record<string, unknown>
-  const deviceAuthId = optionalString(record.device_auth_id)
-  const userCode =
-    optionalString(record.user_code) ?? optionalString(record.usercode)
-  const interval =
-    typeof record.interval === "number"
-      ? record.interval
-      : typeof record.interval === "string"
-        ? Number.parseInt(record.interval, 10)
-        : 5
-
-  if (!deviceAuthId || !userCode) {
-    throw new Error("ChatGPT device sign-in response was missing a code.")
+  if (!appOrigin || !codeVerifier || !redirectUri || !state || !expiresAt) {
+    return null
   }
 
   return {
-    deviceAuthId,
-    expiresAt: Date.now() + CODEX_DEVICE_AUTH_TTL_MS,
-    intervalSeconds: Number.isFinite(interval) && interval > 0 ? interval : 5,
-    userCode,
-    verificationUrl: `${issuer}/codex/device`,
-  }
+    appOrigin,
+    codeVerifier,
+    expiresAt,
+    redirectUri,
+    state,
+  } satisfies CodexHostedOAuthSession
 }
 
-async function pollCodexDeviceCode({
-  deviceAuthId,
-  userCode,
-}: Pick<CodexDeviceLoginSession, "deviceAuthId" | "userCode">): Promise<
-  | { status: "complete"; token: CodexDeviceTokenResponse }
-  | { status: "pending" }
-> {
-  const issuer = issuerBaseUrl()
-  const response = await fetch(`${issuer}/api/accounts/deviceauth/token`, {
-    body: JSON.stringify({
-      device_auth_id: deviceAuthId,
-      user_code: userCode,
-    }),
-    cache: "no-store",
-    headers: { "Content-Type": "application/json" },
-    method: "POST",
-  })
-  const data = await readJsonResponse(response)
-
-  if (response.status === 403 || response.status === 404) {
-    return { status: "pending" }
-  }
-
-  if (!response.ok) {
+export function createCodexHostedOAuthLogin({
+  appOrigin,
+  redirectUri,
+}: {
+  appOrigin: string
+  redirectUri: string
+}) {
+  if (!hostedOAuthClientConfigured()) {
     throw new Error(
-      deviceAuthErrorMessage(
-        data,
-        `ChatGPT device sign-in failed (${response.status}).`
-      )
+      `Hosted ChatGPT popup sign-in requires OPENAI_CODEX_CLIENT_ID configured for redirect URI ${redirectUri}. The bundled Codex CLI OAuth client only supports localhost callbacks.`
     )
   }
 
-  if (!data || typeof data !== "object") {
-    throw new Error("ChatGPT device token response was malformed.")
-  }
-
-  const record = data as Record<string, unknown>
-  const authorizationCode = optionalString(record.authorization_code)
-  const codeVerifier = optionalString(record.code_verifier)
-
-  if (!authorizationCode || !codeVerifier) {
-    throw new Error("ChatGPT device token response was missing its code.")
+  const { codeChallenge, codeVerifier } = createPkce()
+  const state = createState()
+  const session: CodexHostedOAuthSession = {
+    appOrigin,
+    codeVerifier,
+    expiresAt: Date.now() + CODEX_HOSTED_OAUTH_SESSION_TTL_MS,
+    redirectUri,
+    state,
   }
 
   return {
-    status: "complete",
-    token: {
-      authorizationCode,
-      codeVerifier,
-    },
+    loginUrl: buildCodexOAuthAuthorizeUrl({
+      codeChallenge,
+      redirectUri,
+      state,
+    }),
+    session,
   }
+}
+
+export async function completeCodexHostedOAuthLogin({
+  code,
+  convexToken,
+  session,
+}: {
+  code: string
+  convexToken: string
+  session: CodexHostedOAuthSession
+}) {
+  if (session.expiresAt < Date.now()) {
+    throw new Error("ChatGPT sign-in expired. Please try again.")
+  }
+
+  const tokens = await exchangeCodexOAuthCode({
+    code,
+    codeVerifier: session.codeVerifier,
+    redirectUri: session.redirectUri,
+  })
+
+  await saveCodexOAuthTokens({
+    ...tokens,
+    convexToken,
+    useAccountProfile: true,
+  })
+}
+
+export function codexOAuthPopupHtml({
+  error,
+  message,
+  status,
+  targetOrigin,
+  title,
+}: {
+  error?: string
+  message: string
+  status: "complete" | "error"
+  targetOrigin: string
+  title: string
+}) {
+  const serializedMessage = JSON.stringify({
+    error: error ?? (status === "error" ? message : undefined),
+    status,
+    type: "cloudcode:codex-auth",
+  })
+  const serializedTargetOrigin = JSON.stringify(targetOrigin)
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${escapeHtml(title)}</title>
+    <style>
+      body {
+        align-items: center;
+        background: #0d1117;
+        color: #f0f6fc;
+        display: flex;
+        font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        justify-content: center;
+        margin: 0;
+        min-height: 100vh;
+      }
+      main {
+        max-width: 28rem;
+        padding: 2rem;
+        text-align: center;
+      }
+      h1 {
+        font-size: 1.125rem;
+        margin: 0 0 0.75rem;
+      }
+      p {
+        color: #c9d1d9;
+        line-height: 1.5;
+        margin: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>${escapeHtml(title)}</h1>
+      <p>${escapeHtml(message)}</p>
+    </main>
+    <script>
+      const message = ${serializedMessage};
+      const targetOrigin = ${serializedTargetOrigin};
+      if (window.opener && !window.opener.closed) {
+        window.opener.postMessage(message, targetOrigin);
+      }
+      window.close();
+    </script>
+  </body>
+</html>`
 }
 
 function writeHtml(
   response: ServerResponse,
   {
+    appOrigin,
     message,
     status,
     title,
   }: {
+    appOrigin?: string
     message: string
     status: number
     title: string
@@ -320,17 +423,14 @@ function writeHtml(
     "content-type": "text/html; charset=utf-8",
   })
   response.end(
-    `<!doctype html><meta charset="utf-8"><title>Cloudcode Auth</title><body style="font-family:system-ui;padding:2rem;line-height:1.5;max-width:42rem"><h1 style="font-size:1.25rem">${escapeHtml(
-      title
-    )}</h1><p>${escapeHtml(message)}</p><p><a href="/">Return to Cloudcode</a></p></body>`
+    codexOAuthPopupHtml({
+      error: status >= 400 ? message : undefined,
+      message,
+      status: status >= 400 ? "error" : "complete",
+      targetOrigin: appOrigin ?? "*",
+      title,
+    })
   )
-}
-
-function redirect(response: ServerResponse, location: string) {
-  response.writeHead(302, {
-    location,
-  })
-  response.end()
 }
 
 function scheduleCloseIfIdle(state: CodexOAuthCallbackServerState) {
@@ -400,6 +500,7 @@ async function handleCallback(
   const oauthError = requestUrl.searchParams.get("error")
   if (oauthError) {
     writeHtml(response, {
+      appOrigin: pending.appOrigin,
       message:
         requestUrl.searchParams.get("error_description") ??
         `ChatGPT returned ${oauthError}.`,
@@ -412,6 +513,7 @@ async function handleCallback(
   const code = requestUrl.searchParams.get("code")
   if (!code) {
     writeHtml(response, {
+      appOrigin: pending.appOrigin,
       message: "ChatGPT did not return an authorization code.",
       status: 400,
       title: "ChatGPT sign-in failed",
@@ -432,9 +534,15 @@ async function handleCallback(
       useAccountProfile: true,
     })
 
-    redirect(response, new URL("/?view=settings", pending.appOrigin).toString())
+    writeHtml(response, {
+      appOrigin: pending.appOrigin,
+      message: "ChatGPT is connected. You can close this window.",
+      status: 200,
+      title: "ChatGPT connected",
+    })
   } catch (error) {
     writeHtml(response, {
+      appOrigin: pending.appOrigin,
       message:
         error instanceof Error
           ? error.message
@@ -546,126 +654,4 @@ export async function createCodexOAuthLoginUrl({
     redirectUri: callbackRedirectUri(callbackServer.port),
     state,
   })
-}
-
-function deviceCookieSecret() {
-  const secret =
-    process.env.CLERK_SECRET_KEY ??
-    process.env.TRIGGER_WORKER_SECRET ??
-    process.env.SECRET_ENCRYPTION_KEY ??
-    process.env.NEXTAUTH_SECRET
-
-  if (!secret) {
-    throw new Error("Set CLERK_SECRET_KEY before using hosted ChatGPT sign-in.")
-  }
-
-  return secret
-}
-
-function signDeviceCookiePayload(payload: string) {
-  return createHmac("sha256", deviceCookieSecret())
-    .update(payload)
-    .digest("base64url")
-}
-
-function signaturesMatch(actual: string, expected: string) {
-  const actualBuffer = Buffer.from(actual)
-  const expectedBuffer = Buffer.from(expected)
-
-  return (
-    actualBuffer.length === expectedBuffer.length &&
-    timingSafeEqual(actualBuffer, expectedBuffer)
-  )
-}
-
-export function encodeCodexDeviceLoginSession(
-  session: CodexDeviceLoginSession
-) {
-  const payload = Buffer.from(JSON.stringify(session), "utf8").toString(
-    "base64url"
-  )
-  const signature = signDeviceCookiePayload(payload)
-
-  return `${payload}.${signature}`
-}
-
-export function decodeCodexDeviceLoginSession(value?: string) {
-  if (!value) return null
-  const [payload, signature] = value.split(".")
-
-  if (!payload || !signature) return null
-  if (!signaturesMatch(signature, signDeviceCookiePayload(payload))) return null
-
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"))
-  } catch {
-    return null
-  }
-
-  if (!parsed || typeof parsed !== "object") return null
-  const record = parsed as Record<string, unknown>
-  const deviceAuthId = optionalString(record.deviceAuthId)
-  const userCode = optionalString(record.userCode)
-  const verificationUrl = optionalString(record.verificationUrl)
-  const expiresAt =
-    typeof record.expiresAt === "number" && Number.isFinite(record.expiresAt)
-      ? record.expiresAt
-      : undefined
-  const intervalSeconds =
-    typeof record.intervalSeconds === "number" &&
-    Number.isFinite(record.intervalSeconds) &&
-    record.intervalSeconds > 0
-      ? record.intervalSeconds
-      : 5
-
-  if (!deviceAuthId || !userCode || !verificationUrl || !expiresAt) {
-    return null
-  }
-
-  return {
-    deviceAuthId,
-    expiresAt,
-    intervalSeconds,
-    userCode,
-    verificationUrl,
-  } satisfies CodexDeviceLoginSession
-}
-
-export async function createCodexDeviceLoginSession() {
-  return await requestCodexDeviceCode()
-}
-
-export async function completeCodexDeviceLogin({
-  convexToken,
-  session,
-}: {
-  convexToken: string
-  session: CodexDeviceLoginSession
-}) {
-  if (session.expiresAt < Date.now()) {
-    throw new Error("ChatGPT device sign-in expired. Start sign-in again.")
-  }
-
-  const poll = await pollCodexDeviceCode(session)
-  if (poll.status === "pending") {
-    return {
-      retryAfterMs: session.intervalSeconds * 1000,
-      status: "pending" as const,
-    }
-  }
-
-  const tokens = await exchangeCodexOAuthCode({
-    code: poll.token.authorizationCode,
-    codeVerifier: poll.token.codeVerifier,
-    redirectUri: `${issuerBaseUrl()}/deviceauth/callback`,
-  })
-
-  await saveCodexOAuthTokens({
-    ...tokens,
-    convexToken,
-    useAccountProfile: true,
-  })
-
-  return { status: "complete" as const }
 }

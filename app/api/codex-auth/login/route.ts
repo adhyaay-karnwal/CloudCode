@@ -2,19 +2,25 @@ import { NextRequest, NextResponse } from "next/server"
 
 import { getConvexAuthToken } from "@/lib/codex/auth"
 import {
-  CODEX_DEVICE_AUTH_COOKIE,
-  CODEX_DEVICE_AUTH_COOKIE_PATH,
-  createCodexDeviceLoginSession,
+  CODEX_OAUTH_STATE_COOKIE,
+  CODEX_OAUTH_STATE_COOKIE_PATH,
+  codexOAuthPopupHtml,
+  createCodexHostedOAuthLogin,
   createCodexOAuthLoginUrl,
-  encodeCodexDeviceLoginSession,
+  encodeCodexHostedOAuthSession,
 } from "@/lib/codex/oauth"
-import { escapeHtml } from "@/lib/shared/html-escape"
 
 export const runtime = "nodejs"
 
-function html(message: string) {
+function html(message: string, targetOrigin: string) {
   return new NextResponse(
-    `<!doctype html><meta charset="utf-8"><title>Cloudcode Auth</title><body style="font-family:system-ui;padding:2rem;line-height:1.5;max-width:42rem"><h1 style="font-size:1.25rem">ChatGPT sign-in could not start</h1><p>${escapeHtml(message)}</p><p><a href="/?view=settings">Open Settings</a></p></body>`,
+    codexOAuthPopupHtml({
+      error: message,
+      message,
+      status: "error",
+      targetOrigin,
+      title: "ChatGPT sign-in could not start",
+    }),
     {
       headers: {
         "content-type": "text/html; charset=utf-8",
@@ -36,42 +42,48 @@ function loopbackHost(hostname: string) {
 }
 
 export async function GET(request: NextRequest) {
+  const url = new URL(request.url)
+
   try {
-    const url = new URL(request.url)
     const convexToken = await getConvexAuthToken()
 
-    if (!loopbackHost(url.hostname)) {
-      const session = await createCodexDeviceLoginSession()
-      const response = NextResponse.redirect(
-        new URL("/api/codex-auth/device", url.origin)
-      )
+    if (loopbackHost(url.hostname)) {
+      const loginUrl = await createCodexOAuthLoginUrl({
+        appOrigin: url.origin,
+        convexToken,
+      })
 
-      response.cookies.set(
-        CODEX_DEVICE_AUTH_COOKIE,
-        encodeCodexDeviceLoginSession(session),
-        {
-          httpOnly: true,
-          maxAge: Math.ceil((session.expiresAt - Date.now()) / 1000),
-          path: CODEX_DEVICE_AUTH_COOKIE_PATH,
-          sameSite: "lax",
-          secure: url.protocol === "https:",
-        }
-      )
-
-      return response
+      return NextResponse.redirect(loginUrl)
     }
 
-    const loginUrl = await createCodexOAuthLoginUrl({
+    const redirectUri = new URL("/api/codex-auth/callback", url.origin)
+      .toString()
+      .replace(/\/$/, "")
+    const { loginUrl, session } = createCodexHostedOAuthLogin({
       appOrigin: url.origin,
-      convexToken,
+      redirectUri,
     })
+    const response = NextResponse.redirect(loginUrl)
 
-    return NextResponse.redirect(loginUrl)
+    response.cookies.set(
+      CODEX_OAUTH_STATE_COOKIE,
+      encodeCodexHostedOAuthSession(session),
+      {
+        httpOnly: true,
+        maxAge: Math.max(1, Math.ceil((session.expiresAt - Date.now()) / 1000)),
+        path: CODEX_OAUTH_STATE_COOKIE_PATH,
+        sameSite: "lax",
+        secure: url.protocol === "https:",
+      }
+    )
+
+    return response
   } catch (error) {
     return html(
       error instanceof Error
         ? error.message
-        : "Unable to start ChatGPT sign-in."
+        : "Unable to start ChatGPT sign-in.",
+      url.origin
     )
   }
 }

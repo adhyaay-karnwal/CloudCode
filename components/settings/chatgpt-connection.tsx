@@ -18,6 +18,7 @@ import {
   SettingsConfirmDialog,
 } from "@/components/settings/shared"
 import { OpenAIIcon } from "@/components/ui/brand-icons"
+import { useCodexAuthPopup } from "@/hooks/use-codex-auth-popup"
 import type {
   CodexAuthAccountStatus,
   CodexAuthOverview,
@@ -37,6 +38,13 @@ export function ChatGPTConnectionRow({
     chatGPTConnectionReducer,
     initialChatGPTConnectionState
   )
+  const {
+    error: loginError,
+    opening: loginOpening,
+    start: startLogin,
+  } = useCodexAuthPopup({
+    onComplete: onCodexAuthChanged,
+  })
   const {
     apiKeyError,
     apiKeyOpen,
@@ -67,7 +75,7 @@ export function ChatGPTConnectionRow({
         ? `Using ${codexAccountTitle(activeAccount)}`
         : "ChatGPT is connected. Codex runs are authorized."
     : "Sign in with ChatGPT, import auth.json, or add an API key to authorize Codex runs."
-  const visibleError = switchError || authError
+  const visibleError = loginError || switchError || authError
 
   async function selectProfile(profile: string) {
     if (profile === activeProfile || switchingProfile || editingProfile) return
@@ -252,19 +260,19 @@ export function ChatGPTConnectionRow({
             <KeyRound className="size-3.5" />
             Add API key
           </button>
-          <form action="/api/codex-auth/login" method="get">
-            <button
-              type="submit"
-              className={
-                connected && !activeAccount?.invalidatedAt
-                  ? navAction
-                  : navPrimary
-              }
-            >
-              <LogIn className="size-3.5" />
-              Sign in
-            </button>
-          </form>
+          <button
+            type="button"
+            className={
+              connected && !activeAccount?.invalidatedAt
+                ? navAction
+                : navPrimary
+            }
+            disabled={loginOpening}
+            onClick={startLogin}
+          >
+            <LogIn className="size-3.5" />
+            {loginOpening ? "Opening..." : "Sign in"}
+          </button>
         </div>
       </div>
       {status?.invalidatedAt ? (

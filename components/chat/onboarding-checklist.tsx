@@ -4,6 +4,7 @@ import { Check } from "lucide-react"
 
 import { GitHubIcon, OpenAIIcon } from "@/components/ui/brand-icons"
 import { Button } from "@/components/ui/button"
+import { useCodexAuthPopup } from "@/hooks/use-codex-auth-popup"
 import { cardSurfaceClass } from "@/components/ui/surface"
 import { cn } from "@/lib/shared/utils"
 
@@ -51,14 +52,23 @@ export function OnboardingChecklist({
   githubAppReady,
   githubConnected,
   githubUserReady,
+  onCodexAuthChanged,
   onDismiss,
 }: {
   codexConnected: boolean
   githubAppReady: boolean
   githubConnected: boolean
   githubUserReady: boolean
+  onCodexAuthChanged: () => void | Promise<void>
   onDismiss: () => void
 }) {
+  const {
+    error: codexLoginError,
+    opening: codexLoginOpening,
+    start: startCodexLogin,
+  } = useCodexAuthPopup({
+    onComplete: onCodexAuthChanged,
+  })
   const doneCount = [codexConnected, githubConnected].filter(Boolean).length
   // The GitHub App install and the user OAuth grant are separate steps; send
   // the user to whichever half is still missing.
@@ -96,11 +106,14 @@ export function OnboardingChecklist({
           description="Authorize Codex runs with your ChatGPT account."
           done={codexConnected}
           action={
-            <form action="/api/codex-auth/login" method="get">
-              <Button type="submit" size="sm">
-                Sign in
-              </Button>
-            </form>
+            <Button
+              type="button"
+              size="sm"
+              disabled={codexLoginOpening}
+              onClick={startCodexLogin}
+            >
+              {codexLoginOpening ? "Opening..." : "Sign in"}
+            </Button>
           }
         />
         <StepRow
@@ -119,6 +132,11 @@ export function OnboardingChecklist({
           }
         />
       </div>
+      {codexLoginError ? (
+        <div className="border-t border-border/60 px-4 py-3 text-xs leading-5 text-destructive sm:px-5">
+          {codexLoginError}
+        </div>
+      ) : null}
     </div>
   )
 }

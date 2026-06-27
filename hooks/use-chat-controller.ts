@@ -604,6 +604,7 @@ export function useChatController(): ChatShellProps {
         githubConnected,
         githubUserReady,
         messages,
+        onCodexAuthChanged: refreshCodexAuth,
         onDismissOnboarding: dismissOnboarding,
         onOpenFile: openFile,
         onOpenFileDiff: openFileDiff,

@@ -74,6 +74,7 @@ type ThreadContent = {
   githubConnected: boolean
   githubUserReady: boolean
   messages: Message[]
+  onCodexAuthChanged: () => void | Promise<void>
   onDismissOnboarding: () => void
   onOpenFile: (path: string) => void
   onOpenFileDiff: (path: string, diff: string) => void
@@ -375,6 +376,7 @@ function ChatEmptyContent({ thread }: { thread: ThreadContent }) {
             githubAppReady={thread.githubAppReady}
             githubConnected={thread.githubConnected}
             githubUserReady={thread.githubUserReady}
+            onCodexAuthChanged={thread.onCodexAuthChanged}
             onDismiss={thread.onDismissOnboarding}
           />
         </div>
