@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from "next/server"
 
 import { getConvexAuthToken } from "@/lib/codex/auth"
-import { createCodexOAuthLoginUrl } from "@/lib/codex/oauth"
+import {
+  CODEX_DEVICE_AUTH_COOKIE,
+  CODEX_DEVICE_AUTH_COOKIE_PATH,
+  createCodexDeviceLoginSession,
+  createCodexOAuthLoginUrl,
+  encodeCodexDeviceLoginSession,
+} from "@/lib/codex/oauth"
 import { escapeHtml } from "@/lib/shared/html-escape"
 
 export const runtime = "nodejs"
@@ -18,10 +24,43 @@ function html(message: string) {
   )
 }
 
+function loopbackHost(hostname: string) {
+  const normalized = hostname.toLowerCase()
+
+  return (
+    normalized === "localhost" ||
+    normalized === "127.0.0.1" ||
+    normalized === "::1" ||
+    normalized === "[::1]"
+  )
+}
+
 export async function GET(request: NextRequest) {
   try {
     const url = new URL(request.url)
     const convexToken = await getConvexAuthToken()
+
+    if (!loopbackHost(url.hostname)) {
+      const session = await createCodexDeviceLoginSession()
+      const response = NextResponse.redirect(
+        new URL("/api/codex-auth/device", url.origin)
+      )
+
+      response.cookies.set(
+        CODEX_DEVICE_AUTH_COOKIE,
+        encodeCodexDeviceLoginSession(session),
+        {
+          httpOnly: true,
+          maxAge: Math.ceil((session.expiresAt - Date.now()) / 1000),
+          path: CODEX_DEVICE_AUTH_COOKIE_PATH,
+          sameSite: "lax",
+          secure: url.protocol === "https:",
+        }
+      )
+
+      return response
+    }
+
     const loginUrl = await createCodexOAuthLoginUrl({
       appOrigin: url.origin,
       convexToken,

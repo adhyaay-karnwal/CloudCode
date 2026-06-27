@@ -382,7 +382,16 @@ export const observeCurrentUserDaytonaSandbox = action({
     const ownsSandbox = await ctx.runQuery(api.codexRuns.ownsSandbox, {
       sandboxId: args.sandboxId,
     })
-    if (!ownsSandbox) throw new Error("Sandbox not found.")
+    const ownsActiveBillingSegment =
+      !ownsSandbox && args.state === "deleted"
+        ? await ctx.runQuery(internal.billing.ownsActiveSandboxBillingSegment, {
+            sandboxId: args.sandboxId,
+            userId: user._id,
+          })
+        : false
+    if (!ownsSandbox && !ownsActiveBillingSegment) {
+      throw new Error("Sandbox not found.")
+    }
 
     const event = (await ctx.runMutation(
       internal.billing.applySandboxObservation,
@@ -511,6 +520,23 @@ export const pendingUsageForUser = internalQuery({
   },
   handler: async (ctx, args) => {
     return await localUsageSummary(ctx, args.userId)
+  },
+})
+
+export const ownsActiveSandboxBillingSegment = internalQuery({
+  args: {
+    sandboxId: v.string(),
+    userId: v.id("users"),
+  },
+  handler: async (ctx, args) => {
+    const activeSegments = await ctx.db
+      .query("billingSandboxSegments")
+      .withIndex("by_sandbox_active", (q) =>
+        q.eq("sandboxId", args.sandboxId).eq("active", true)
+      )
+      .collect()
+
+    return activeSegments.some((segment) => segment.userId === args.userId)
   },
 })
 
