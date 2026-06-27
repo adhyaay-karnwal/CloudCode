@@ -74,7 +74,7 @@ export function ChatGPTConnectionRow({
       : activeAccount
         ? `Using ${codexAccountTitle(activeAccount)}`
         : "ChatGPT is connected. Codex runs are authorized."
-    : "Sign in with ChatGPT, import auth.json, or add an API key to authorize Codex runs."
+    : "Sign in with ChatGPT"
   const visibleError = loginError || switchError || authError
 
   async function selectProfile(profile: string) {
