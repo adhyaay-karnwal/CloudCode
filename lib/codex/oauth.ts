@@ -11,6 +11,10 @@ import {
   type ServerResponse,
 } from "node:http"
 
+import {
+  CODEX_AUTH_WINDOW_OPENAI_ICON,
+  renderCodexAuthWindowDocument,
+} from "@/lib/codex/auth-window-html"
 import { saveCodexOAuthTokens } from "@/lib/codex/auth"
 import { codexOAuthClientId, codexOAuthIssuer } from "@/lib/codex/oauth-config"
 import { escapeHtml } from "@/lib/shared/html-escape"
@@ -457,54 +461,22 @@ export function codexAuthWindowHtml({
   })
   const serializedTargetOrigin = JSON.stringify(targetOrigin)
 
-  return `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>${escapeHtml(title)}</title>
-    <style>
-      body {
-        align-items: center;
-        background: #0d1117;
-        color: #f0f6fc;
-        display: flex;
-        font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        justify-content: center;
-        margin: 0;
-        min-height: 100vh;
-      }
-      main {
-        max-width: 28rem;
-        padding: 2rem;
-        text-align: center;
-      }
-      h1 {
-        font-size: 1.125rem;
-        margin: 0 0 0.75rem;
-      }
-      p {
-        color: #c9d1d9;
-        line-height: 1.5;
-        margin: 0;
-      }
-    </style>
-  </head>
-  <body>
-    <main>
+  return renderCodexAuthWindowDocument({
+    body: `
+      <div class="brand">${CODEX_AUTH_WINDOW_OPENAI_ICON}</div>
       <h1>${escapeHtml(title)}</h1>
-      <p>${escapeHtml(message)}</p>
-    </main>
-    <script>
+      <p class="subtitle${status === "error" ? " error" : ""}">${escapeHtml(
+        message
+      )}</p>`,
+    script: `
       const message = ${serializedMessage};
       const targetOrigin = ${serializedTargetOrigin};
       if (window.opener && !window.opener.closed) {
         window.opener.postMessage(message, targetOrigin);
       }
-      window.close();
-    </script>
-  </body>
-</html>`
+      window.close();`,
+    title,
+  })
 }
 
 function writeHtml(

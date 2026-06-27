@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from "next/server"
 
+import {
+  CODEX_AUTH_WINDOW_OPENAI_ICON,
+  renderCodexAuthWindowDocument,
+} from "@/lib/codex/auth-window-html"
 import { getConvexAuthToken } from "@/lib/codex/auth"
 import {
   CODEX_DEVICE_AUTH_COOKIE,
@@ -11,6 +15,8 @@ import { requireSameOrigin } from "@/lib/http/request-security"
 import { escapeHtml } from "@/lib/shared/html-escape"
 
 export const runtime = "nodejs"
+
+const CHATGPT_SECURITY_SETTINGS_URL = "https://chatgpt.com/#settings/Security"
 
 function clearDeviceCookie(response: NextResponse) {
   response.cookies.set(CODEX_DEVICE_AUTH_COOKIE, "", {
@@ -47,111 +53,26 @@ function devicePage({
   )
   const serializedHasSession = JSON.stringify(Boolean(userCode && !error))
   const serializedError = JSON.stringify(error ?? "")
+  const securitySettingsUrl = escapeHtml(CHATGPT_SECURITY_SETTINGS_URL)
 
-  return `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ChatGPT sign-in</title>
-    <style>
-      :root {
-        color-scheme: dark;
-      }
-      body {
-        align-items: center;
-        background: #0d1117;
-        color: #f0f6fc;
-        display: flex;
-        font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        justify-content: center;
-        margin: 0;
-        min-height: 100vh;
-      }
-      main {
-        max-width: 34rem;
-        padding: 2rem;
-        text-align: center;
-      }
-      h1 {
-        font-size: 1.35rem;
-        margin: 0 0 0.75rem;
-      }
-      p {
-        color: #c9d1d9;
-        line-height: 1.55;
-        margin: 0;
-      }
-      .code {
-        background: #161b22;
-        border: 1px solid #30363d;
-        border-radius: 0.5rem;
-        color: #f0f6fc;
-        display: block;
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-        font-size: clamp(2rem, 8vw, 3.5rem);
-        font-weight: 700;
-        letter-spacing: 0.08em;
-        margin: 1.5rem auto;
-        padding: 1rem 1.25rem;
-        width: fit-content;
-      }
-      .actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.75rem;
-        justify-content: center;
-        margin-top: 1.5rem;
-      }
-      button,
-      a.button {
-        align-items: center;
-        background: #f0f6fc;
-        border: 0;
-        border-radius: 0.5rem;
-        color: #0d1117;
-        cursor: pointer;
-        display: inline-flex;
-        font: inherit;
-        font-size: 0.92rem;
-        font-weight: 650;
-        justify-content: center;
-        min-height: 2.5rem;
-        padding: 0 1rem;
-        text-decoration: none;
-      }
-      button.secondary {
-        background: #21262d;
-        color: #f0f6fc;
-      }
-      .status {
-        color: #8b949e;
-        font-size: 0.9rem;
-        margin-top: 1.25rem;
-      }
-      .error {
-        color: #ff7b72;
-      }
-    </style>
-  </head>
-  <body>
-    <main>
-      ${
-        error
-          ? `<h1>ChatGPT sign-in failed</h1><p class="error">${escapeHtml(
-              error
-            )}</p>`
-          : `<h1>Enter this code in ChatGPT</h1>
-      <p>Open ChatGPT, enter the code below, and approve Codex access. This window will update automatically when sign-in finishes.</p>
+  const body = error
+    ? `
+      <div class="brand">${CODEX_AUTH_WINDOW_OPENAI_ICON}</div>
+      <h1>ChatGPT sign-in failed</h1>
+      <p class="subtitle error">${escapeHtml(error)}</p>`
+    : `
+      <div class="brand">${CODEX_AUTH_WINDOW_OPENAI_ICON}</div>
+      <h1>Enter this code in ChatGPT</h1>
+      <p class="subtitle">Open ChatGPT, enter the code below, and approve Codex access. This window updates automatically when sign-in finishes.</p>
       <code class="code">${escapedCode}</code>
       <div class="actions">
-        <a class="button" href="${escapedVerificationUrl}" target="_blank" rel="noopener noreferrer">Open ChatGPT</a>
-        <button class="secondary" type="button" id="copy-code">Copy code</button>
+        <a class="btn" href="${escapedVerificationUrl}" target="_blank" rel="noopener noreferrer">Open ChatGPT</a>
+        <button class="btn btn-secondary" type="button" id="copy-code">Copy code</button>
       </div>
-      <p class="status" id="status">Waiting for approval...</p>`
-      }
-    </main>
-    <script>
+      <p class="status" id="status">Waiting for approval…</p>
+      <p class="hint">Not seeing a place to enter the code? Make sure device sign-in is enabled in your <a href="${securitySettingsUrl}" target="_blank" rel="noopener noreferrer">ChatGPT security settings</a>.</p>`
+
+  const script = `
       const hasSession = ${serializedHasSession};
       const intervalMs = ${serializedIntervalMs};
       const initialError = ${serializedError};
@@ -241,10 +162,13 @@ function devicePage({
         finish({ error: initialError, status: "error", type: authMessageType });
       } else {
         window.setTimeout(poll, intervalMs);
-      }
-    </script>
-  </body>
-</html>`
+      }`
+
+  return renderCodexAuthWindowDocument({
+    body,
+    script,
+    title: "ChatGPT sign-in",
+  })
 }
 
 function htmlResponse(html: string, status = 200) {
